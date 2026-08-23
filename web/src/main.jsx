@@ -6,6 +6,7 @@ import "./styles.css";
 
 const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
 const CREDITCOIN_EXPLORER = "https://creditcoin-testnet.blockscout.com";
+const API_ORIGIN = (import.meta.env.VITE_RETRYCREDIT_API_ORIGIN ?? "").replace(/\/+$/, "");
 const STORAGE_KEY = "retrycredit-public-session-v2";
 const HISTORICAL = {
   failed: "0x9cb81e134e33f32b702786589510948d097ae98d0ef3ffec4c631a1288a0ee07",
@@ -21,10 +22,6 @@ function App() {
   const [notice, setNotice] = useState(null);
 
   useEffect(() => {
-    fetchJson("/api/retry-credit/config").then(setConfig).catch((error) => {
-      setConfig({ enabled: false, unavailable: true });
-      setNotice({ tone: "error", text: error.message });
-    });
     if (!window.ethereum) return undefined;
     window.ethereum.request({ method: "eth_accounts" }).then((items) => {
       if (items?.[0]) setAccount(getAddress(items[0]));
@@ -57,7 +54,8 @@ function App() {
       const wallet = account || await connect();
       if (wrongWallet) throw new Error(`Reconnect ${short(session.beneficiary)} to resume this run`);
       if (!session) {
-        if (!config?.enabled) throw new Error("The bounded public allocation is not live yet");
+        const liveConfig = config ?? await loadConfig();
+        if (!liveConfig.enabled) throw new Error("The bounded public allocation is not live yet");
         const challenge = await postJson("/api/retry-credit/challenge", { beneficiary: wallet });
         const signature = await window.ethereum.request({
           method: "personal_sign",
@@ -90,6 +88,17 @@ function App() {
     }
   }
 
+  async function loadConfig() {
+    try {
+      const next = await fetchJson("/api/retry-credit/config");
+      setConfig(next);
+      return next;
+    } catch (error) {
+      setConfig({ enabled: false, unavailable: true });
+      throw error;
+    }
+  }
+
   function startAnother() {
     setSession(null);
     setNotice({ tone: "success", text: "Saved browser state cleared. RetryCredit will resume any active onchain recovery or start a new one." });
@@ -99,7 +108,7 @@ function App() {
     <header className="topbar">
       <a className="brand" href="#top" aria-label="RetryCredit home"><span className="brand-mark">R</span><span>RetryCredit</span></a>
       <nav aria-label="Primary navigation"><a href="#how-it-works">How it works</a><a href="#activity">Activity</a><a href="#safety">Safety</a></nav>
-      <button className="wallet-button" disabled={!session && config?.enabled !== true} onClick={() => connect().catch((error) => setNotice({ tone: "error", text: error.message }))}><Wallet size={16} /> {account ? short(account) : config?.enabled === true ? "Connect wallet" : config?.unavailable ? "Temporarily unavailable" : config ? "Allocation paused" : "Checking…"}</button>
+      <button className="wallet-button" disabled={!session && Boolean(config) && config.enabled !== true} onClick={() => connect().catch((error) => setNotice({ tone: "error", text: error.message }))}><Wallet size={16} /> {account ? short(account) : config?.unavailable ? "Temporarily unavailable" : config && config.enabled !== true ? "Allocation paused" : "Connect wallet"}</button>
     </header>
     {notice && <Notice {...notice} onClose={() => setNotice(null)} />}
     <main id="top">
@@ -120,7 +129,7 @@ function App() {
             {wrongWallet && <div className="inline-warning">This saved run belongs to {short(session.beneficiary)}.</div>}
             <RunStatus session={session} account={account} config={config} />
             <details className="verification-details"><summary>How this recovery is verified</summary><p>The first included route must fail without settlement. The refreshed route must complete through the bound Uniswap pool. RetryCredit then checks both receipts together before releasing one credit.</p></details>
-            <button className="primary" onClick={act} disabled={busy || wrongWallet || (!session && config?.enabled !== true)}>{busy ? <><LoaderCircle className="spin" /> {busyLabel(phase)}</> : <>{phaseIcon(phase)} {phaseButton(phase, account, config)}</>}</button>
+            <button className="primary" onClick={act} disabled={busy || wrongWallet || (!session && Boolean(config) && config.enabled !== true)}>{busy ? <><LoaderCircle className="spin" /> {busyLabel(phase)}</> : <>{phaseIcon(phase)} {phaseButton(phase, account, config)}</>}</button>
             <small className="transaction-note">The service sends two bounded Sepolia transactions from its own test wallet. The first is expected to fail after inclusion; your wallet never deposits funds or approves a token.</small>
             {session && <button className="secondary" onClick={startAnother}><RefreshCw /> {phase === "released" ? "Clear local receipt" : "Restart saved run"}</button>}
           </div>
@@ -135,7 +144,7 @@ function App() {
 
 function JourneyStep({ number, title, copy, state }) { return <div className={`journey-step ${state}`}><span>{state === "done" ? <Check /> : number}</span><div><strong>{title}</strong><small>{copy}</small></div></div>; }
 function RunStatus({ session, account, config }) {
-  if (!session) return <div className="run-status"><span>Wallet</span><strong>{account ? short(account) : "Not connected"}</strong><span>Allocation</span><strong>{config?.unavailable ? "Temporarily unavailable" : config?.enabled === true ? "Available while funded" : config ? "Replenishing" : "Checking"}</strong></div>;
+  if (!session) return <div className="run-status"><span>Wallet</span><strong>{account ? short(account) : "Not connected"}</strong><span>Allocation</span><strong>{config?.unavailable ? "Temporarily unavailable" : config?.enabled === true ? "Available while funded" : config ? "Replenishing" : "Checked when you start"}</strong></div>;
   return <div className="run-status"><span>Service credit</span><strong>#{session.serviceCreditNumber}</strong><span>Recipient</span><strong>{short(session.beneficiary)}</strong><span>Source window</span><strong>{session.sourceWindow.startBlock.toLocaleString()}–{session.sourceWindow.endBlock.toLocaleString()}</strong>{session.failedTransactionHash && <><span>Failed route</span><ExplorerHash hash={session.failedTransactionHash} base={SEPOLIA_EXPLORER} /></>}{session.successfulTransactionHash && <><span>Settled route</span><ExplorerHash hash={session.successfulTransactionHash} base={SEPOLIA_EXPLORER} /></>}{session.release?.transactionHash && <><span>Credit release</span><ExplorerHash hash={session.release.transactionHash} base={CREDITCOIN_EXPLORER} /></>}</div>;
 }
 function Receipt({ title, chain, hash, href }) { return <a className="receipt" href={href} target="_blank" rel="noreferrer"><div><span>{title}</span><strong>{chain}</strong><code>{short(hash, 10)}</code></div><ExternalLink /></a>; }
@@ -145,13 +154,14 @@ function currentPhase(session) { if (!session) return "start"; if (session.relea
 function phaseIndex(phase) { return ({ start: 0, prepared: 0, settled: 2, released: 4 })[phase] ?? 0; }
 function phaseTitle(phase) { return ({ start: "Recover a stale testnet swap.", prepared: "Run the sponsored retry.", settled: "Your swap settled. Finish the credit.", released: "Your service credit arrived." })[phase]; }
 function phaseCopy(phase) { return ({ start: "Connect your wallet and authorize one bounded testnet recovery. RetryCredit pre-funds the credit and commits both sponsored routes before either is sent.", prepared: "RetryCredit will include the controlled stale route, refresh the quote, and send the settled test-USDC output to your wallet. No transaction is sent from your wallet.", settled: "Your test-USDC arrived on Sepolia. RetryCredit is checking both receipts together and releasing the fixed credit to the same address on Creditcoin Testnet.", released: "The swap output and fixed credit reached your wallet. This recovery cannot be paid twice." })[phase]; }
-function phaseButton(phase, account, config) { if (phase === "start" && !config) return "Checking availability…"; if (phase === "start" && config.unavailable) return "Temporarily unavailable"; if (phase === "start" && config.enabled !== true) return "Service credits replenishing"; if (!account) return "Connect wallet to start"; return ({ start: "Start protected retry", prepared: "Run sponsored retry", settled: "Finish credit release", released: "Credit received" })[phase]; }
+function phaseButton(phase, account, config) { if (phase === "start" && !account) return "Connect wallet to start"; if (phase === "start" && !config) return "Check availability and start"; if (phase === "start" && config.unavailable) return "Temporarily unavailable"; if (phase === "start" && config.enabled !== true) return "Service credits replenishing"; return ({ start: "Start protected retry", prepared: "Run sponsored retry", settled: "Finish credit release", released: "Credit received" })[phase]; }
 function busyLabel(phase) { return ({ start: "Preparing your recovery…", prepared: "Running both routes…", settled: "Finalizing your credit…", released: "Complete" })[phase]; }
 function phaseIcon(phase) { return phase === "released" ? <Check /> : phase === "settled" ? <ShieldCheck /> : phase === "start" ? <Zap /> : <ArrowRight />; }
 
-async function releaseUntilReady(session) { const deadline = Date.now() + 15 * 60_000; while (Date.now() < deadline) { const response = await fetch(`/api/retry-credit/${session.serviceCreditNumber}/release`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ failedTransactionHash: session.failedTransactionHash, successfulTransactionHash: session.successfulTransactionHash }) }); const data = await response.json(); if (response.ok) return data; if (response.status !== 425) throw new Error(data.error?.message ?? "Credit release failed"); await delay(15_000); } throw new Error("Attestcoin is still finalizing. Your receipt is saved; return and retry release shortly."); }
-async function fetchJson(url) { return parseJsonResponse(await fetch(url)); }
-async function postJson(url, body) { return parseJsonResponse(await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })); }
+async function releaseUntilReady(session) { const deadline = Date.now() + 15 * 60_000; while (Date.now() < deadline) { const response = await apiFetch(`/api/retry-credit/${session.serviceCreditNumber}/release`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ failedTransactionHash: session.failedTransactionHash, successfulTransactionHash: session.successfulTransactionHash }) }); const data = await response.json(); if (response.ok) return data; if (response.status !== 425) throw new Error(data.error?.message ?? "Credit release failed"); await delay(15_000); } throw new Error("Attestcoin is still finalizing. Your receipt is saved; return and retry release shortly."); }
+async function fetchJson(url) { return parseJsonResponse(await apiFetch(url)); }
+async function postJson(url, body) { return parseJsonResponse(await apiFetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })); }
+function apiFetch(path, options) { return fetch(`${API_ORIGIN}${path}`, options); }
 async function parseJsonResponse(response) {
   const text = await response.text();
   let data;

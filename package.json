@@ -8,6 +8,7 @@
     "build": "forge build && vite build",
     "build:contracts": "forge build",
     "build:web": "vite build",
+    "build:web:cloudflare": "VITE_RETRYCREDIT_API_ORIGIN=https://retrycredit.onrender.com vite build",
     "app:dev": "vite",
     "cohort:discover": "node scripts/discover-direct-usdc-cohort.mjs",
     "verify:mainnet-gate": "node scripts/verify-mainnet-gate.mjs",

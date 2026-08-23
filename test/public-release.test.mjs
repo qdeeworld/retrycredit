@@ -9,8 +9,9 @@ const files = await Promise.all([
   readFile(new URL("README.md", root), "utf8"),
   readFile(new URL("render.yaml", root), "utf8"),
   readFile(new URL("src/server.mjs", root), "utf8"),
+  readFile(new URL("package.json", root), "utf8"),
 ]);
-const [html, app, readme, render, server] = files;
+const [html, app, readme, render, server, packageJson] = files;
 
 test("public brand, metadata, and primary action describe one RetryCredit release", () => {
   assert.match(html, /<title>RetryCredit \| The retry pays for the failure<\/title>/);
@@ -29,9 +30,12 @@ test("public brand, metadata, and primary action describe one RetryCredit releas
   assert.doesNotMatch(app, />Proof</);
   assert.doesNotMatch(app, /PUBLIC PRIMARY ACTION/);
   assert.match(app, /no mainnet asset or token approval/i);
-  assert.match(app, /!session && config\?\.enabled !== true/);
-  assert.match(app, /Checking availability/);
+  assert.match(app, /!session && Boolean\(config\) && config\.enabled !== true/);
+  assert.match(app, /Check availability and start/);
+  assert.match(app, /Checked when you start/);
   assert.match(app, /Temporarily unavailable/);
+  assert.match(app, /VITE_RETRYCREDIT_API_ORIGIN/);
+  assert.match(app, /apiFetch\(url/);
   assert.match(app, /RetryCredit is temporarily unavailable\. Please try again shortly\./);
   assert.match(app, /verifies receipt state and settlement, not the human-readable reason a route failed/);
 });
@@ -63,4 +67,5 @@ test("deployment configuration enables only the reviewed funded V3 pool", () => 
   assert.match(server, /0x81b5d955F4EbfaE02FF6346cf368A2c4347248A1/);
   assert.match(server, /0x97Fa88CfCaeE1a5D4Ae749b9b5698F2147b986fC/);
   assert.match(render, /https:\/\/retrycredit\.dolepee\.com/);
+  assert.match(packageJson, /"build:web:cloudflare": "VITE_RETRYCREDIT_API_ORIGIN=https:\/\/retrycredit\.onrender\.com vite build"/);
 });
