@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: retrycredit
+    name: retrycredit-api
     runtime: docker
     plan: free
     healthCheckPath: /health

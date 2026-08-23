@@ -135,6 +135,7 @@ test("deployment and API docs describe the active V3 release", () => {
 
   assert.match(render, /RETRYCREDIT_PUBLIC_ENABLED\n\s+value: "true"/);
   assert.match(render, /RETRYCREDIT_DEMO_PRIVATE_KEY\n\s+sync: false/);
+  assert.match(render, /name: retrycredit-api/);
   assert.match(server, /0x81b5d955F4EbfaE02FF6346cf368A2c4347248A1/);
   assert.match(render, /https:\/\/retrycredit\.dolepee\.com/);
   assert.match(packageJson, /"build:web:cloudflare": "VITE_RETRYCREDIT_API_ORIGIN=https:\/\/retrycredit-api\.onrender\.com vite build"/);
