@@ -2,7 +2,12 @@
 
 **The retry pays for the failure.**
 
-RetryCredit is a pre-funded execution credit for signed DeFi routes. A trader submits an authorized Uniswap route that is included and fails, then settles the same funded action with a refreshed signed route. One native Attestcoin batch proves both Ethereum receipts before Creditcoin releases the fixed service credit exactly once.
+RetryCredit is a pre-funded execution service credit for signed DeFi routes. A wallet user authorizes the recipient, the sponsored service runs an included stale Uniswap route and a refreshed retry for the same funded action, and one native Attestcoin batch proves both Ethereum receipts before Creditcoin releases the fixed credit exactly once.
+
+- [Use the public testnet app](https://retrycredit.dolepee.com)
+- [Inspect the active deployment and public receipts](docs/DEPLOYMENTS.md)
+- [Run or integrate the proof and execution API](docs/WORKER_API.md)
+- [Read the active pool](contracts/src/RetryCreditUniversalRouterPoolV2.sol), [verifier](contracts/src/AttestcoinRetryCreditUniversalRouterVerifierV2.sol), and [predicate](contracts/src/RetryCreditUniversalRouterPredicateV2.sol)
 
 The current public pilot is deliberately narrow:
 
@@ -48,19 +53,22 @@ The previous RuleDrop contracts remain in the repository as an archived proof-en
 
 ## Public service
 
-The reviewed V3 pilot authenticates one short-lived wallet challenge, pre-funds the Creditcoin service credit, signs two official Universal Router routes from a separate service wallet, and commits the exact raw signed source transactions on Creditcoin before either is broadcast. It then executes the bounded Sepolia retry with the visitor as the test-USDC recipient, waits for Attestcoin finality, simulates the exact release, and submits through an isolated relayer. The visitor wallet never deposits an asset or approves a token; the same address receives the settled test-USDC and the Creditcoin credit. Durable authorization, source commitments, and replay state remain onchain.
+The reviewed V3 pilot authenticates one short-lived wallet challenge, pre-funds the Creditcoin service credit, signs two official Universal Router routes from a separate service role, and commits the exact raw signed source transactions on Creditcoin before either is broadcast. It then executes the bounded Sepolia retry with the visitor as the test-USDC recipient, waits for Attestcoin finality, simulates the exact release, and submits through a distinct relayer role. The visitor wallet never deposits an asset or approves a token; the same address receives the settled test-USDC and the Creditcoin credit. Durable authorization, source commitments, and replay state remain onchain. V3 is the public release marker; the deployed contract class names retain their V2 suffixes.
 
 The V3 pilot is enabled at pool `0x81b5d955F4EbfaE02FF6346cf368A2c4347248A1` after two fresh end-to-end releases with distinct beneficiaries and a service restart. Public sponsorship remains founder-funded, testnet-only, capped per deployment, and fails closed when the service wallet or reserve is unavailable.
 
 ## Local verification
 
 ```bash
-npm install
+npm ci
 npm test
 npm run build
+npm run build:web:cloudflare
 ```
 
 The repository covers the V1 evidence path and the V2 relayed path, including malformed proofs, route mutations, source identity drift, replay, unauthenticated infrastructure, distinct beneficiary binding, restart-safe source commitments, and sponsor/relayer separation.
+
+For a local browser journey, copy `.env.example` to `.env`, populate only testnet values, run `node --env-file=.env src/server.mjs`, and start `npm run app:dev` in a second terminal. See [the API guide](docs/WORKER_API.md) for route semantics, retry behavior, environment names, and the onchain trust boundary.
 
 ## Truth boundary
 

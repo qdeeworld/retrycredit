@@ -1,5 +1,7 @@
 # Ethereum mainnet proof gate
 
+> **Archived predecessor evidence.** This note records the earlier RuleDrop proof-engine gate. It is not the active RetryCredit V3 deployment, user journey, source chain, or product claim. See [the active deployment](./DEPLOYMENTS.md).
+
 Date: August 13, 2026
 
 ## Result
@@ -38,4 +40,3 @@ npm run verify:mainnet-gate
 ```
 
 The script performs read-only calls. It queries chain configuration and latest attestation, requests the public proof, and verifies it through the native precompile without signing a transaction.
-

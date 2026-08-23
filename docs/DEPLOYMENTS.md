@@ -1,86 +1,43 @@
-# Creditcoin Testnet Deployment
+# RetryCredit public V3 deployment
 
-> This page records the live V1 deployment. The repository also contains an expanded V2 claims implementation; V2 is not live and none of its capabilities are claimed as deployed evidence yet.
+This page records the active RetryCredit public testnet release deployed on August 22, 2026. “V3” is the release marker exposed by `RetryCreditUniversalRouterPoolV2.PUBLIC_PILOT_VERSION`; the deployed Solidity classes retain their `V2` names.
 
-Deployment date: August 13, 2026
+- Public app: <https://retrycredit.dolepee.com>
+- Proof and execution API: <https://retrycredit.onrender.com>
+- Settlement network: Creditcoin Testnet (`102031`)
+- Source network: Ethereum Sepolia (`11155111`), Attestcoin `chainKey 1`
+- Creditcoin RPC: <https://rpc.cc3-testnet.creditcoin.network>
+- Creditcoin explorer: <https://creditcoin-testnet.blockscout.com>
 
-Network:
+This is a controlled, test-asset pilot. The deployment is not a production, insurance, or exact-gas-reimbursement claim.
 
-- Creditcoin testnet
-- Chain ID: `102031`
-- RPC: `https://rpc.cc3-testnet.creditcoin.network`
-- Explorer: `https://creditcoin-testnet.blockscout.com`
-
-## Contracts
+## Active contracts
 
 | Contract | Address | Deployment transaction |
 | --- | --- | --- |
-| `EvmV1Decoder` | `0x8182E6D90F53Fdc261510A949915842a09dFC42a` | `0x8f6f3509351e107c27d1484239a064a85504c0473e80c1b4602554cb489626b2` |
-| `USDCTransferPredicateV1` | `0x094Ba0AA23e19E117DdFdB17327cD5626354B380` | `0xf3913a48075fc4080ebcd4ab65e353e0f7fa14ce3bdd964cbb963f38ae64c78a` |
-| `AttestcoinClaimVerifier` | `0x0B2b11a186f0CeF058f6A4A1352406477AB7627c` | `0x9f571a20facd3971d3dc246e85dbd34303069f510742658f9d1f190cf7a72fe3` |
-| `RuleDropPool` | `0x6f8dE7e1599A0c8D38eB25996cB841a4920ed999` | `0x08e2df968ddbfcebe31dde8121180d60588e7e9bf1305ea2d094f021fb883cd3` |
+| `EvmV1Decoder` | [`0xFB6E…AFE3`](https://creditcoin-testnet.blockscout.com/address/0xFB6E577ED8B472AC4aC99fA0Dbc0e3BF904BAFE3) | [`0x5061…4d5f`](https://creditcoin-testnet.blockscout.com/tx/0x5061c4d921f628d77604482f525f836e675847b50ac7cfdcb2f23e7025394d5f) |
+| `RetryCreditUniversalRouterPredicateV2` | [`0x6AF7…c86`](https://creditcoin-testnet.blockscout.com/address/0x6AF76Af54861f9F6E9F38cfD02A1002dc650bc86) | [`0x0824…092d`](https://creditcoin-testnet.blockscout.com/tx/0x08240d90ee835ade06a89ceb87d6e43571bd195208279076aa93a65202b9092d) |
+| `AttestcoinRetryCreditUniversalRouterVerifierV2` | [`0x97Fa…86fC`](https://creditcoin-testnet.blockscout.com/address/0x97Fa88CfCaeE1a5D4Ae749b9b5698F2147b986fC) | [`0x433e…e16`](https://creditcoin-testnet.blockscout.com/tx/0x433eefd382a20208d184208cee9713f74c1cc82dc7239125203778cd82778e16) |
+| `RetryCreditUniversalRouterPoolV2` | [`0x81b5…8A1`](https://creditcoin-testnet.blockscout.com/address/0x81b5d955F4EbfaE02FF6346cf368A2c4347248A1) | [`0xc43b…a1e7`](https://creditcoin-testnet.blockscout.com/tx/0xc43bec8db3c135edc8aaa05c21f30e18bfd708bda483bcce9a71df71079ba1e7) |
 
-Each address has nonempty deployed bytecode. The verifier is configured with Creditcoin's native query verifier at `0x0000000000000000000000000000000000000FD2`; the pool reads source-chain state through `0x0000000000000000000000000000000000000FD3`.
+The verifier calls Creditcoin's native Attestcoin query verifier at `0x0000000000000000000000000000000000000FD2`. The pool reads the registered Sepolia source identity through native ChainInfo at `0x0000000000000000000000000000000000000FD3`.
 
-All four deployments, including the linked decoder library, are source-verified on Blockscout:
+## Public E3 receipt chain
 
-- [`EvmV1Decoder`](https://creditcoin-testnet.blockscout.com/address/0x8182E6D90F53Fdc261510A949915842a09dFC42a)
-- [`USDCTransferPredicateV1`](https://creditcoin-testnet.blockscout.com/address/0x094Ba0AA23e19E117DdFdB17327cD5626354B380)
-- [`AttestcoinClaimVerifier`](https://creditcoin-testnet.blockscout.com/address/0x0B2b11a186f0CeF058f6A4A1352406477AB7627c)
-- [`RuleDropPool`](https://creditcoin-testnet.blockscout.com/address/0x6f8dE7e1599A0c8D38eB25996cB841a4920ed999)
+The current public replayable lifecycle is:
 
-## Live Campaign 1
+1. Included status-zero Sepolia route: [`0x9cb8…ee07`](https://sepolia.etherscan.io/tx/0x9cb81e134e33f32b702786589510948d097ae98d0ef3ffec4c631a1288a0ee07)
+2. Settled Sepolia retry: [`0x81e9…f9b0`](https://sepolia.etherscan.io/tx/0x81e96116c5b3e050a1b4ac6d1cea611817e7d028636003e7aa6d12f5c412f9b0)
+3. Creditcoin release: [`0xb787…7cdf`](https://creditcoin-testnet.blockscout.com/tx/0xb787581b58bab15bc4e8e78389c6d0d4bb362896d265bdbe2263df7d7eb77cdf)
 
-- Creation transaction: `0x3aa269dae1435c6dd737a139269d87d946d8b496f8bbd81f041c256573eed640`
-- Funded pool: `10 tCTC`
-- Source chain: Ethereum mainnet, Attestcoin chain key `3`
-- Canonical token: Ethereum mainnet USDC
-- Required action: direct successful `transfer(address,uint256)`
-- Recipient: `0x9fEAcC0d3BC179B6022B4aAf96F7a8217F422642`
-- Minimum amount: `1,000 USDC`
-- Source block range: `25,049,872` to `25,049,872`
-- Registration deadline: `1786730502`
-- Withdrawal deadline: `1786903302`
+The first route is a disclosed controlled stale-route test. These receipts prove a fresh public service execution with test assets; they do not prove independent adoption or customer demand.
 
-Historical source transaction:
+## What is enforced
 
-- Ethereum transaction: `0x7e6c853f85d4db4040206d7d49e1327b009894f7f0b8cba7c5c1fab640bd1227`
-- Source block: `25,049,872`
-- Claimant: `0xbad35FA6e368e90fC4faf63507F2D0A2Fdf94BAF`
-- Amount: `1,000 USDC`
-- The transaction predates the RuleDrop campaign.
+Before the fixed credit can be released, the active contracts require one native Attestcoin batch for two ordered Sepolia receipts. The committed signed routes must bind the same funded action, route signer, service executor, beneficiary, official Uniswap router and pool, input amount, and intent. The first receipt must have status zero; the refreshed route must settle through the exact pool and transfer the minimum test-USDC output to the beneficiary. Query, pair, action, and service-credit replay state is consumed onchain.
 
-The campaign is intentionally narrow and exists to prove the complete mainnet-history claim path.
+The public service prepares and simulates candidates, but those checks are fail-fast conveniences. Native verification, the predicate, and pool state remain payout authority.
 
-## Live Campaign 2
+## Archived predecessor
 
-Campaign `2` preserves the same proven historical rule while keeping the public application usable beyond the submission and judging window.
-
-- Creation transaction: [`0xc88b…6cece`](https://creditcoin-testnet.blockscout.com/tx/0xc88ba5145ae76b57b0504097cac1d810bfc13f9ec3b7c195a6f0ec35c156cece)
-- Transaction status: success
-- Sponsor: `0x813C4BF413BeeA09a7f61450Bd9a9Fa321ED25Db`
-- Funded pool: `10 tCTC`
-- Required action: the same direct successful Ethereum mainnet USDC transfer used by campaign `1`
-- Registration deadline: October 15, 2026 at 23:59:59 UTC (`1792108799`)
-- Withdrawal deadline: October 31, 2026 at 23:59:59 UTC (`1793491199`)
-- Initial claimant count: `0`
-
-The application resolves `campaignCount()` and presents the latest campaign, so campaign `1` remains immutable evidence while campaign `2` is the active judge-facing state.
-
-## Live Claim Evidence
-
-- Claim transaction: [`0x6470…de5e`](https://creditcoin-testnet.blockscout.com/tx/0x6470d1850b4444a0627cc997bacc982af8757bb2682bf272422e0100f871de5e)
-- Transaction status: success
-- Creditcoin block: `5,303,947`
-- Gas used: `497,406`
-- Registered claimant: `0xbad35FA6e368e90fC4faf63507F2D0A2Fdf94BAF`
-- Campaign claimant count after execution: `1`
-- Campaign-scoped query ID: `0x27ecd39d78609f3e03454b05300017ab8b390729bf905047af574d1a08f11437`
-- Verified source amount: `1,000 USDC`
-
-The receipt contains two relevant logs in one state transition:
-
-1. The native verifier at `0x0000000000000000000000000000000000000FD2` emitted successful verification for chain key `3`, source block `25,049,872`, transaction index `142`.
-2. `RuleDropPool` emitted `ClaimRegistered` for campaign `1`, the historical sender, the campaign-scoped query ID, source block, and amount.
-
-Post-transaction reads confirmed `registered(1, claimant) == true` and `claimantCount == 1`.
+Older RuleDrop addresses, campaigns, and Ethereum-mainnet `chainKey 3` receipts are archived proof-engine predecessor evidence, not the active RetryCredit product. See [the archived RuleDrop mainnet proof note](./MAINNET_PROOF_GATE_2026-08-13.md) for that historical context.

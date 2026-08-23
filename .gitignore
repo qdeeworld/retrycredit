@@ -5,3 +5,14 @@ dist/
 broadcast/
 .env
 .DS_Store
+
+# Private demo and submission preparation belongs outside the repository
+docs/DEMO_SCRIPT.md
+DEMO_SCRIPT.md
+demo-script.*
+*-demo-script.*
+recording-script.*
+judge-script.*
+docs/*SUBMISSION*.md
+SUBMISSION_CHECKLIST.md
+submission-checklist.*
