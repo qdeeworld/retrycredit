@@ -1,59 +1,119 @@
-# RuleDrop Worker API
+# RetryCredit proof and execution API
 
-The worker packages claimant-supplied Ethereum evidence and simulates the resulting RuleDrop transaction. It is not an eligibility oracle: the Creditcoin contracts remain the only authority that can approve a claim.
+The API operates the bounded public RetryCredit V3 testnet journey. It authenticates the beneficiary, creates and funds an exact service credit, commits two raw signed source routes before broadcast, executes the bounded Sepolia pair, and requests one Creditcoin release after Attestcoin finality.
+
+The visitor's wallet signs only a short-lived ownership message. It does not submit a transaction, deposit an asset, or approve a token.
 
 ## Run locally
 
+Install dependencies and create a local environment file:
+
 ```bash
+npm ci
 cp .env.example .env
-npm run worker
 ```
 
-Environment variables are read from the process. Use the deployment platform's environment configuration or load `.env` before starting the process.
+Populate only local testnet values, then start the API with Node's environment-file support:
 
-`RULEDROP_POOL_VERSION=1` selects the current live contract ABI. Set it to `2` only with a deployed V2 pool address. The worker deliberately does not infer contract versions from failed calls.
+```bash
+node --env-file=.env src/server.mjs
+```
 
-For production, set at least two comma-separated Ethereum mainnet RPC URLs in `ETHEREUM_RPC_URLS`, set `ALLOWED_ORIGIN` to the public application origin, and bind `HOST=0.0.0.0` behind an HTTPS reverse proxy.
+In another terminal, start the Vite application:
+
+```bash
+npm run app:dev
+```
+
+`npm run worker` is also available when the variables are already exported by the shell or deployment platform. Never commit `.env` or a private key.
+
+## Environment
+
+| Variable | Purpose |
+| --- | --- |
+| `HOST` | Bind address. Use `127.0.0.1` locally and the platform-provided public bind address in hosting. |
+| `PORT` | HTTP port. |
+| `ALLOWED_ORIGIN` | Single browser origin returned by CORS, such as `http://localhost:3000`. |
+| `PUBLIC_ORIGIN` | Origin bound into wallet challenge text and signature verification. |
+| `RETRYCREDIT_PUBLIC_ENABLED` | Set to `true` only when the bounded public service is funded and configured. |
+| `RETRYCREDIT_DEMO_PRIVATE_KEY` | Secret testnet service key. Never expose it to the frontend, logs, docs, or repository. |
+| `RETRYCREDIT_POOL_ADDRESS` | Active Creditcoin RetryCredit pool. |
+| `RETRYCREDIT_VERIFIER_ADDRESS` | Active Creditcoin Attestcoin verifier. |
+| `SEPOLIA_RPC_URL` | Ethereum Sepolia execution RPC. |
+| `CREDITCOIN_RPC` | Creditcoin Testnet RPC. |
+| `ATTESTCOIN_PROOF_BUILDER` | Creditcoin Testnet Attestcoin proof-builder URL. |
+
+`RULEDROP_POOL_ADDRESS`, `RULEDROP_POOL_VERSION`, and `ETHEREUM_RPC_URLS` support archived RuleDrop compatibility endpoints that remain in the process; they are not requirements of the V3 RetryCredit journey. The frontend build uses `VITE_RETRYCREDIT_API_ORIGIN` to select the public API origin.
+
+## HTTP behavior
+
+- JSON bodies are limited to 16 KB.
+- Errors use `{ "error": { "code", "message", "requestId" } }`.
+- Every response includes `x-request-id` for operational correlation.
+- Browser CORS emits the one configured `ALLOWED_ORIGIN`; CORS is not authentication and does not block non-browser clients.
+- Creation, execution, and release operations are replay-safe against their durable onchain state. A retry returns or reconstructs the existing lifecycle instead of creating a second release.
 
 ## Routes
 
 ### `GET /health`
 
-Returns service and destination-network identity.
+Returns process identity, Creditcoin network `102031`, and whether the public demo service was configured at process start. This is a process-health check, not a live reserve or allocation measurement.
 
-### `GET /api/campaigns/:campaignId`
+### `GET /api/retry-credit/config`
 
-Returns the current onchain campaign state and derived registration/withdrawal availability.
+Returns whether the public service is configured, source and settlement chain identities, fixed pilot amounts, the sponsorship cap, and the active pool address. The frontend uses a bounded retry sequence for a sleeping service.
 
-Add `?claimant=0x...` to include that wallet's registration and withdrawal state.
+### `POST /api/retry-credit/challenge`
 
-### `GET /api/campaigns/latest`
+Request:
 
-Reads `campaignCount()` and returns the newest campaign. The public application uses this route so publishing a replacement campaign does not require a frontend rebuild.
+```json
+{ "beneficiary": "0x..." }
+```
 
-### `POST /api/campaigns/:campaignId/prepare-claim`
+Returns `beneficiary`, `timeBucket`, human-readable `message`, and `expiresAt`. The message binds the configured public origin, beneficiary, five-minute time bucket, and bounded testnet scope. It is a time-bucketed ownership challenge, not an onchain transaction or token approval.
+
+### `POST /api/retry-credit/prepare`
 
 Request:
 
 ```json
 {
-  "transactionHash": "0x...",
-  "claimant": "0x..."
+  "beneficiary": "0x...",
+  "timeBucket": 0,
+  "signature": "0x..."
 }
 ```
 
-The worker:
+After wallet ownership is verified, the service authenticates its configured infrastructure, pre-funds the fixed Creditcoin service credit, activates it, signs both exact Universal Router routes from its testnet service role, and commits the raw source transactions on Creditcoin before either route is broadcast. Repeating preparation for the same beneficiary resumes the existing active or released lifecycle.
 
-1. Reads the immutable campaign rule from Creditcoin.
-2. Reads the versioned claim template and, for V2 interaction claims, its exact target, selector, and event requirements.
-3. Looks up the Ethereum transaction through configured fallback RPCs.
-4. Rejects obvious sender, target, function, status, and block-range mismatches.
-5. Builds and caches the Attestcoin proof with bounded retries.
-6. Simulates the template-specific registration function from the exact claimant address.
-7. Returns zero-value transaction calldata only after the simulation passes.
+### `GET /api/retry-credit/:serviceCreditNumber/status`
 
-Stable failures use `{ error: { code, message, requestId } }`. A proof-builder or RPC outage returns `503`; deterministic campaign or eligibility failures use `4xx` responses.
+Returns durable pool state (`draft`, `active`, `released`, or `refunded`), the beneficiary and source window, committed/source transaction evidence when available, and exact release evidence once emitted.
+
+### `POST /api/retry-credit/:serviceCreditNumber/execute`
+
+Broadcasts the already committed stale and refreshed Sepolia routes. Execution enforces the bounded source window, expected first-route failure, ordering, maximum block gap, and successful retry. Repeating the request returns the existing source hashes and any release already won by a concurrent request.
+
+The service sends both source transactions from its own funded testnet role; the beneficiary receives the exact test-USDC output.
+
+### `POST /api/retry-credit/:serviceCreditNumber/release`
+
+Request:
+
+```json
+{
+  "failedTransactionHash": "0x...",
+  "successfulTransactionHash": "0x..."
+}
+```
+
+The hashes are checked against the committed source transactions. When omitted, the service uses the committed hashes. It builds one Attestcoin batch for the ordered receipts, performs the exact pool `staticCall`, and only then submits through the testnet relayer role.
+
+HTTP `425` means the source window or transactions are not ready, or Attestcoin has not finalized both receipts. Retry this route with bounded backoff; do not treat unrelated `4xx` responses as retryable. If another request wins the release race, the API returns the existing release. Replay never emits a second credit.
 
 ## Trust boundary
 
-Worker checks are fail-fast conveniences, not authority. A compromised worker cannot register an ineligible wallet because `RuleDropPool`, `AttestcoinClaimVerifier`, and the selected versioned predicate repeat the complete proof and semantic validation onchain.
+API validation, RPC checks, proof construction, and simulations fail fast and improve operator feedback; they are not payout authority. The Creditcoin pool stores the funded terms and committed source hashes. The native Attestcoin verifier proves the two ordered Sepolia receipts, the predicate enforces the exact signed-route and Uniswap settlement semantics, and the pool consumes query, pair, action, and service-credit replay identifiers before releasing funds.
+
+The service process holds a secret testnet root key and derives distinct sponsor/source, route-signer, and relayer role addresses. Those role boundaries are explicit, but they are not independent secret stores. Never expose the root key.
