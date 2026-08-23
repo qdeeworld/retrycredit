@@ -3,7 +3,7 @@
 This page records the active RetryCredit public testnet release deployed on August 22, 2026. “V3” is the release marker exposed by `RetryCreditUniversalRouterPoolV2.PUBLIC_PILOT_VERSION`; the deployed Solidity classes retain their `V2` names.
 
 - Public app: <https://retrycredit.dolepee.com>
-- Proof and execution API: <https://retrycredit.onrender.com>
+- Proof and execution API: <https://retrycredit-api.onrender.com>
 - Settlement network: Creditcoin Testnet (`102031`)
 - Source network: Ethereum Sepolia (`11155111`), Attestcoin `chainKey 1`
 - Creditcoin RPC: <https://rpc.cc3-testnet.creditcoin.network>
