@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { formatEther, getAddress, hexlify, toUtf8Bytes } from "ethers";
-import { ArrowRight, Check, ExternalLink, LoaderCircle, RefreshCw, ShieldCheck, Wallet, X, Zap } from "lucide-react";
+import { ArrowRight, Check, CircleDollarSign, ExternalLink, LoaderCircle, LockKeyhole, RefreshCw, Route, ShieldCheck, Wallet, X, Zap } from "lucide-react";
 import { releaseWhenReady, requestJson, TemporaryUnavailableError, wakeConfig } from "./api.mjs";
 import "./styles.css";
 
@@ -118,48 +118,57 @@ function App() {
   }
 
   return <div className="app-shell">
+    <a className="skip-link" href="#start">Skip to recovery</a>
     <header className="topbar">
-      <a className="brand" href="#top" aria-label="RetryCredit home"><span className="brand-mark">R</span><span>RetryCredit</span></a>
-      <nav aria-label="Primary navigation"><a href="#how-it-works">How it works</a><a href="#activity">Activity</a><a href="#safety">Safety</a></nav>
+      <a className="brand" href="#top" aria-label="RetryCredit home"><span className="brand-mark" aria-hidden="true">RC</span><span>RetryCredit</span><small>TESTNET</small></a>
+      <nav aria-label="Primary navigation"><a href="#how-it-works">Recovery route</a><a href="#activity">Activity</a><a href="#safety">Limits</a></nav>
       <button className="wallet-button" onClick={() => connect().catch((error) => setNotice({ tone: "error", text: cleanError(error) }))}><Wallet size={16} aria-hidden="true" /> <span>{account ? short(account) : "Connect wallet"}</span></button>
     </header>
     {notice && <Notice {...notice} onClose={() => setNotice(null)} />}
     <main id="top">
       <section className="hero">
-        <div className="hero-copy"><div className="eyebrow"><span className="live-dot" /> STALE-SWAP RECOVERY · TESTNET</div><h1>Finish the swap.<br /><span>The retry earns the credit.</span></h1><p>RetryCredit completes a stale Uniswap swap to your wallet, then releases a fixed service credit after the refreshed route settles. Connect once; the testnet input and gas are sponsored.</p><div className="hero-actions"><a className="hero-action" href="#start"><Zap aria-hidden="true" /> Start a recovery</a><a className="hero-activity-link" href="#activity">See recent activity</a></div><div className="hero-tags"><span>Official Uniswap route</span><span>Fixed recovery credit</span><span>One wallet · no deposit</span></div></div>
-        <div className="credit-card"><span>Sponsored recovery credit</span><strong>{config?.creditAmount ? formatEther(config.creditAmount) : "0.01"} <small>tCTC</small></strong><div><ShieldCheck size={16} aria-hidden="true" /> Pre-funded before your routes execute</div></div>
-      </section>
-      <section className="journey" id="how-it-works">
-        <div className="journey-map">
-          <JourneyStep number="01" title="Route goes stale" copy="Included · no swap" state={phaseIndex(phase) >= 1 ? "done" : "current"} /><ArrowRight aria-hidden="true" />
-          <JourneyStep number="02" title="Quote refreshes" copy="Swap completes" state={phaseIndex(phase) >= 2 ? "done" : "future"} /><ArrowRight aria-hidden="true" />
-          <JourneyStep number="03" title="Receipts confirm" copy="Both attempts checked" state={phaseIndex(phase) >= 3 ? "done" : phaseIndex(phase) === 2 ? "current" : "future"} /><ArrowRight aria-hidden="true" />
-          <JourneyStep number="04" title="Credit arrives" copy="Released once" state={phase === "released" ? "done" : "future"} />
+        <div className="hero-copy">
+          <div className="eyebrow"><span className="live-dot" /> SPONSORED STALE-SWAP RECOVERY</div>
+          <h1>The retry pays<br />for the <em>failure.</em></h1>
+          <p className="hero-lead"><strong>Finish the swap without funding the retry.</strong> RetryCredit includes the stale route, refreshes it through Uniswap, and releases one fixed service credit after settlement.</p>
+          <div className="hero-actions"><a className="hero-action" href="#start"><Zap aria-hidden="true" /> Start a recovery <ArrowRight aria-hidden="true" /></a><a className="hero-activity-link" href="#how-it-works">See the route</a></div>
+          <dl className="hero-facts"><div><dt>Wallet cost</dt><dd>No deposit</dd></div><div><dt>Networks</dt><dd>Testnets</dd></div><div><dt>Recovery credit</dt><dd>{config?.creditAmount ? formatEther(config.creditAmount) : "0.01"} tCTC</dd></div></dl>
         </div>
-        <div className="action-grid">
-          <div className="action-copy"><div className="eyebrow">YOUR RECOVERY</div><h2>{phaseTitle(phase)}</h2><p>{phaseCopy(phase)}</p><ul><li><Check aria-hidden="true" /> Testnets only; no mainnet asset or token approval</li><li><Check aria-hidden="true" /> Gas, swap input, and one fixed credit are sponsored</li><li><Check aria-hidden="true" /> One wallet signature names the credit recipient</li></ul></div>
-          <div className="action-panel" id="start">
+        <div className="action-panel" id="start">
+            <div className="console-topline"><div><span className="eyebrow">YOUR RECOVERY</span><span className="console-network">Ethereum Sepolia → Creditcoin</span></div><span className={`availability-chip ${availability}`}>{availabilityShortLabel(availability)}</span></div>
+            <h2>{phaseTitle(phase)}</h2>
             {wrongWallet && <div className="inline-warning" id="wrong-wallet-warning" role="alert">This saved run belongs to {short(session.beneficiary)}.</div>}
-            <RunStatus session={session} account={account} availability={availability} />
             <ServiceAvailability availability={availability} hasSession={Boolean(session)} />
-            <details className="verification-details"><summary>How this recovery is verified</summary><p>The first included route must fail without settlement. The refreshed route must complete through the bound Uniswap pool. RetryCredit then checks both receipts together before releasing one credit.</p></details>
             <button className="primary" onClick={act} disabled={busy || wrongWallet} aria-busy={busy} aria-describedby={wrongWallet ? "wrong-wallet-warning service-availability" : "service-availability"}>{busy ? <><LoaderCircle className="spin" aria-hidden="true" /> {busyLabel(phase, availability)}</> : <>{phaseIcon(phase)} {phaseButton(phase, account, availability)}</>}</button>
-            <small className="transaction-note">The service sends two bounded Sepolia transactions from its own test wallet. The first is expected to fail after inclusion; your wallet never deposits funds or approves a token.</small>
+            <p className="phase-copy">{phaseCopy(phase)}</p>
+            <small className="transaction-note"><LockKeyhole aria-hidden="true" /> Your wallet signs the recipient only. The service sends the bounded testnet transactions.</small>
+            <RunStatus session={session} account={account} availability={availability} />
             {session && <button className="secondary" onClick={startAnother} disabled={busy}><RefreshCw aria-hidden="true" /> {phase === "released" ? "Clear local receipt" : "Restart saved run"}</button>}
-          </div>
         </div>
       </section>
-      <section className="activity" id="activity"><div className="section-heading"><div className="eyebrow">RECENT RECOVERY</div><h2>From stale route to credit in 552 seconds.</h2><p>Every completed recovery leaves a simple activity trail you can open on the relevant network.</p></div><div className="receipt-grid"><Receipt title="Route did not settle" chain="Ethereum Sepolia" hash={HISTORICAL.failed} href={`${SEPOLIA_EXPLORER}/tx/${HISTORICAL.failed}`} /><Receipt title="Refreshed swap completed" chain="Sepolia · 0.218500 test USDC" hash={HISTORICAL.successful} href={`${SEPOLIA_EXPLORER}/tx/${HISTORICAL.successful}`} /><Receipt title="Service credit received" chain="Creditcoin · 0.01 tCTC" hash={HISTORICAL.release} href={`${CREDITCOIN_EXPLORER}/tx/${HISTORICAL.release}`} /></div></section>
-      <section className="boundaries" id="safety"><div><div className="eyebrow">SAFETY AND LIMITS</div><h2>A bounded testnet recovery—not custody or insurance.</h2></div><div className="boundary-grid"><p><Check aria-hidden="true" /> The same wallet and funded action bind both routes.</p><p><Check aria-hidden="true" /> No credit is released until the refreshed swap settles.</p><p><Check aria-hidden="true" /> The exact Uniswap swap and test-USDC transfer must match.</p><p><Check aria-hidden="true" /> The same recovery cannot release a second credit.</p></div><div className="truth-note"><strong>Current pilot.</strong> RetryCredit verifies receipt state and settlement, not the human-readable reason a route failed. It uses Sepolia, Creditcoin Testnet, test USDC, and tCTC—not production assets or insurance.</div></section>
+      <section className="journey" id="how-it-works" aria-labelledby="route-title">
+        <div className="section-intro"><div><div className="eyebrow">ONE BOUNDED ROUTE</div><h2 id="route-title">Failure is included. Settlement is earned.</h2></div><p>The stale attempt and refreshed swap are bound to the same funded action. Only a matching settlement can unlock the credit.</p></div>
+        <div className="journey-map">
+          <JourneyStep number="01" icon={<X aria-hidden="true" />} kicker="EXPECTED FAILURE" title="Stale route is included" copy="No swap output; no credit yet" state={phase === "settled" || phase === "released" ? "done failure" : "current failure"} />
+          <ArrowRight aria-hidden="true" />
+          <JourneyStep number="02" icon={<Route aria-hidden="true" />} kicker="REFRESHED ROUTE" title="The swap settles" copy="Bound Uniswap output reaches you" state={phase === "settled" || phase === "released" ? "done" : "future"} />
+          <ArrowRight aria-hidden="true" />
+          <JourneyStep number="03" icon={<CircleDollarSign aria-hidden="true" />} kicker="FIXED RELEASE" title="The credit arrives" copy="Released once on Creditcoin" state={phase === "released" ? "done" : phase === "settled" ? "current" : "future"} />
+        </div>
+        <div className="route-terms"><span><Check aria-hidden="true" /> No mainnet asset or token approval</span><span><Check aria-hidden="true" /> Gas and testnet input sponsored</span><span><Check aria-hidden="true" /> Replay blocked onchain</span></div>
+      </section>
+      <section className="activity" id="activity"><div className="section-heading"><div className="eyebrow">COMPLETED RECOVERY</div><h2>From stale route to credit in 552 seconds.</h2><p>This completed run shows the exact progression from included failure to settlement and fixed credit.</p></div><div className="receipt-grid"><Receipt index="01" tone="failure" title="Route did not settle" chain="Ethereum Sepolia" detail="Included · no swap" hash={HISTORICAL.failed} href={`${SEPOLIA_EXPLORER}/tx/${HISTORICAL.failed}`} /><Receipt index="02" tone="settled" title="Refreshed swap completed" chain="Ethereum Sepolia" detail="0.218500 test USDC" hash={HISTORICAL.successful} href={`${SEPOLIA_EXPLORER}/tx/${HISTORICAL.successful}`} /><Receipt index="03" tone="credit" title="Service credit received" chain="Creditcoin · 0.01 tCTC" detail="Released once" hash={HISTORICAL.release} href={`${CREDITCOIN_EXPLORER}/tx/${HISTORICAL.release}`} /></div></section>
+      <section className="boundaries" id="safety"><div className="boundary-heading"><div className="eyebrow">THE HARD BOUNDARY</div><h2>A recovery mechanism.<br />Not custody or insurance.</h2><p>RetryCredit verifies transaction receipts and settlement state. It does not determine the human-readable reason a route failed.</p></div><div className="boundary-content"><div className="boundary-grid"><p><ShieldCheck aria-hidden="true" /><span><strong>Same funded action</strong>Both attempts are committed before execution.</span></p><p><ShieldCheck aria-hidden="true" /><span><strong>Settlement first</strong>No credit releases until the refreshed swap settles.</span></p><p><ShieldCheck aria-hidden="true" /><span><strong>Exact output match</strong>The Uniswap swap and test-USDC transfer must match.</span></p><p><ShieldCheck aria-hidden="true" /><span><strong>One release only</strong>The same recovery cannot pay a second credit.</span></p></div><details className="verification-details"><summary>How this recovery is verified</summary><p>The first included route must fail without settlement. The refreshed route must complete through the bound Uniswap pool. RetryCredit checks both receipts together before releasing one credit.</p></details><div className="truth-note"><strong>Current pilot</strong><span>Sepolia, Creditcoin Testnet, test USDC, and tCTC only. No production assets or insurance.</span></div></div></section>
     </main>
     <footer><span>RetryCredit public testnet pilot</span><span>DeFi · Ethereum Sepolia → Creditcoin</span><a href="https://github.com/dolepee/retrycredit" target="_blank" rel="noreferrer">Source <ExternalLink size={13} aria-hidden="true" /></a></footer>
   </div>;
 }
 
-function JourneyStep({ number, title, copy, state }) { return <div className={`journey-step ${state}`}><span>{state === "done" ? <Check aria-hidden="true" /> : number}</span><div><strong>{title}</strong><small>{copy}</small></div></div>; }
+function JourneyStep({ number, icon, kicker, title, copy, state }) { return <div className={`journey-step ${state}`}><div className="step-index"><span>{number}</span>{state.includes("done") ? <Check aria-hidden="true" /> : icon}</div><div><small>{kicker}</small><strong>{title}</strong><p>{copy}</p></div></div>; }
 function RunStatus({ session, account, availability }) {
   if (!session) return <div className="run-status"><span>Wallet</span><strong>{account ? short(account) : "Not connected"}</strong><span>Allocation</span><strong>{availabilityLabel(availability)}</strong></div>;
-  return <div className="run-status"><span>Service credit</span><strong>#{session.serviceCreditNumber}</strong><span>Recipient</span><strong>{short(session.beneficiary)}</strong><span>Source window</span><strong>{session.sourceWindow.startBlock.toLocaleString()}–{session.sourceWindow.endBlock.toLocaleString()}</strong>{session.failedTransactionHash && <><span>Failed route</span><ExplorerHash hash={session.failedTransactionHash} base={SEPOLIA_EXPLORER} /></>}{session.successfulTransactionHash && <><span>Settled route</span><ExplorerHash hash={session.successfulTransactionHash} base={SEPOLIA_EXPLORER} /></>}{session.release?.transactionHash && <><span>Credit release</span><ExplorerHash hash={session.release.transactionHash} base={CREDITCOIN_EXPLORER} /></>}</div>;
+  const hasSourceWindow = session.sourceWindow?.startBlock != null && session.sourceWindow?.endBlock != null;
+  return <div className="run-status"><span>Service credit</span><strong>#{session.serviceCreditNumber}</strong><span>Recipient</span><strong>{short(session.beneficiary)}</strong>{hasSourceWindow && <><span>Source window</span><strong>{session.sourceWindow.startBlock.toLocaleString()}–{session.sourceWindow.endBlock.toLocaleString()}</strong></>}{session.failedTransactionHash && <><span>Failed route</span><ExplorerHash hash={session.failedTransactionHash} base={SEPOLIA_EXPLORER} /></>}{session.successfulTransactionHash && <><span>Settled route</span><ExplorerHash hash={session.successfulTransactionHash} base={SEPOLIA_EXPLORER} /></>}{session.release?.transactionHash && <><span>Credit release</span><ExplorerHash hash={session.release.transactionHash} base={CREDITCOIN_EXPLORER} /></>}</div>;
 }
 function ServiceAvailability({ availability, hasSession }) {
   const copy = {
@@ -171,14 +180,14 @@ function ServiceAvailability({ availability, hasSession }) {
   }[availability];
   return <p className={`service-availability ${availability}`} id="service-availability" role="status" aria-live="polite" aria-atomic="true">{copy}</p>;
 }
-function Receipt({ title, chain, hash, href }) { return <a className="receipt" href={href} target="_blank" rel="noreferrer"><div><span>{title}</span><strong>{chain}</strong><code>{short(hash, 10)}</code></div><ExternalLink aria-hidden="true" /></a>; }
+function Receipt({ index, tone, title, chain, detail, hash, href }) { return <a className={`receipt ${tone}`} href={href} target="_blank" rel="noreferrer" aria-label={`${title} on ${chain}; open transaction`}><span className="receipt-index">{index}</span><div><span>{title}</span><strong>{detail}</strong><small>{chain}</small><code title={hash}>{short(hash, 10)}</code></div><ExternalLink aria-hidden="true" /></a>; }
 function ExplorerHash({ hash, base }) { return <a href={`${base}/tx/${hash}`} target="_blank" rel="noreferrer">{short(hash, 8)} <ExternalLink aria-hidden="true" /></a>; }
 function Notice({ tone, text, onClose }) { return <div className={`notice ${tone}`} role={tone === "error" ? "alert" : "status"}><span>{tone === "error" ? <X aria-hidden="true" /> : <Check aria-hidden="true" />}{text}</span><button onClick={onClose} aria-label="Dismiss message"><X aria-hidden="true" /></button></div>; }
 function currentPhase(session) { if (!session) return "start"; if (session.release) return "released"; if (session.successfulTransactionHash) return "settled"; return "prepared"; }
-function phaseIndex(phase) { return ({ start: 0, prepared: 0, settled: 2, released: 4 })[phase] ?? 0; }
 function phaseTitle(phase) { return ({ start: "Recover a stale testnet swap.", prepared: "Run the sponsored retry.", settled: "Your swap settled. Finish the credit.", released: "Your service credit arrived." })[phase]; }
 function phaseCopy(phase) { return ({ start: "Connect your wallet and authorize one bounded testnet recovery. RetryCredit pre-funds the credit and commits both sponsored routes before either is sent.", prepared: "RetryCredit will include the controlled stale route, refresh the quote, and send the settled test-USDC output to your wallet. No transaction is sent from your wallet.", settled: "Your test-USDC arrived on Sepolia. RetryCredit is checking both receipts together and releasing the fixed credit to the same address on Creditcoin Testnet.", released: "The swap output and fixed credit reached your wallet. This recovery cannot be paid twice." })[phase]; }
 function availabilityLabel(availability) { return ({ idle: "Checked when you start", waking: "Waking service", ready: "Available while funded", paused: "Replenishing", "temporarily-unavailable": "Temporarily unavailable" })[availability]; }
+function availabilityShortLabel(availability) { return ({ idle: "Checked on start", waking: "Waking", ready: "Service ready", paused: "Replenishing", "temporarily-unavailable": "Unavailable" })[availability]; }
 function phaseButton(phase, account, availability) { if (phase === "start" && !account) return "Connect wallet to start"; if (availability === "temporarily-unavailable") return phase === "start" ? "Wake service and retry" : "Retry saved recovery"; if (availability === "paused") return phase === "start" ? "Check allocation again" : "Check service again"; if (phase === "start" && availability === "idle") return "Check availability and start"; return ({ start: "Start protected retry", prepared: "Run sponsored retry", settled: "Finish credit release", released: "Credit received" })[phase]; }
 function busyLabel(phase, availability) { if (availability === "waking") return "Waking proof service…"; return ({ start: "Preparing your recovery…", prepared: "Running both routes…", settled: "Finalizing your credit…", released: "Checking saved receipt…" })[phase]; }
 function phaseIcon(phase) { return phase === "released" ? <Check aria-hidden="true" /> : phase === "settled" ? <ShieldCheck aria-hidden="true" /> : phase === "start" ? <Zap aria-hidden="true" /> : <ArrowRight aria-hidden="true" />; }
