@@ -1,0 +1,213 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-25T04:28:27Z",
+  "title": "Design System: RetryCredit Interlocking Desk",
+  "extensions": {
+    "colorMeta": {
+      "sheet": {
+        "role": "neutral",
+        "displayName": "Warm Signal Sheet",
+        "tonalRamp": ["oklch(15% 0.02 90)", "oklch(26% 0.02 90)", "oklch(38% 0.02 90)", "oklch(50% 0.02 90)", "oklch(62% 0.02 90)", "oklch(74% 0.02 90)", "oklch(86% 0.02 90)", "oklch(95% 0.02 90)"]
+      },
+      "sheet-2": {
+        "role": "neutral",
+        "displayName": "Ruled Sheet Shift",
+        "tonalRamp": ["oklch(15% 0.022 87)", "oklch(26% 0.022 87)", "oklch(38% 0.022 87)", "oklch(50% 0.022 87)", "oklch(62% 0.022 87)", "oklch(74% 0.022 87)", "oklch(86% 0.022 87)", "oklch(95% 0.022 87)"]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Instrument Ink",
+        "tonalRamp": ["oklch(15% 0.015 110)", "oklch(26% 0.015 110)", "oklch(38% 0.015 110)", "oklch(50% 0.015 110)", "oklch(62% 0.015 110)", "oklch(74% 0.015 110)", "oklch(86% 0.015 110)", "oklch(95% 0.015 110)"]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Register Gray",
+        "tonalRamp": ["oklch(15% 0.012 105)", "oklch(26% 0.012 105)", "oklch(38% 0.012 105)", "oklch(50% 0.012 105)", "oklch(62% 0.012 105)", "oklch(74% 0.012 105)", "oklch(86% 0.012 105)", "oklch(95% 0.012 105)"]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Primary Rule",
+        "tonalRamp": ["oklch(15% 0.01 100)", "oklch(26% 0.01 100)", "oklch(38% 0.01 100)", "oklch(50% 0.01 100)", "oklch(62% 0.01 100)", "oklch(74% 0.01 100)", "oklch(86% 0.01 100)", "oklch(95% 0.01 100)"]
+      },
+      "rule-soft": {
+        "role": "neutral",
+        "displayName": "Soft Rule",
+        "tonalRamp": ["oklch(15% 0.012 90)", "oklch(26% 0.012 90)", "oklch(38% 0.012 90)", "oklch(50% 0.012 90)", "oklch(62% 0.012 90)", "oklch(74% 0.012 90)", "oklch(86% 0.012 90)", "oklch(95% 0.012 90)"]
+      },
+      "rail": {
+        "role": "neutral",
+        "displayName": "Application Rail",
+        "tonalRamp": ["oklch(15% 0.016 145)", "oklch(26% 0.016 145)", "oklch(38% 0.016 145)", "oklch(50% 0.016 145)", "oklch(62% 0.016 145)", "oklch(74% 0.016 145)", "oklch(86% 0.016 145)", "oklch(95% 0.016 145)"]
+      },
+      "primary": {
+        "role": "primary",
+        "displayName": "Route Blue",
+        "tonalRamp": ["oklch(15% 0.18 259)", "oklch(26% 0.18 259)", "oklch(38% 0.18 259)", "oklch(50% 0.18 259)", "oklch(62% 0.18 259)", "oklch(74% 0.15 259)", "oklch(86% 0.09 259)", "oklch(95% 0.035 259)"]
+      },
+      "red": {
+        "role": "tertiary",
+        "displayName": "Blocked Signal Red",
+        "tonalRamp": ["oklch(15% 0.17 38)", "oklch(26% 0.17 38)", "oklch(38% 0.17 38)", "oklch(50% 0.17 38)", "oklch(62% 0.17 38)", "oklch(74% 0.14 38)", "oklch(86% 0.08 38)", "oklch(95% 0.03 38)"]
+      },
+      "green": {
+        "role": "secondary",
+        "displayName": "Cleared Signal Green",
+        "tonalRamp": ["oklch(15% 0.12 155)", "oklch(26% 0.12 155)", "oklch(38% 0.12 155)", "oklch(50% 0.12 155)", "oklch(62% 0.12 155)", "oklch(74% 0.1 155)", "oklch(86% 0.06 155)", "oklch(95% 0.025 155)"]
+      },
+      "amber": {
+        "role": "tertiary",
+        "displayName": "Waiting Signal Amber",
+        "tonalRamp": ["oklch(15% 0.13 78)", "oklch(26% 0.13 78)", "oklch(38% 0.13 78)", "oklch(50% 0.13 78)", "oklch(62% 0.13 78)", "oklch(74% 0.11 78)", "oklch(86% 0.065 78)", "oklch(95% 0.025 78)"]
+      },
+      "focus": {
+        "role": "primary",
+        "displayName": "Focus Blue",
+        "tonalRamp": ["oklch(15% 0.19 259)", "oklch(26% 0.19 259)", "oklch(38% 0.19 259)", "oklch(50% 0.19 259)", "oklch(62% 0.19 259)", "oklch(74% 0.15 259)", "oklch(86% 0.09 259)", "oklch(95% 0.035 259)"]
+      }
+    },
+    "typographyMeta": {
+      "interface": {
+        "displayName": "Interface",
+        "purpose": "Navigation, instructions, actions, and compact page titles."
+      },
+      "technical": {
+        "displayName": "Technical Register",
+        "purpose": "Route identifiers, amounts, timestamps, stage numbers, network facts, and status stamps."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "reduced-motion-override",
+        "value": "animation-duration: 0.01ms; animation-iteration-count: 1; transition-duration: 0.01ms",
+        "purpose": "Removes non-essential animation when the user requests reduced motion."
+      },
+      {
+        "name": "pressed-step",
+        "value": "translateY(1px)",
+        "purpose": "Provides a physical press cue on the primary clearance action."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact-desktop",
+        "value": "1150px"
+      },
+      {
+        "name": "mobile",
+        "value": "760px"
+      },
+      {
+        "name": "narrow-mobile",
+        "value": "390px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Clearance Action",
+      "kind": "button",
+      "refersTo": "primary-action",
+      "description": "The integrated amber action that advances the current recovery clearance.",
+      "html": "<button class=\"ds-primary-action\"><svg aria-hidden=\"true\" viewBox=\"0 0 24 24\" width=\"22\" height=\"22\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M5 12h14M13 6l6 6-6 6\"/></svg><span>Run sponsored retry</span><svg aria-hidden=\"true\" viewBox=\"0 0 24 24\" width=\"22\" height=\"22\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M5 12h14M13 6l6 6-6 6\"/></svg></button>",
+      "css": ".ds-primary-action { width: 100%; min-height: 84px; display: grid; grid-template-columns: 24px minmax(0,1fr) 24px; align-items: center; gap: 10px; padding: 15px 18px; border: 1px solid var(--ink); border-radius: 0; color: var(--ink); background: #f6c84f; font-family: 'Familjen Grotesk', sans-serif; font-size: clamp(17px,1.6vw,23px); font-weight: 700; text-align: start; cursor: pointer; } .ds-primary-action:hover { background: #ffd869; } .ds-primary-action:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; } .ds-primary-action:active { background: #e9b631; transform: translateY(1px); }"
+    },
+    {
+      "name": "Wallet Button",
+      "kind": "button",
+      "refersTo": "wallet-button",
+      "description": "The independent wallet control in the persistent status strip.",
+      "html": "<button class=\"ds-wallet-button\"><svg aria-hidden=\"true\" viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M3 6h16v12H3zM16 10h5v4h-5z\"/></svg><span>Connect wallet</span></button>",
+      "css": ".ds-wallet-button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; padding-inline: 16px; border: 1px solid var(--ink); border-radius: 0; color: var(--ink); background: transparent; font-family: 'Familjen Grotesk', sans-serif; font-weight: 650; cursor: pointer; } .ds-wallet-button:hover { color: #fff; background: var(--ink); } .ds-wallet-button:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; } .ds-wallet-button:active { transform: translateY(1px); }"
+    },
+    {
+      "name": "Application Navigation",
+      "kind": "nav",
+      "description": "A dark ruled route selector with a blue active-position marker.",
+      "html": "<nav class=\"ds-app-nav\" aria-label=\"Primary navigation\"><a class=\"ds-app-nav-link ds-active\" href=\"#\"><span class=\"ds-nav-mark\">01</span><span>Recovery</span></a><a class=\"ds-app-nav-link\" href=\"#\"><span class=\"ds-nav-mark\">02</span><span>Activity</span></a><a class=\"ds-app-nav-link\" href=\"#\"><span class=\"ds-nav-mark\">03</span><span>Protocol</span></a></nav>",
+      "css": ".ds-app-nav { width: 140px; display: grid; color: #f3f0e7; background: var(--rail); border: 1px solid #070907; font-family: 'Familjen Grotesk', sans-serif; } .ds-app-nav-link { position: relative; min-height: 82px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 12px 8px; color: #c4c7c0; text-decoration: none; font-size: 14px; } .ds-app-nav-link + .ds-app-nav-link { border-top: 1px solid #2f332f; } .ds-app-nav-link:hover { color: #fff; background: #181d19; } .ds-app-nav-link:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; } .ds-app-nav-link.ds-active { color: #66a0ff; background: #171d1b; box-shadow: inset 3px 0 #2e78ed; } .ds-nav-mark { font-family: 'IBM Plex Mono', monospace; font-size: 10px; }"
+    },
+    {
+      "name": "Service State",
+      "kind": "chip",
+      "refersTo": "service-state",
+      "description": "A square signal and explicit label for proof-service availability.",
+      "html": "<span class=\"ds-service-state ds-ready\"><i aria-hidden=\"true\"></i>Service ready</span>",
+      "css": ".ds-service-state { min-height: 32px; display: inline-flex; align-items: center; gap: 8px; padding-inline: 10px; border: 1px solid var(--rule); color: var(--ink); background: transparent; font: 500 10px 'IBM Plex Mono', monospace; text-transform: uppercase; white-space: nowrap; } .ds-service-state i { width: 8px; height: 8px; background: var(--rule); } .ds-service-state.ds-ready i { background: var(--green); } .ds-service-state:hover { border-color: var(--ink); } .ds-service-state:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }"
+    },
+    {
+      "name": "Interlocking Route Position",
+      "kind": "custom",
+      "description": "A numbered route stage with authored branch geometry, a state stamp, and ruled result fields.",
+      "html": "<article class=\"ds-route-position ds-blocked\"><header><span>3</span><h3>Stale included</h3><strong>INCLUDED</strong></header><div class=\"ds-track\"><svg aria-hidden=\"true\" viewBox=\"0 0 240 100\" preserveAspectRatio=\"none\"><path class=\"ds-track-main\" d=\"M0 50 H240\"/><path class=\"ds-track-branch\" d=\"M54 50 L90 18 H150 L186 50\"/><path class=\"ds-track-bypass\" d=\"M55 50 L90 18 H150 L185 50\"/></svg><b>×</b></div><dl><div><dt>State</dt><dd>Included on Sepolia</dd></div><div><dt>Result</dt><dd>No swap output</dd></div></dl></article>",
+      "css": ".ds-route-position { width: 240px; min-height: 360px; padding-block: 28px; color: var(--ink); background: var(--sheet); border: 1px solid var(--rule-soft); font-family: 'Familjen Grotesk', sans-serif; } .ds-route-position header { display: grid; grid-template-columns: 30px minmax(0,1fr); gap: 10px; padding-inline: 14px; } .ds-route-position header > span { width: 28px; height: 28px; display: grid; place-items: center; color: #fff; background: var(--ink); font: 600 13px 'IBM Plex Mono', monospace; } .ds-route-position h3 { margin: 3px 0 0; font-size: 17px; line-height: 1.15; } .ds-route-position strong { grid-column: 2; width: max-content; padding: 2px 5px; border: 1px solid currentColor; color: var(--red); font: 600 9px 'IBM Plex Mono', monospace; } .ds-track { position: relative; height: 108px; display: grid; place-items: center; margin-block: 18px; overflow: hidden; } .ds-track svg { position: absolute; inset: 0; width: 100%; height: 100%; } .ds-track path { fill: none; vector-effect: non-scaling-stroke; } .ds-track-main { stroke: var(--red); stroke-width: 6; } .ds-track-branch { stroke: #686a62; stroke-width: 2; } .ds-track-bypass { stroke: var(--red); stroke-width: 2; stroke-dasharray: 5 5; } .ds-track b { position: relative; width: 38px; height: 38px; display: grid; place-items: center; color: #fff; background: var(--red); font: 600 24px 'IBM Plex Mono', monospace; } .ds-route-position dl { display: grid; gap: 14px; margin: 0; padding-inline: 14px; } .ds-route-position dt { margin-bottom: 5px; color: var(--muted); font: 500 9px 'IBM Plex Mono', monospace; text-transform: uppercase; letter-spacing: .06em; } .ds-route-position dd { margin: 0; font: 500 12px/1.45 'IBM Plex Mono', monospace; } .ds-route-position:hover { border-color: var(--ink); } .ds-route-position:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }"
+    },
+    {
+      "name": "Route Ledger Row",
+      "kind": "custom",
+      "description": "A ruled activity row that leads with a human-readable result and keeps the receipt secondary.",
+      "html": "<a class=\"ds-ledger-row\" href=\"#\"><time>00:31</time><i aria-hidden=\"true\"></i><div><strong>Refreshed swap completed</strong><span>Ethereum Sepolia</span></div><b>0.218500 test USDC</b><code>0x81e961…9b0</code><span aria-hidden=\"true\">↗</span></a>",
+      "css": ".ds-ledger-row { min-height: 112px; display: grid; grid-template-columns: 66px 16px minmax(210px,1fr) minmax(150px,.7fr) minmax(170px,.7fr) 20px; align-items: center; gap: 18px; padding-inline: 12px; color: var(--ink); background: var(--sheet); border-block: 1px solid var(--rule); text-decoration: none; font-family: 'Familjen Grotesk', sans-serif; } .ds-ledger-row:hover { background: var(--sheet-2); } .ds-ledger-row:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; } .ds-ledger-row:active { background: #e1dccd; } .ds-ledger-row time, .ds-ledger-row code { font: 500 11px 'IBM Plex Mono', monospace; } .ds-ledger-row > i { width: 12px; height: 12px; background: var(--green); } .ds-ledger-row > div { min-width: 0; display: grid; gap: 5px; } .ds-ledger-row strong { font-size: 17px; } .ds-ledger-row div span, .ds-ledger-row code { color: var(--muted); } .ds-ledger-row b { font-size: 13px; }"
+    },
+    {
+      "name": "Protocol Limits Register",
+      "kind": "card",
+      "description": "A flat, dark-headed register for current pilot boundaries.",
+      "html": "<section class=\"ds-limits\"><h2>Current pilot</h2><dl><div><dt>Source</dt><dd>Ethereum Sepolia</dd></div><div><dt>Settlement</dt><dd>Creditcoin Testnet</dd></div><div><dt>Visitor funding</dt><dd>No deposit</dd></div></dl></section>",
+      "css": ".ds-limits { width: 340px; border: 1px solid var(--ink); color: var(--ink); background: var(--sheet); } .ds-limits h2 { margin: 0; padding: 14px; border-bottom: 1px solid var(--ink); color: #fff; background: var(--ink); font: 600 10px 'IBM Plex Mono', monospace; text-transform: uppercase; letter-spacing: .06em; } .ds-limits dl { margin: 0; } .ds-limits dl div { display: grid; grid-template-columns: .8fr 1.2fr; gap: 14px; padding: 13px 14px; } .ds-limits dl div + div { border-top: 1px solid var(--rule-soft); } .ds-limits dt { color: var(--muted); font: 500 9px 'IBM Plex Mono', monospace; text-transform: uppercase; letter-spacing: .06em; } .ds-limits dd { margin: 0; text-align: end; font: 500 12px 'IBM Plex Mono', monospace; overflow-wrap: anywhere; } .ds-limits:hover { border-color: var(--blue); } .ds-limits:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Interlocking Route Desk",
+    "overview": "RetryCredit is an Operate product for clearing one blocked DeFi route, not a promotional landing page. Its visual world is a warm signal sheet held together by black rules, technical registers, and authored route geometry. The interface should feel like a dependable interlocking desk: each position has a distinct job, the blocked segment is unmistakable, and the cleared path is legible before a user reads the receipts.\n\nThe application remains one coherent instrument across Recovery, Activity, and Protocol. The live run is the primary work surface, the ledger preserves the relationship among the included failure, exact settlement, and one-time release, and the manual explains the protocol boundary without becoming a judge-facing proof page.",
+    "keyCharacteristics": [
+      "Warm, flat signal-sheet surfaces bounded by near-black rules.",
+      "Persistent application chrome and compact technical status fields.",
+      "Five distinct route positions with switch, branch, bypass, and terminal geometry.",
+      "Square controls and state blocks, with color reinforced by labels and position.",
+      "User action first; transaction receipts remain contextual confirmation."
+    ],
+    "rules": [
+      {
+        "name": "The Signal Is Semantic Rule",
+        "body": "Blue marks the active route, red marks the included blocked route, green marks cleared settlement or release, and amber marks waiting or service conditions. Never use these hues as interchangeable decoration.",
+        "section": "colors"
+      },
+      {
+        "name": "The Redundant State Rule",
+        "body": "Every color-coded state also carries a label, stage position, icon, line treatment, or explicit status text.",
+        "section": "colors"
+      },
+      {
+        "name": "The Instrument Type Rule",
+        "body": "Keep task language in the interface face and machine-verifiable facts in the monospaced face. Do not introduce an editorial display serif, oversized marketing headline, or decorative italic into the application shell.",
+        "section": "typography"
+      },
+      {
+        "name": "The First-Viewport Clearance Rule",
+        "body": "The current state, service condition, wallet control, and next recovery action must remain visible before supporting route detail on narrow screens.",
+        "section": "layout"
+      },
+      {
+        "name": "The Ruled Surface Rule",
+        "body": "Use borders, aligned fields, and tonal sheet changes to establish depth. Do not add shadows, glass, ambient glow, or a floating console.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do open directly on the live recovery task.",
+      "Do preserve Recovery, Activity, and Protocol as separate navigable routes with shared application chrome.",
+      "Do preserve the five-stage order and each stage's distinct switch, branch, bypass, or terminal geometry.",
+      "Do keep queued-state text at full opacity with explicit accessible colors.",
+      "Do keep loading, empty, error, wrong-wallet, saved-session, settled, and released states useful.",
+      "Do provide keyboard navigation, visible focus, reduced-motion support, semantic live status, safe identifier wrapping, high-zoom operation, and minimum touch targets."
+    ],
+    "donts": [
+      "Don't reproduce an oversized landing-page hero or floating dark action card.",
+      "Don't flatten the multi-route application into anchor-linked sections.",
+      "Don't introduce generic metric cards, rounded card stacks, ambient gradients, glass, neon glow, or ornamental crypto imagery.",
+      "Don't create judge navigation, a proof page, an invoice product, or a business-validation surface.",
+      "Don't make receipts more prominent than the user's next action or imply insurance, mainnet readiness, exact gas reimbursement, user deposits, or token approval requirements."
+    ]
+  }
+}

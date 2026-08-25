@@ -16,25 +16,30 @@ const files = await Promise.all([
   readFile(new URL("render.yaml", root), "utf8"),
   readFile(new URL("src/server.mjs", root), "utf8"),
   readFile(new URL("package.json", root), "utf8"),
+  readFile(new URL("web/public/_redirects", root), "utf8"),
 ]);
-const [html, app, styles, api, readme, deployments, workerDoc, envExample, gitignore, render, server, packageJson] = files;
+const [html, app, styles, api, readme, deployments, workerDoc, envExample, gitignore, render, server, packageJson, redirects] = files;
 
 test("public brand and primary action describe one recoverable RetryCredit journey", () => {
   assert.match(html, /<title>RetryCredit \| The retry pays for the failure<\/title>/);
   assert.match(html, /https:\/\/retrycredit\.dolepee\.com\/retrycredit-og-v1\.png/);
-  assert.match(html, /https:\/\/github\.com\/dolepee\/retrycredit/);
+  assert.match(app, /https:\/\/github\.com\/dolepee\/retrycredit/);
   assert.doesNotMatch(html, /github\.com\/dolepee\/ruledrop/);
   assert.doesNotMatch(html, /RuleDrop/);
 
   assert.match(app, /Finish the swap/);
-  assert.match(app, /YOUR RECOVERY/);
-  assert.match(app, /href="#start"[^>]*>.*Start a recovery/);
-  assert.match(app, /className="action-panel" id="start"/);
+  assert.match(app, /Clear one funded recovery/);
+  assert.match(app, /path: "\/activity"/);
+  assert.match(app, /path: "\/protocol"/);
+  assert.match(app, /className="action-bay" id="start"/);
+  assert.match(app, /window\.history\.pushState/);
+  assert.match(app, /aria-current=\{route === path \? "page"/);
+  assert.match(redirects, /^\/\* \/index\.html 200$/m);
   assert.match(app, /Connect wallet to start/);
   assert.match(app, /hexlify\(toUtf8Bytes\(challenge\.message\)\)/);
-  assert.match(app, /How this recovery is verified/);
+  assert.match(app, /The release boundary/);
   assert.match(app, /Restart saved run/);
-  assert.match(app, /session && <button className="secondary" onClick=\{startAnother\} disabled=\{busy\}/);
+  assert.match(app, /session && <button className="reset-action" onClick=\{onReset\} disabled=\{busy\}/);
   assert.doesNotMatch(app, /href="#proof"/);
   assert.doesNotMatch(app, />Proof</);
   assert.doesNotMatch(app, /judge/i);
@@ -48,19 +53,28 @@ test("public brand and primary action describe one recoverable RetryCredit journ
   assert.match(app, /Waking the proof service — the first start can take up to about 45 seconds/);
   assert.match(app, /Wake service and retry/);
   assert.match(app, /Your saved recovery is unchanged; try again/);
-  assert.match(app, /disabled=\{busy \|\| wrongWallet\}/);
-  assert.match(app, /className="primary"[^>]*aria-busy=\{busy\}/);
-  assert.doesNotMatch(app, /className="action-panel" id="start" aria-busy/);
+  assert.match(app, /disabled=\{busy \|\| wrongWallet \|\| phase === "released"\}/);
+  assert.match(app, /className="primary-action"[^>]*aria-busy=\{busy\}/);
+  assert.doesNotMatch(app, /className="action-bay" id="start" aria-busy/);
   assert.match(app, /The proof service is paused\. Your saved recovery is unchanged; check again later\./);
   assert.match(app, /Check service again/);
   assert.doesNotMatch(app, /className="wallet-button" disabled=/);
   assert.match(app, /session\?\.beneficiary && session\.beneficiary\.toLowerCase\(\) !== wallet\.toLowerCase\(\)/);
+  assert.match(app, /const beneficiary = session\?\.beneficiary \|\| account/);
+  assert.match(app, /Saved recovery receipts/);
+  assert.match(app, /session\.failedTransactionHash && <SavedReceipt/);
+  assert.match(app, /session\.successfulTransactionHash && <SavedReceipt/);
+  assert.match(app, /session\.release\?\.transactionHash && <SavedReceipt/);
+  assert.match(app, /document\.getElementById\("main-content"\)\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(app, /}, \[path\]\)/);
 
-  assert.match(styles, /\.wallet-button\{min-height:44px/);
-  assert.doesNotMatch(styles, /\.wallet-button\{font-size:0/);
-  assert.match(styles, /scroll-margin-top:110px/);
-  assert.match(styles, /\.hero-action\{min-height:50px/);
+  assert.match(styles, /\.wallet-button \{ min-height:44px/);
+  assert.doesNotMatch(styles, /\.wallet-button\s*\{[^}]*font-size:0/);
+  assert.match(styles, /\.primary-action \{[^}]*min-height:84px/);
+  assert.match(styles, /\.mobile-nav a \{[^}]*min-height:60px/);
   assert.match(styles, /@media\(prefers-reduced-motion:reduce\)/);
+  assert.doesNotMatch(styles, /\.hero\b/);
+  assert.doesNotMatch(styles, /\.action-panel\b/);
 
   assert.match(api, /CONFIG_WAKE_TOTAL_TIMEOUT_MS = 45_000/);
   assert.match(api, /CONFIG_WAKE_REQUEST_TIMEOUT_MS = 38_000/);
