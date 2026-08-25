@@ -138,31 +138,27 @@ function MobileNav({ route }) { return <nav className="mobile-nav" aria-label="M
 
 function RecoveryPage({ account, availability, busy, config, phase, session, wrongWallet, onAct, onReset }) {
   const stages = routeStages(phase, account, session);
+  const currentIndex = stages.findIndex((stage) => stage.state === "current");
+  const hasActiveStage = currentIndex !== -1;
+  const displayIndex = hasActiveStage ? currentIndex : stages.length - 1;
+  const displayStage = stages[displayIndex] ?? stages.at(-1);
   return <div className="workspace recovery-workspace">
-    <header className="sheet-header"><div><h1>Clear one funded recovery</h1><p>Finish the swap without funding the retry. One ordered route moves from authorization to a fixed credit.</p></div><dl className="sheet-index"><div><dt>Sheet</dt><dd>{session?.serviceCreditNumber ? `RC-${String(session.serviceCreditNumber).padStart(6, "0")}` : "RC—NEW"}</dd></div><div><dt>Route class</dt><dd>Recovery</dd></div><div><dt>Status</dt><dd className={`stamp ${phase}`}>{routeStamp(phase)}</dd></div></dl></header>
-    <section className="route-board" aria-labelledby="route-board-title"><h2 id="route-board-title" className="sr-only">Current recovery route</h2>{stages.map((stage, index) => <RoutePosition key={stage.label} {...stage} index={index} />)}</section>
-    <section className="clearance-strip" aria-labelledby="clearance-title">
-      <div className="service-register"><h2 id="clearance-title">Service availability</h2><ServiceAvailability availability={availability} hasSession={Boolean(session)} /><dl><div><dt>Wallet</dt><dd>{account ? short(account) : "Not connected"}</dd></div><div><dt>Deposit</dt><dd>None</dd></div><div><dt>Release</dt><dd>{config?.creditAmount ? formatEther(config.creditAmount) : "0.01"} tCTC</dd></div></dl></div>
-      <div className="clearance-summary"><span>Current clearance</span><h2>{phaseTitle(phase)}</h2><p>{phaseCopy(phase)}</p><small><LockKeyhole aria-hidden="true" /> Your wallet signs the recipient only. The service sends the bounded testnet transactions.</small></div>
-      <div className="action-bay" id="start">{wrongWallet && <div className="inline-warning" id="wrong-wallet-warning" role="alert">This saved run belongs to {short(session.beneficiary)}.</div>}<button className="primary-action" onClick={onAct} disabled={busy || wrongWallet || phase === "released"} aria-busy={busy} aria-describedby={wrongWallet ? "wrong-wallet-warning service-availability" : "service-availability"}>{busy ? <><LoaderCircle className="spin" aria-hidden="true" /> {busyLabel(phase, availability)}</> : <>{phaseIcon(phase)}<span>{phaseButton(phase, account, availability)}</span><ArrowRight aria-hidden="true" /></>}</button>{session && <button className="reset-action" onClick={onReset} disabled={busy}><RefreshCw aria-hidden="true" /> {phase === "released" ? "Clear local receipt" : "Restart saved run"}</button>}</div>
+    <header className="sheet-header"><div><span className="workspace-kicker">Sponsored testnet recovery</span><h1>{recoveryHeadline(phase)}</h1><p>Finish the swap without funding the retry. One ordered route moves from authorization to a fixed credit.</p></div><dl className="sheet-index"><div><dt>Recovery</dt><dd>{session?.serviceCreditNumber ? `RC-${String(session.serviceCreditNumber).padStart(6, "0")}` : "RC—NEW"}</dd></div><div><dt>Status</dt><dd className={`stamp ${phase}`}>{routeStamp(phase)}</dd></div></dl></header>
+    <section className="recovery-cockpit" aria-labelledby="clearance-title">
+      <div className="command-panel">
+        <div className="command-meta"><span>{hasActiveStage ? `Step ${displayIndex + 1} of ${stages.length}` : "Route complete"}</span><strong>{displayStage.label}</strong></div>
+        <div className="command-copy"><span>Current clearance</span><h2 id="clearance-title">{phaseTitle(phase)}</h2><p>{phaseCopy(phase)}</p><dl><div><dt>State</dt><dd>{displayStage.meta}</dd></div><div><dt>Result</dt><dd>{displayStage.detail}</dd></div></dl></div>
+        <div className="action-bay" id="start">{wrongWallet && <div className="inline-warning" id="wrong-wallet-warning" role="alert">This saved run belongs to {short(session.beneficiary)}.</div>}<button className="primary-action" onClick={onAct} disabled={busy || wrongWallet || phase === "released"} aria-busy={busy} aria-describedby={wrongWallet ? "wrong-wallet-warning service-availability" : "service-availability"}>{busy ? <><LoaderCircle className="spin" aria-hidden="true" /> {busyLabel(phase, availability)}</> : <>{phaseIcon(phase)}<span>{phaseButton(phase, account, availability)}</span><ArrowRight aria-hidden="true" /></>}</button>{session && <button className="reset-action" onClick={onReset} disabled={busy}><RefreshCw aria-hidden="true" /> {phase === "released" ? "Clear local receipt" : "Restart saved run"}</button>}<small><LockKeyhole aria-hidden="true" /> Your wallet signs the recipient only. The service sends the bounded testnet transactions.</small></div>
+      </div>
+      <aside className="service-register"><div><span>Route register</span><h2>Service availability</h2></div><ServiceAvailability availability={availability} hasSession={Boolean(session)} /><dl><div><dt>Wallet</dt><dd>{account ? short(account) : "Not connected"}</dd></div><div><dt>Visitor deposit</dt><dd>None</dd></div><div><dt>Fixed release</dt><dd>{config?.creditAmount ? formatEther(config.creditAmount) : "0.01"} tCTC</dd></div><div><dt>Networks</dt><dd>Sepolia → Creditcoin</dd></div></dl></aside>
     </section>
+    <section className="route-board" aria-labelledby="route-board-title"><div className="route-board-head"><div><span>Bound route</span><h2 id="route-board-title">Five checks. One release.</h2></div><p>{hasActiveStage ? `${displayIndex + 1}/${stages.length} active` : `${stages.length}/${stages.length} cleared`}</p></div><div className="route-map" aria-hidden="true"><svg viewBox="0 0 1000 72" preserveAspectRatio="none"><path className="route-line" d="M0 36 H1000"/><path className="route-branch" d="M182 36 L218 10 H310 M390 36 L430 62 H520 M598 36 L636 10 H730 M786 36 L822 62 H916"/><path className="route-bypass" d="M390 36 L430 10 H520 L558 36"/><rect x="4" y="23" width="18" height="26"/><rect x="978" y="23" width="18" height="26"/></svg></div><ol className="route-spine">{stages.map((stage, index) => <RoutePosition key={stage.label} {...stage} index={index} />)}</ol></section>
     <div className="sheet-notes"><span>No mainnet asset or token approval</span><span>Gas and testnet input sponsored</span><span>Replay blocked onchain</span></div>
   </div>;
 }
 
 function RoutePosition({ index, label, meta, detail, state, tone }) {
-  return <article className={`route-position ${state} ${tone ?? ""}`} aria-current={state === "current" ? "step" : undefined}><div className="position-heading"><span>{index + 1}</span><h3>{label}</h3><strong>{stateLabel(state, tone)}</strong></div><SwitchTrack index={index} state={state} tone={tone} /><dl><div><dt>State</dt><dd>{meta}</dd></div><div><dt>Result</dt><dd>{detail}</dd></div></dl></article>;
-}
-
-function SwitchTrack({ index, state, tone }) {
-  const branches = [
-    "M78 50 L116 18 H166 M78 50 L116 82 H166",
-    "M48 50 L91 18 H142 M91 50 L134 82 H186",
-    "M54 50 L90 18 H150 L186 50",
-    "M42 50 L84 18 H142 M84 50 L128 82 H184",
-    "M54 50 L98 18 H154 M98 50 L142 82 H194",
-  ];
-  return <div className="track" aria-hidden="true"><svg viewBox="0 0 240 100" preserveAspectRatio="none"><path className="track-main" d="M0 50 H240"/><path className={`track-branch branch-${index}`} d={branches[index]}/>{index === 0 && <rect className="track-terminal" x="4" y="34" width="16" height="32" />}{index === 4 && <rect className="track-terminal" x="220" y="34" width="16" height="32" />}{index === 2 && <path className="track-bypass" d="M55 50 L90 18 H150 L185 50" />}</svg><b>{tone === "blocked" ? <X /> : state === "done" ? <Check /> : <span />}</b></div>;
+  return <li className={`route-position ${state} ${tone ?? ""}`} aria-current={state === "current" ? "step" : undefined}><div className="stage-marker" aria-hidden="true">{state === "done" ? <Check /> : tone === "blocked" && state === "current" ? <X /> : index + 1}</div><div className="position-heading"><span>0{index + 1}</span><h3>{label}</h3><strong>{stateLabel(state, tone)}</strong></div>{state === "current" && <dl><div><dt>State</dt><dd>{meta}</dd></div><div><dt>Result</dt><dd>{detail}</dd></div></dl>}</li>;
 }
 
 function ActivityPage({ session }) {
@@ -191,6 +187,7 @@ function routeStages(phase, account, session) { const rank = { start: 0, prepare
 ]; }
 function stateLabel(state, tone) { if (state === "current") return "CURRENT"; if (state === "future") return "QUEUED"; if (tone === "blocked") return "INCLUDED"; return "CLEARED"; }
 function routeStamp(phase) { return ({ start: "NEW", prepared: "FUNDED", settled: "SETTLING", released: "RELEASED" })[phase]; }
+function recoveryHeadline(phase) { return ({ start: "The retry pays for the failure.", prepared: "Your retry is funded.", settled: "Your swap settled.", released: "Recovery cleared." })[phase]; }
 function currentPhase(session) { if (!session) return "start"; if (session.release) return "released"; if (session.successfulTransactionHash) return "settled"; return "prepared"; }
 function phaseTitle(phase) { return ({ start: "Recover a stale testnet swap.", prepared: "Run the sponsored retry.", settled: "Your swap settled. Finish the credit.", released: "Your service credit arrived." })[phase]; }
 function phaseCopy(phase) { return ({ start: "Connect your wallet and authorize one bounded testnet recovery. RetryCredit pre-funds the credit and commits both sponsored routes before either is sent.", prepared: "RetryCredit will include the controlled stale route, refresh the quote, and send the settled test-USDC output to your wallet. No transaction is sent from your wallet.", settled: "Your test-USDC arrived on Sepolia. RetryCredit is checking both receipts together and releasing the fixed credit to the same address on Creditcoin Testnet.", released: "The swap output and fixed credit reached your wallet. This recovery cannot be paid twice." })[phase]; }

@@ -28,7 +28,12 @@ test("public brand and primary action describe one recoverable RetryCredit journ
   assert.doesNotMatch(html, /RuleDrop/);
 
   assert.match(app, /Finish the swap/);
-  assert.match(app, /Clear one funded recovery/);
+  assert.match(app, /The retry pays for the failure/);
+  assert.match(app, /className="recovery-cockpit"/);
+  assert.match(app, /Five checks\. One release\./);
+  assert.match(app, /className="route-spine"/);
+  assert.match(app, /hasActiveStage \? `Step \$\{displayIndex \+ 1\} of \$\{stages\.length\}` : "Route complete"/);
+  assert.match(app, /`\$\{stages\.length\}\/\$\{stages\.length\} cleared`/);
   assert.match(app, /path: "\/activity"/);
   assert.match(app, /path: "\/protocol"/);
   assert.match(app, /className="action-bay" id="start"/);
