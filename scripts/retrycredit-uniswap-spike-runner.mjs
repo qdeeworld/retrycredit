@@ -48,7 +48,6 @@ const MAX_BLOCK_GAP = 10;
 const REFUND_DELAY_SECONDS = 3 * 60 * 60;
 const PROOF_WAIT_TIMEOUT_MS = 15 * 60_000;
 const PROOF_POLL_MS = 15_000;
-const CONTROL_ROOT = path.resolve("/Users/qdee/Documents/Codex/competition-controls/buidl-ctc-2026-fall");
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const abiCoder = AbiCoder.defaultAbiCoder();
 
@@ -729,12 +728,17 @@ function requireStage(state, stage) {
 }
 
 function requireOutputPaths() {
+  const rawControlRoot = process.env.UNISWAP_SPIKE_CONTROL_ROOT;
+  if (!rawControlRoot || !path.isAbsolute(rawControlRoot)) {
+    throw new Error("UNISWAP_SPIKE_CONTROL_ROOT must be an absolute private control directory");
+  }
+  const controlRoot = path.resolve(rawControlRoot);
   const statePath = path.resolve(process.env.UNISWAP_SPIKE_STATE_OUTPUT ?? "");
   const journalPath = path.resolve(process.env.UNISWAP_SPIKE_JOURNAL_PATH ?? "");
   for (const [label, candidate, extension] of [
     ["state", statePath, ".json"], ["journal", journalPath, ".jsonl"],
   ]) {
-    const relative = path.relative(CONTROL_ROOT, candidate);
+    const relative = path.relative(controlRoot, candidate);
     if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || path.extname(candidate) !== extension) {
       throw new Error(`${label} output must be a ${extension} file inside the private CTC control directory`);
     }
