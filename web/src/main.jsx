@@ -1,52 +1,142 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { formatEther, getAddress, hexlify, toUtf8Bytes } from "ethers";
-import { Activity, ArrowRight, BookOpen, Check, CircleDollarSign, ExternalLink, Gauge, GitBranch, LoaderCircle, LockKeyhole, RefreshCw, Route, ShieldCheck, Wallet, X, Zap } from "lucide-react";
-import { releaseWhenReady, requestJson, TemporaryUnavailableError, wakeConfig } from "./api.mjs";
+import {
+  AlertCircle,
+  ArrowRight,
+  BookOpen,
+  Check,
+  ChevronRight,
+  CircleDot,
+  ExternalLink,
+  FileCheck2,
+  LoaderCircle,
+  LockKeyhole,
+  Radio,
+  Search,
+  ShieldCheck,
+  Wallet,
+} from "lucide-react";
+import {
+  checkRecoveryEligibility,
+  releaseRecoveryWhenReady,
+  requestRecoveryChallenge,
+  TemporaryUnavailableError,
+  wakeRecoveryConfig,
+} from "./api.mjs";
 import "./styles.css";
 
-const SEPOLIA_EXPLORER = "https://sepolia.etherscan.io";
+const ETHEREUM_EXPLORER = "https://etherscan.io";
 const CREDITCOIN_EXPLORER = "https://creditcoin-testnet.blockscout.com";
+const REPOSITORY = "https://github.com/dolepee/retrycredit";
 const API_ORIGIN = (import.meta.env.VITE_RETRYCREDIT_API_ORIGIN ?? "").replace(/\/+$/, "");
-const STORAGE_KEY = "retrycredit-public-session-v2";
-const HISTORICAL = {
-  failed: "0x9cb81e134e33f32b702786589510948d097ae98d0ef3ffec4c631a1288a0ee07",
-  successful: "0x81e96116c5b3e050a1b4ac6d1cea611817e7d028636003e7aa6d12f5c412f9b0",
-  release: "0xb787581b58bab15bc4e8e78389c6d0d4bb362896d265bdbe2263df7d7eb77cdf",
-};
-const NAV_ITEMS = [
-  { path: "/", label: "Recovery", icon: Route },
-  { path: "/activity", label: "Activity", icon: Activity },
+const RELEASE_STORAGE_KEY = "retrycredit-recovery-release-v1";
+const OPEN_SEA_ATTRIBUTION_SUFFIX = "0x3d958fe2";
+const CONTROLLED_LAB = Object.freeze({
+  failedTransactionHash: "0x9cb81e134e33f32b702786589510948d097ae98d0ef3ffec4c631a1288a0ee07",
+  successfulTransactionHash: "0x81e96116c5b3e050a1b4ac6d1cea611817e7d028636003e7aa6d12f5c412f9b0",
+  releaseTransactionHash: "0xb787581b58bab15bc4e8e78389c6d0d4bb362896d265bdbe2263df7d7eb77cdf",
+});
+
+const ROUTES = Object.freeze([
+  { path: "/", label: "Recovery", icon: Radio },
+  { path: "/cases", label: "Cases", icon: FileCheck2 },
   { path: "/protocol", label: "Protocol", icon: BookOpen },
-];
+]);
 
 function App() {
   const path = usePathname();
   const previousPath = useRef(path);
+  const checkedWallet = useRef("");
   const [account, setAccount] = useState("");
   const [config, setConfig] = useState(null);
-  const [availability, setAvailability] = useState("idle");
-  const [session, setSession] = useState(readSession);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState(null);
+  const [configState, setConfigState] = useState("loading");
+  const [flow, setFlow] = useState("disconnected");
+  const [eligibility, setEligibility] = useState(null);
+  const [featuredEligibility, setFeaturedEligibility] = useState(null);
+  const [releaseResult, setReleaseResult] = useState(readSavedRelease);
+  const [error, setError] = useState("");
+  const [online, setOnline] = useState(() => navigator.onLine);
+
+  const route = normalizeRoute(path);
+  const busy = ["checking", "authorizing", "proof-pending", "relay-pending"].includes(flow);
+  const visibleRelease = releaseResult?.wallet?.toLowerCase() === account.toLowerCase()
+    ? releaseResult
+    : eligibility?.release
+      ? { ...eligibility, status: "claimed" }
+      : null;
+
+  useEffect(() => {
+    let active = true;
+    setConfigState("loading");
+    wakeRecoveryConfig({ apiOrigin: API_ORIGIN })
+      .then((next) => {
+        if (!active) return;
+        setConfig(next);
+        setConfigState(next.enabled ? "ready" : "unavailable");
+      })
+      .catch(() => {
+        if (active) setConfigState("unavailable");
+      });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const markOnline = () => setOnline(true);
+    const markOffline = () => setOnline(false);
+    window.addEventListener("online", markOnline);
+    window.addEventListener("offline", markOffline);
+    return () => {
+      window.removeEventListener("online", markOnline);
+      window.removeEventListener("offline", markOffline);
+    };
+  }, []);
 
   useEffect(() => {
     if (!window.ethereum) return undefined;
     window.ethereum.request({ method: "eth_accounts" }).then((items) => {
-      if (items?.[0]) setAccount(getAddress(items[0]));
+      const next = safeAddress(items?.[0]);
+      if (next) setAccount(next);
     }).catch(() => undefined);
-    const changed = (items) => setAccount(items?.[0] ? getAddress(items[0]) : "");
+
+    const changed = (items) => {
+      const next = safeAddress(items?.[0]);
+      setAccount(next);
+      setError("");
+      if (!next) {
+        checkedWallet.current = "";
+        setEligibility(null);
+        setFlow("disconnected");
+        return;
+      }
+      if (checkedWallet.current && checkedWallet.current.toLowerCase() !== next.toLowerCase()) {
+        checkedWallet.current = "";
+        setEligibility(null);
+        setFlow("account-changed");
+      }
+    };
     window.ethereum.on?.("accountsChanged", changed);
     return () => window.ethereum.removeListener?.("accountsChanged", changed);
   }, []);
 
   useEffect(() => {
-    if (session) localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-    else localStorage.removeItem(STORAGE_KEY);
-  }, [session]);
+    if (releaseResult) localStorage.setItem(RELEASE_STORAGE_KEY, JSON.stringify(releaseResult));
+  }, [releaseResult]);
 
-  const phase = useMemo(() => currentPhase(session), [session]);
-  const wrongWallet = Boolean(session?.beneficiary && account && session.beneficiary.toLowerCase() !== account.toLowerCase());
+  useEffect(() => {
+    const wallet = config?.enabled ? config.featuredCase?.wallet : "";
+    if (!wallet) {
+      setFeaturedEligibility(null);
+      return undefined;
+    }
+    let active = true;
+    checkRecoveryEligibility({ apiOrigin: API_ORIGIN, wallet })
+      .then((result) => {
+        if (active) setFeaturedEligibility(result);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [config?.enabled, config?.featuredCase?.wallet]);
 
   useEffect(() => {
     if (previousPath.current === path) return;
@@ -55,150 +145,656 @@ function App() {
     window.scrollTo({ top: 0, behavior: "auto" });
   }, [path]);
 
-  async function connect() {
-    if (!window.ethereum) throw new Error("Install an EVM wallet to run the public testnet journey");
+  async function refreshConfig() {
+    if (!navigator.onLine) {
+      setOnline(false);
+      return null;
+    }
+    setConfigState("loading");
+    setError("");
+    try {
+      const next = await wakeRecoveryConfig({ apiOrigin: API_ORIGIN });
+      setConfig(next);
+      setConfigState(next.enabled ? "ready" : "unavailable");
+      return next;
+    } catch (nextError) {
+      setConfigState("unavailable");
+      setError(cleanError(nextError));
+      return null;
+    }
+  }
+
+  async function connectWallet() {
+    if (!window.ethereum) throw new Error("Install an EVM wallet to check this Ethereum address.");
     const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
-    const next = getAddress(accounts[0]);
+    const next = safeAddress(accounts?.[0]);
+    if (!next) throw new Error("The wallet did not return an Ethereum address.");
     setAccount(next);
     return next;
   }
 
-  async function act() {
-    setBusy(true);
-    setNotice(null);
+  async function checkWallet(wallet) {
+    if (!online) return;
+    setFlow("checking");
+    setError("");
     try {
-      const wallet = account || await connect();
-      if (session?.beneficiary && session.beneficiary.toLowerCase() !== wallet.toLowerCase()) throw new Error(`Reconnect ${short(session.beneficiary)} to resume this run`);
-      const liveConfig = availability === "ready" && config ? config : await loadConfig();
-      if (!liveConfig.enabled) throw new Error(session ? "The proof service is paused. Your saved recovery is unchanged; check again later." : "Sponsored service credits are replenishing. Check again shortly.");
-      if (!session) {
-        const challenge = await postJson("/api/retry-credit/challenge", { beneficiary: wallet });
-        const signature = await window.ethereum.request({ method: "personal_sign", params: [hexlify(toUtf8Bytes(challenge.message)), wallet] });
-        const prepared = await postJson("/api/retry-credit/prepare", { ...challenge, signature });
-        setSession({ ...prepared, stage: "prepared", createdAt: Date.now() });
-        setNotice({ tone: "success", text: "Your service credit is funded and both sponsored routes are committed." });
-        return;
+      const liveConfig = configState === "ready" ? config : await refreshConfig();
+      if (!liveConfig?.enabled) throw new TemporaryUnavailableError();
+      const result = await checkRecoveryEligibility({ apiOrigin: API_ORIGIN, wallet });
+      checkedWallet.current = result.wallet ?? wallet;
+      setEligibility(result);
+      if (result.status === "claimed") {
+        setReleaseResult({ ...result, status: "claimed" });
+        setFlow("already-claimed");
+      } else if (result.eligible && result.status === "eligible") {
+        setFlow("eligible");
+      } else {
+        setFlow("ineligible");
       }
-      if (!session.failedTransactionHash) {
-        const executed = await postJson(`/api/retry-credit/${session.serviceCreditNumber}/execute`, {});
-        setSession((value) => value ? ({ ...value, stage: "settled", failedTransactionHash: executed.failedTransactionHash, successfulTransactionHash: executed.successfulTransactionHash, release: executed.release }) : value);
-        setNotice({ tone: "success", text: executed.release ? "Your swap output and service credit arrived." : "The stale route was included, the refreshed swap settled, and Attestcoin is finalizing both receipts." });
-        return;
-      }
-      const released = await releaseUntilReady(session);
-      setSession((value) => value ? ({ ...value, stage: "released", release: released.release }) : value);
-      setNotice({ tone: "success", text: "Credit released on Creditcoin. Replay is blocked onchain." });
-    } catch (error) {
-      if (error instanceof TemporaryUnavailableError || error?.temporaryUnavailable) setAvailability("temporarily-unavailable");
-      setNotice({ tone: "error", text: cleanError(error) });
-    } finally { setBusy(false); }
+    } catch (nextError) {
+      setFlow(nextError instanceof TemporaryUnavailableError ? "service-unavailable" : "retryable-error");
+      setError(cleanError(nextError));
+    }
   }
 
-  async function loadConfig() {
-    setAvailability("waking");
+  async function authorizeAndRelease() {
+    if (!account || !eligibility?.eligible) return;
+    if (checkedWallet.current.toLowerCase() !== account.toLowerCase()) {
+      setEligibility(null);
+      setFlow("account-changed");
+      return;
+    }
+    setError("");
     try {
-      const next = await wakeConfig({ apiOrigin: API_ORIGIN });
-      setConfig(next);
-      setAvailability(next.enabled ? "ready" : "paused");
-      return next;
-    } catch (error) { setAvailability("temporarily-unavailable"); throw error; }
+      setFlow("authorizing");
+      const challenge = await requestRecoveryChallenge({ apiOrigin: API_ORIGIN, wallet: account });
+      const signature = await window.ethereum.request({
+        method: "personal_sign",
+        params: [hexlify(toUtf8Bytes(challenge.message)), account],
+      });
+      setFlow("proof-pending");
+      const released = await releaseRecoveryWhenReady({
+        apiOrigin: API_ORIGIN,
+        wallet: account,
+        message: challenge.message,
+        issuedAt: challenge.issuedAt,
+        expiresAt: challenge.expiresAt,
+        signature,
+        onPending: ({ code }) => setFlow(code?.includes("RELAY") ? "relay-pending" : "proof-pending"),
+      });
+      setReleaseResult(released);
+      setEligibility((value) => value ? { ...value, ...released, eligible: false } : released);
+      setFlow(released.status === "claimed" ? "already-claimed" : "released");
+      refreshConfig();
+    } catch (nextError) {
+      if (nextError?.code === 4001 || nextError?.code === "ACTION_REJECTED") {
+        setError("The signature request was closed. Nothing was released; you can authorize again.");
+      } else {
+        setError(cleanError(nextError));
+      }
+      setFlow(nextError instanceof TemporaryUnavailableError ? "service-unavailable" : "retryable-error");
+    }
   }
 
-  function startAnother() {
-    setSession(null);
-    setNotice({ tone: "success", text: "Saved browser state cleared. RetryCredit will resume any active onchain recovery or start a new one." });
+  async function primaryAction() {
+    if (!online || busy || flow === "released" || flow === "already-claimed") return;
+    if (configState === "loading") return;
+    if (configState === "unavailable" || flow === "service-unavailable") {
+      const next = await refreshConfig();
+      if (!next?.enabled) return;
+    }
+    const wallet = account || await connectWallet().catch((nextError) => {
+      setFlow("retryable-error");
+      setError(cleanError(nextError));
+      return "";
+    });
+    if (!wallet) return;
+    if (flow === "eligible" && eligibility?.eligible) await authorizeAndRelease();
+    else await checkWallet(wallet);
   }
 
-  const route = NAV_ITEMS.some((item) => item.path === path) ? path : "/";
+  const effectiveFlow = !online
+    ? "offline"
+    : configState === "loading" && !["released", "already-claimed"].includes(flow)
+      ? "loading-config"
+      : configState === "unavailable" && !["released", "already-claimed"].includes(flow)
+        ? "service-unavailable"
+        : flow;
+
+  const context = useMemo(() => ({
+    account,
+    busy,
+    config,
+    configState,
+    eligibility,
+    error,
+    featuredEligibility,
+    flow: effectiveFlow,
+    online,
+    releaseResult: visibleRelease,
+  }), [account, busy, config, configState, effectiveFlow, eligibility, error, featuredEligibility, online, visibleRelease]);
+
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">Skip to main content</a>
-    <AppRail route={route} />
-    <div className="app-frame">
-      <header className="statusbar">
-        <div className="network-path"><GitBranch aria-hidden="true" /><span>Ethereum Sepolia</span><ArrowRight aria-hidden="true" /><span>Creditcoin Testnet</span></div>
-        <span className={`service-state ${availability}`}><i aria-hidden="true" />{availabilityShortLabel(availability)}</span>
-        <button className="wallet-button" onClick={() => connect().catch((error) => setNotice({ tone: "error", text: cleanError(error) }))}><Wallet aria-hidden="true" /> <span>{account ? short(account) : "Connect wallet"}</span></button>
-      </header>
-      {notice && <Notice {...notice} onClose={() => setNotice(null)} />}
-      <main id="main-content" tabIndex="-1">
-        {route === "/" && <RecoveryPage account={account} availability={availability} busy={busy} config={config} phase={phase} session={session} wrongWallet={wrongWallet} onAct={act} onReset={startAnother} />}
-        {route === "/activity" && <ActivityPage session={session} />}
-        {route === "/protocol" && <ProtocolPage />}
-      </main>
-      <footer className="app-footer"><span>RetryCredit public testnet pilot</span><a href="https://github.com/dolepee/retrycredit" target="_blank" rel="noreferrer">Source <ExternalLink aria-hidden="true" /></a></footer>
-    </div>
-    <MobileNav route={route} />
+    <AppHeader
+      account={account}
+      config={config}
+      configState={configState}
+      online={online}
+      route={route}
+      onConnect={() => connectWallet().catch((nextError) => {
+        setFlow("retryable-error");
+        setError(cleanError(nextError));
+      })}
+    />
+    <main id="main-content" tabIndex="-1">
+      {route === "/" && <RecoveryPage {...context} onPrimary={primaryAction} />}
+      {route === "/cases" && <CasesPage {...context} />}
+      {route === "/protocol" && <ProtocolPage config={config} />}
+    </main>
+    <footer className="app-footer">
+      <span>Bounded public recovery pilot</span>
+      <a href={REPOSITORY} target="_blank" rel="noreferrer">Open source <ExternalLink aria-hidden="true" /></a>
+    </footer>
   </div>;
 }
 
-function AppRail({ route }) {
-  return <aside className="app-rail"><AppLink className="brand" href="/" aria-label="RetryCredit recovery"><span className="brand-mark" aria-hidden="true">RC</span><span>RetryCredit</span></AppLink><nav aria-label="Primary navigation">{NAV_ITEMS.map(({ path, label, icon: Icon }) => <AppLink key={path} href={path} className={route === path ? "active" : ""} aria-current={route === path ? "page" : undefined}><Icon aria-hidden="true" /><span>{label}</span></AppLink>)}</nav><div className="rail-foot"><span>V3</span><small>TESTNET</small></div></aside>;
-}
-function MobileNav({ route }) { return <nav className="mobile-nav" aria-label="Mobile navigation">{NAV_ITEMS.map(({ path, label, icon: Icon }) => <AppLink key={path} href={path} className={route === path ? "active" : ""} aria-current={route === path ? "page" : undefined}><Icon aria-hidden="true" /><span>{label}</span></AppLink>)}</nav>; }
-
-function RecoveryPage({ account, availability, busy, config, phase, session, wrongWallet, onAct, onReset }) {
-  const stages = routeStages(phase, account, session);
-  const currentIndex = stages.findIndex((stage) => stage.state === "current");
-  const hasActiveStage = currentIndex !== -1;
-  const displayIndex = hasActiveStage ? currentIndex : stages.length - 1;
-  const displayStage = stages[displayIndex] ?? stages.at(-1);
-  return <div className="workspace recovery-workspace">
-    <header className="sheet-header"><div><span className="workspace-kicker">Sponsored testnet recovery</span><h1>{recoveryHeadline(phase)}</h1><p>Finish the swap without funding the retry. One ordered route moves from authorization to a fixed credit.</p></div><dl className="sheet-index"><div><dt>Recovery</dt><dd>{session?.serviceCreditNumber ? `RC-${String(session.serviceCreditNumber).padStart(6, "0")}` : "RC—NEW"}</dd></div><div><dt>Status</dt><dd className={`stamp ${phase}`}>{routeStamp(phase)}</dd></div></dl></header>
-    <section className="recovery-cockpit" aria-labelledby="clearance-title">
-      <div className="command-panel">
-        <div className="command-meta"><span>{hasActiveStage ? `Step ${displayIndex + 1} of ${stages.length}` : "Route complete"}</span><strong>{displayStage.label}</strong></div>
-        <div className="command-copy"><span>Current clearance</span><h2 id="clearance-title">{phaseTitle(phase)}</h2><p>{phaseCopy(phase)}</p><dl><div><dt>State</dt><dd>{displayStage.meta}</dd></div><div><dt>Result</dt><dd>{displayStage.detail}</dd></div></dl></div>
-        <div className="action-bay" id="start">{wrongWallet && <div className="inline-warning" id="wrong-wallet-warning" role="alert">This saved run belongs to {short(session.beneficiary)}.</div>}<button className="primary-action" onClick={onAct} disabled={busy || wrongWallet || phase === "released"} aria-busy={busy} aria-describedby={wrongWallet ? "wrong-wallet-warning service-availability" : "service-availability"}>{busy ? <><LoaderCircle className="spin" aria-hidden="true" /> {busyLabel(phase, availability)}</> : <>{phaseIcon(phase)}<span>{phaseButton(phase, account, availability)}</span><ArrowRight aria-hidden="true" /></>}</button>{session && <button className="reset-action" onClick={onReset} disabled={busy}><RefreshCw aria-hidden="true" /> {phase === "released" ? "Clear local receipt" : "Restart saved run"}</button>}<small><LockKeyhole aria-hidden="true" /> Your wallet signs the recipient only. The service sends the bounded testnet transactions.</small></div>
+function AppHeader({ account, config, configState, online, route, onConnect }) {
+  const service = !online ? "offline" : configState;
+  return <header className="app-header">
+    <div className="brand-line">
+      <a className="brand" href="/" onClick={(event) => navigate(event, "/")}>
+        <span aria-hidden="true">RC</span>
+        <strong>RetryCredit</strong>
+      </a>
+      <div className="network-path" aria-label="Source and settlement networks">
+        <span>{config?.source?.name ?? "Ethereum Mainnet"}</span>
+        <ArrowRight aria-hidden="true" />
+        <span>{config?.settlement?.name ?? "Creditcoin Testnet"}</span>
       </div>
-      <aside className="service-register"><div><span>Route register</span><h2>Service availability</h2></div><ServiceAvailability availability={availability} hasSession={Boolean(session)} /><dl><div><dt>Wallet</dt><dd>{account ? short(account) : "Not connected"}</dd></div><div><dt>Visitor deposit</dt><dd>None</dd></div><div><dt>Fixed release</dt><dd>{config?.creditAmount ? formatEther(config.creditAmount) : "0.01"} tCTC</dd></div><div><dt>Networks</dt><dd>Sepolia → Creditcoin</dd></div></dl></aside>
+      <div className={`service-state ${service}`} role="status" aria-live="polite">
+        <i aria-hidden="true" /> {serviceLabel(service)}
+      </div>
+      <button className="wallet-button" type="button" onClick={onConnect}>
+        <Wallet aria-hidden="true" />
+        <span>{account ? short(account) : "Connect wallet"}</span>
+      </button>
+    </div>
+    <nav aria-label="Primary">
+      {ROUTES.map(({ path, label, icon: Icon }) => <a
+        key={path}
+        className={route === path ? "active" : ""}
+        href={path}
+        aria-current={route === path ? "page" : undefined}
+        onClick={(event) => navigate(event, path)}
+      >
+        <Icon aria-hidden="true" />
+        <span>{label}</span>
+      </a>)}
+    </nav>
+  </header>;
+}
+
+function RecoveryPage(props) {
+  const { config, eligibility, featuredEligibility, releaseResult } = props;
+  return <div className="route-page recovery-page">
+    <div className="campaign-layout">
+      <CampaignFile config={config} />
+      <EligibilityDesk {...props} />
+    </div>
+    <EvidenceBand config={config} eligibility={eligibility} featuredEligibility={featuredEligibility} releaseResult={releaseResult} />
+    <section className="plain-boundary" aria-labelledby="boundary-heading">
+      <h2 id="boundary-heading">The source wallet stays in control of the destination.</h2>
+      <p>RetryCredit checks an already-public Ethereum pair. If it qualifies, the contract derives the payout wallet from that pair; the relayer cannot substitute another address.</p>
+      <div className="boundary-line" aria-label="Recovery boundary">
+        <span><Search aria-hidden="true" /> Match the pair</span>
+        <ArrowRight aria-hidden="true" />
+        <span><LockKeyhole aria-hidden="true" /> Sign bounded intent</span>
+        <ArrowRight aria-hidden="true" />
+        <span><ShieldCheck aria-hidden="true" /> Release once</span>
+      </div>
     </section>
-    <section className="route-board" aria-labelledby="route-board-title"><div className="route-board-head"><div><span>Bound route</span><h2 id="route-board-title">Five checks. One release.</h2></div><p>{hasActiveStage ? `${displayIndex + 1}/${stages.length} active` : `${stages.length}/${stages.length} cleared`}</p></div><div className="route-map" aria-hidden="true"><svg viewBox="0 0 1000 72" preserveAspectRatio="none"><path className="route-line" d="M0 36 H1000"/><path className="route-branch" d="M182 36 L218 10 H310 M390 36 L430 62 H520 M598 36 L636 10 H730 M786 36 L822 62 H916"/><path className="route-bypass" d="M390 36 L430 10 H520 L558 36"/><rect x="4" y="23" width="18" height="26"/><rect x="978" y="23" width="18" height="26"/></svg></div><ol className="route-spine">{stages.map((stage, index) => <RoutePosition key={stage.label} {...stage} index={index} />)}</ol></section>
-    <div className="sheet-notes"><span>No mainnet asset or token approval</span><span>Gas and testnet input sponsored</span><span>Replay blocked onchain</span></div>
   </div>;
 }
 
-function RoutePosition({ index, label, meta, detail, state, tone }) {
-  return <li className={`route-position ${state} ${tone ?? ""}`} aria-current={state === "current" ? "step" : undefined}><div className="stage-marker" aria-hidden="true">{state === "done" ? <Check /> : tone === "blocked" && state === "current" ? <X /> : index + 1}</div><div className="position-heading"><span>0{index + 1}</span><h3>{label}</h3><strong>{stateLabel(state, tone)}</strong></div>{state === "current" && <dl><div><dt>State</dt><dd>{meta}</dd></div><div><dt>Result</dt><dd>{detail}</dd></div></dl>}</li>;
+function CampaignFile({ config }) {
+  const campaign = config?.campaign;
+  const capacity = config?.capacity;
+  return <section className="campaign-file" aria-labelledby="campaign-heading">
+    <div className="file-registration" aria-hidden="true"><span /><span /><span /></div>
+    <h1 id="campaign-heading">A completed mint can unlock one fixed credit.</h1>
+    <p className="campaign-summary">This live campaign recognizes the same Ethereum wallet moving from a failed paid SeaDrop mint to its completed mint. RetryCredit pre-funds the bounded Creditcoin release.</p>
+    <dl className="campaign-facts">
+      <div>
+        <dt>Fixed amount</dt>
+        <dd>{formatCredit(campaign?.creditAmount)}</dd>
+      </div>
+      <div>
+        <dt>Capacity</dt>
+        <dd>{formatCapacity(capacity)}</dd>
+      </div>
+      <div>
+        <dt>Source window</dt>
+        <dd>{formatWindow(config?.rule)}</dd>
+      </div>
+      <div>
+        <dt>Claim deadline</dt>
+        <dd>{formatDeadline(campaign?.deadline)}</dd>
+      </div>
+    </dl>
+    <p className="funding-note"><CircleDot aria-hidden="true" /> Campaign {config?.campaignNumber ? `#${config.campaignNumber}` : "awaiting publication"}. SeaDrop, OpenSea, and the NFT collection do not sponsor or endorse this pilot.</p>
+  </section>;
 }
 
-function ActivityPage({ session }) {
-  return <div className="workspace activity-workspace"><header className="page-header"><div><h1>Recovery activity</h1><p>A route ledger for the saved browser run and the completed public lifecycle.</p></div><span>3 VERIFIED EVENTS</span></header><section className="current-run" aria-labelledby="current-run-title"><div><h2 id="current-run-title">Current browser run</h2><p>{session ? `Service credit #${session.serviceCreditNumber} is saved for ${short(session.beneficiary)}.` : "No recovery is saved in this browser."}</p>{session && (session.failedTransactionHash || session.successfulTransactionHash || session.release?.transactionHash) && <div className="saved-receipts" aria-label="Saved recovery receipts">{session.failedTransactionHash && <SavedReceipt label="Included stale route" hash={session.failedTransactionHash} base={SEPOLIA_EXPLORER} />}{session.successfulTransactionHash && <SavedReceipt label="Settled retry" hash={session.successfulTransactionHash} base={SEPOLIA_EXPLORER} />}{session.release?.transactionHash && <SavedReceipt label="Credit release" hash={session.release.transactionHash} base={CREDITCOIN_EXPLORER} />}</div>}</div><AppLink href="/">{session ? "Resume recovery" : "Start a recovery"}<ArrowRight aria-hidden="true" /></AppLink></section><section className="ledger" aria-labelledby="completed-run-title"><div className="ledger-head"><h2 id="completed-run-title">Completed public run</h2><p>From stale route to credit in 552 seconds.</p></div><LedgerRow time="00:00" tone="blocked" title="Route did not settle" chain="Ethereum Sepolia" result="Included · no swap" hash={HISTORICAL.failed} href={`${SEPOLIA_EXPLORER}/tx/${HISTORICAL.failed}`} /><LedgerRow time="00:31" tone="settled" title="Refreshed swap completed" chain="Ethereum Sepolia" result="0.218500 test USDC" hash={HISTORICAL.successful} href={`${SEPOLIA_EXPLORER}/tx/${HISTORICAL.successful}`} /><LedgerRow time="09:12" tone="released" title="Service credit received" chain="Creditcoin · 0.01 tCTC" result="Released once" hash={HISTORICAL.release} href={`${CREDITCOIN_EXPLORER}/tx/${HISTORICAL.release}`} /></section></div>;
-}
-function LedgerRow({ time, tone, title, chain, result, hash, href }) { return <a className={`ledger-row ${tone}`} href={href} target="_blank" rel="noreferrer" aria-label={`${title} on ${chain}; open transaction`}><time>{time}</time><i aria-hidden="true" /><div><strong>{title}</strong><span>{chain}</span></div><b>{result}</b><code title={hash}>{short(hash, 10)}</code><ExternalLink aria-hidden="true" /></a>; }
-function SavedReceipt({ label, hash, base }) { return <a href={`${base}/tx/${hash}`} target="_blank" rel="noreferrer"><span>{label}</span><code title={hash}>{short(hash, 8)}</code><ExternalLink aria-hidden="true" /></a>; }
+function EligibilityDesk({ account, busy, configState, eligibility, error, flow, onPrimary, releaseResult }) {
+  const copy = deskCopy(flow, eligibility, releaseResult);
+  const isTerminal = flow === "released" || flow === "already-claimed";
+  const disabled = busy || flow === "offline" || isTerminal || configState === "loading";
+  return <section className={`eligibility-desk state-${flow}`} aria-labelledby="eligibility-heading" aria-busy={busy}>
+    <div className="desk-heading">
+      <span className="state-mark" aria-hidden="true">{stateIcon(flow)}</span>
+      <div>
+        <h2 id="eligibility-heading">{copy.title}</h2>
+        <p role="status" aria-live="polite" aria-atomic="true">{copy.body}</p>
+      </div>
+    </div>
 
-function ProtocolPage() {
-  return <div className="workspace protocol-workspace"><header className="page-header"><div><h1>The release boundary</h1><p>What RetryCredit verifies, what it cannot claim, and why two ordered receipts are required.</p></div><span>PUBLIC PILOT · V3</span></header><div className="protocol-layout"><article className="manual-copy"><h2>One funded action, two source receipts, one release.</h2><p>The service commits both signed Uniswap routes before execution. The first receipt must show the included stale attempt without settlement. The second must show the refreshed route and exact test-USDC output to the same beneficiary.</p><p>Attestcoin supplies those ordered receipts to the Creditcoin verifier. Only the matching pair can release the fixed credit, and the action, pair, query, and service-credit identifiers are consumed so the recovery cannot pay twice.</p><h2>What the proof does not establish</h2><p>RetryCredit does not determine the human-readable reason a transaction failed. It does not prove an organic user loss, exact gas expenditure, or an insurance event. The stale route in this pilot is a disclosed controlled test.</p></article><aside className="limits-sheet" aria-label="Current pilot limits"><h2>Current pilot</h2><dl><div><dt>Source</dt><dd>Ethereum Sepolia</dd></div><div><dt>Settlement</dt><dd>Creditcoin Testnet</dd></div><div><dt>Route</dt><dd>WETH → test USDC</dd></div><div><dt>Router</dt><dd>Uniswap Universal Router 2.1.1</dd></div><div><dt>Visitor funding</dt><dd>No deposit</dd></div><div><dt>Credit</dt><dd>Fixed · 0.01 tCTC</dd></div></dl></aside></div><section className="verification-line" aria-label="Verification sequence"><span><ShieldCheck aria-hidden="true" /><b>Commit</b>Both signed routes</span><ArrowRight aria-hidden="true" /><span><X aria-hidden="true" /><b>Include</b>No settlement</span><ArrowRight aria-hidden="true" /><span><Zap aria-hidden="true" /><b>Settle</b>Exact output</span><ArrowRight aria-hidden="true" /><span><CircleDollarSign aria-hidden="true" /><b>Release</b>Once</span></section></div>;
+    <div className="wallet-readout">
+      <span>Wallet under review</span>
+      <code>{account || "No wallet connected"}</code>
+    </div>
+
+    {error && <div className="inline-notice" role="alert">
+      <AlertCircle aria-hidden="true" />
+      <span>{error}</span>
+    </div>}
+
+    {releaseResult?.release && <ReleaseReceipt result={releaseResult} />}
+
+    <button className="primary-action" type="button" onClick={onPrimary} disabled={disabled} aria-busy={busy}>
+      <span>{primaryLabel(flow, configState)}</span>
+      {busy ? <LoaderCircle className="spin" aria-hidden="true" /> : isTerminal ? <Check aria-hidden="true" /> : <ArrowRight aria-hidden="true" />}
+    </button>
+
+    {flow === "ineligible" && <a className="secondary-action" href="/cases" onClick={(event) => navigate(event, "/cases")}>
+      Inspect the public case <ChevronRight aria-hidden="true" />
+    </a>}
+
+    <p className="destination-note"><LockKeyhole aria-hidden="true" /> No destination field and no network switch. A qualifying source wallet receives the fixed tCTC release at that same address.</p>
+  </section>;
 }
 
-function ServiceAvailability({ availability, hasSession }) {
-  const copy = { idle: hasSession ? "Your saved recovery stays in this browser. Service availability is checked when you resume." : "Service availability is checked when you start.", waking: "Waking the proof service — the first start can take up to about 45 seconds.", ready: "Proof service ready.", paused: hasSession ? "The proof service is paused. Your saved recovery is unchanged; check again later." : "Sponsored service credits are replenishing. Check again shortly.", "temporarily-unavailable": hasSession ? "The proof service did not respond yet. Your saved recovery is unchanged; try again." : "The proof service did not respond yet. Wake the service and try again." }[availability];
-  return <p className={`service-availability ${availability}`} id="service-availability" role="status" aria-live="polite" aria-atomic="true"><i aria-hidden="true" />{copy}</p>;
+function ReleaseReceipt({ result }) {
+  return <div className="release-receipt">
+    <strong>{formatCredit(result.creditAmount)} released</strong>
+    <span>Beneficiary</span>
+    <code>{result.wallet}</code>
+    {result.release.transactionHash && <ExplorerLink chain="creditcoin" hash={result.release.transactionHash}>Open release receipt</ExplorerLink>}
+  </div>;
 }
-function Notice({ tone, text, onClose }) { return <div className={`notice ${tone}`} role={tone === "error" ? "alert" : "status"}><span>{tone === "error" ? <X aria-hidden="true" /> : <Check aria-hidden="true" />}{text}</span><button onClick={onClose} aria-label="Dismiss message"><X aria-hidden="true" /></button></div>; }
-function AppLink({ href, onClick, ...props }) { return <a href={href} {...props} onClick={(event) => { onClick?.(event); if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); window.history.pushState({}, "", href); window.dispatchEvent(new PopStateEvent("popstate")); }} />; }
-function usePathname() { const [path, setPath] = useState(() => window.location.pathname); useEffect(() => { const update = () => setPath(window.location.pathname); window.addEventListener("popstate", update); return () => window.removeEventListener("popstate", update); }, []); return path; }
-function routeStages(phase, account, session) { const rank = { start: 0, prepared: 2, settled: 4, released: 5 }[phase]; const beneficiary = session?.beneficiary || account; return [
-  { label: "Authorize", meta: beneficiary ? short(beneficiary) : "Wallet required", detail: beneficiary ? "Recipient selected" : "Connect to continue", state: rank > 0 ? "done" : "current" },
-  { label: "Funded", meta: phase === "start" ? "Waiting" : "Service credit reserved", detail: phase === "start" ? "No route yet" : "Both routes committed", state: rank > 1 ? "done" : rank === 1 ? "current" : "future" },
-  { label: "Stale included", meta: rank > 2 ? "Included on Sepolia" : "Expected failure", detail: rank > 2 ? "No swap output" : "Awaiting execution", state: rank > 2 ? "done" : rank === 2 ? "current" : "future", tone: "blocked" },
-  { label: "Retry settled", meta: rank > 3 ? "Exact output matched" : "Refreshed route", detail: rank > 3 ? "test USDC received" : "Awaiting stale receipt", state: rank > 3 ? "done" : rank === 3 ? "current" : "future", tone: "settled" },
-  { label: "Credit released", meta: rank > 4 ? "Released once" : "Attestcoin ordered pair", detail: rank > 4 ? "Replay blocked" : "Awaiting settlement", state: rank > 4 ? "done" : rank === 4 ? "current" : "future", tone: "released" },
-]; }
-function stateLabel(state, tone) { if (state === "current") return "CURRENT"; if (state === "future") return "QUEUED"; if (tone === "blocked") return "INCLUDED"; return "CLEARED"; }
-function routeStamp(phase) { return ({ start: "NEW", prepared: "FUNDED", settled: "SETTLING", released: "RELEASED" })[phase]; }
-function recoveryHeadline(phase) { return ({ start: "The retry pays for the failure.", prepared: "Your retry is funded.", settled: "Your swap settled.", released: "Recovery cleared." })[phase]; }
-function currentPhase(session) { if (!session) return "start"; if (session.release) return "released"; if (session.successfulTransactionHash) return "settled"; return "prepared"; }
-function phaseTitle(phase) { return ({ start: "Recover a stale testnet swap.", prepared: "Run the sponsored retry.", settled: "Your swap settled. Finish the credit.", released: "Your service credit arrived." })[phase]; }
-function phaseCopy(phase) { return ({ start: "Connect your wallet and authorize one bounded testnet recovery. RetryCredit pre-funds the credit and commits both sponsored routes before either is sent.", prepared: "RetryCredit will include the controlled stale route, refresh the quote, and send the settled test-USDC output to your wallet. No transaction is sent from your wallet.", settled: "Your test-USDC arrived on Sepolia. RetryCredit is checking both receipts together and releasing the fixed credit to the same address on Creditcoin Testnet.", released: "The swap output and fixed credit reached your wallet. This recovery cannot be paid twice." })[phase]; }
-function availabilityShortLabel(availability) { return ({ idle: "Checked on start", waking: "Waking service", ready: "Service ready", paused: "Replenishing", "temporarily-unavailable": "Unavailable" })[availability]; }
-function phaseButton(phase, account, availability) { if (phase === "start" && !account) return "Connect wallet to start"; if (availability === "temporarily-unavailable") return phase === "start" ? "Wake service and retry" : "Retry saved recovery"; if (availability === "paused") return phase === "start" ? "Check allocation again" : "Check service again"; if (phase === "start" && availability === "idle") return "Check availability and start"; return ({ start: "Start protected retry", prepared: "Run sponsored retry", settled: "Finish credit release", released: "Credit received" })[phase]; }
-function busyLabel(phase, availability) { if (availability === "waking") return "Waking proof service…"; return ({ start: "Preparing your recovery…", prepared: "Running both routes…", settled: "Finalizing your credit…", released: "Checking saved receipt…" })[phase]; }
-function phaseIcon(phase) { return phase === "released" ? <Check aria-hidden="true" /> : phase === "settled" ? <ShieldCheck aria-hidden="true" /> : phase === "start" ? <Gauge aria-hidden="true" /> : <Zap aria-hidden="true" />; }
-async function releaseUntilReady(session) { return releaseWhenReady({ apiOrigin: API_ORIGIN, serviceCreditNumber: session.serviceCreditNumber, failedTransactionHash: session.failedTransactionHash, successfulTransactionHash: session.successfulTransactionHash }); }
-async function postJson(path, body) { return requestJson({ apiOrigin: API_ORIGIN, path, options: { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } }); }
-function readSession() { try { const value = JSON.parse(localStorage.getItem(STORAGE_KEY)); return value?.serviceCreditNumber && value?.beneficiary ? value : null; } catch { return null; } }
-function short(value, size = 6) { return value ? `${value.slice(0, size + 2)}…${value.slice(-4)}` : "—"; }
-function cleanError(error) { return error?.shortMessage ?? error?.reason ?? error?.message ?? "Request failed"; }
 
-createRoot(document.getElementById("root")).render(<React.StrictMode><App /></React.StrictMode>);
+function EvidenceBand({ config, eligibility, featuredEligibility, releaseResult }) {
+  const pair = eligibility?.pair ?? releaseResult?.pair ?? featuredEligibility?.pair ?? config?.featuredCase ?? {};
+  const release = releaseResult?.release ?? eligibility?.release ?? featuredEligibility?.release;
+  const wallet = eligibility?.wallet ?? releaseResult?.wallet ?? featuredEligibility?.wallet ?? config?.featuredCase?.wallet;
+  return <section className="evidence-band" aria-labelledby="evidence-heading">
+    <header>
+      <h2 id="evidence-heading">One wallet. One ordered source pair. One fixed release.</h2>
+      <p>Human result first; receipts stay attached to the result they establish.</p>
+    </header>
+    <div className="evidence-sequence">
+      <EvidenceStep
+        kind="failed"
+        number="A"
+        title="Mint did not complete"
+        subtitle="Ethereum Mainnet · failed receipt"
+        hash={pair.failedTransactionHash}
+        chain="ethereum"
+        facts={[
+          pair.failed?.blockNumber && `Block ${pair.failed.blockNumber}`,
+          pair.failed?.nonce !== undefined && `Nonce ${pair.failed.nonce}`,
+          wallet && `Source ${short(wallet)}`,
+        ]}
+      />
+      <div className="sequence-link" aria-hidden="true"><ArrowRight /></div>
+      <EvidenceStep
+        kind="completed"
+        number="B"
+        title="NFT mint completed"
+        subtitle="Ethereum Mainnet · successful receipt"
+        hash={pair.successfulTransactionHash}
+        chain="ethereum"
+        facts={[
+          pair.successful?.blockNumber && `Block ${pair.successful.blockNumber}`,
+          pair.successful?.nonce !== undefined && `Nonce ${pair.successful.nonce}`,
+          pair.successful?.mintedTokenIds?.length && `Token ${pair.successful.mintedTokenIds.join(", ")}`,
+        ]}
+      />
+      <div className="sequence-link" aria-hidden="true"><ArrowRight /></div>
+      <EvidenceStep
+        kind={release ? "released" : "funded"}
+        number="C"
+        title={release ? "Fixed credit released" : "Fixed release is funded"}
+        subtitle="Creditcoin Testnet · source-derived payout"
+        hash={release?.transactionHash}
+        chain="creditcoin"
+        facts={[
+          formatCredit(releaseResult?.creditAmount ?? eligibility?.creditAmount ?? featuredEligibility?.creditAmount ?? config?.campaign?.creditAmount),
+          release?.blockNumber && `Block ${release.blockNumber}`,
+          release ? "Replay consumed" : "Eligibility required",
+        ]}
+      />
+    </div>
+  </section>;
+}
+
+function EvidenceStep({ chain, facts, hash, kind, number, subtitle, title }) {
+  return <article className={`evidence-step ${kind}`}>
+    <div className="step-status"><span>{number}</span><b>{title}</b></div>
+    <p>{subtitle}</p>
+    <ul>{facts.filter(Boolean).map((fact) => <li key={fact}>{fact}</li>)}</ul>
+    {hash
+      ? <ExplorerLink chain={chain} hash={hash}>Open transaction</ExplorerLink>
+      : <span className="receipt-pending">Receipt appears when this state exists</span>}
+  </article>;
+}
+
+function CasesPage({ config, eligibility, featuredEligibility, releaseResult }) {
+  const featured = config?.featuredCase;
+  const featuredRelease = (releaseResult?.wallet && featured?.wallet && releaseResult.wallet.toLowerCase() === featured.wallet.toLowerCase())
+    ? releaseResult.release
+    : (eligibility?.wallet && featured?.wallet && eligibility.wallet.toLowerCase() === featured.wallet.toLowerCase())
+      ? eligibility.release
+      : featuredEligibility?.release;
+  return <div className="route-page cases-page">
+    <PageHeading
+      title="Cases stay separated by what they actually prove."
+      body="A public source pair, broader eligible observations, and the earlier controlled lab are different evidence. RetryCredit does not turn an observed address into a customer claim."
+    />
+
+    <section className="case-register" aria-labelledby="public-case-heading">
+      <header>
+        <h2 id="public-case-heading">{featuredRelease ? "Public recovered case" : "Public recovery case"}</h2>
+        <span className={featuredRelease ? "case-state released" : "case-state observed"}>{featuredRelease ? "Released" : "Source pair verified"}</span>
+      </header>
+      {featured ? <div className="expanded-case">
+        <div className="case-result">
+          <strong>{featuredRelease ? "The source wallet received its fixed Creditcoin release." : "This wallet has a public failed-to-completed SeaDrop pair."}</strong>
+          <p>{featuredRelease ? "The release transaction is bound to the same Ethereum source address." : "Eligibility and any release remain separate service states; the source facts alone are not adoption."}</p>
+        </div>
+        <CaseField label="Source wallet" value={featured.wallet} />
+        <CaseField label="Failed mint" value={featured.failedTransactionHash} chain="ethereum" />
+        <CaseField label="Completed mint" value={featured.successfulTransactionHash} chain="ethereum" />
+        {featuredRelease?.transactionHash && <CaseField label="Credit release" value={featuredRelease.transactionHash} chain="creditcoin" />}
+      </div> : <EmptyCase text="No public source case is published in the live configuration yet." />}
+    </section>
+
+    <section className="case-register" aria-labelledby="observations-heading">
+      <header>
+        <h2 id="observations-heading">Eligible observations</h2>
+        <span className="case-state observed">Onchain records, not users</span>
+      </header>
+      <div className="observation-row">
+        <Search aria-hidden="true" />
+        <div>
+          <strong>{formatDiscovery(config?.discoverySize)}</strong>
+          <p>The bounded discovery set counts matching public transaction histories. It does not establish customers, demand, identity, or sponsorship.</p>
+        </div>
+      </div>
+    </section>
+
+    <section className="case-register controlled-lab" aria-labelledby="lab-heading">
+      <header>
+        <h2 id="lab-heading">Earlier Uniswap controlled lab</h2>
+        <span className="case-state lab">Founder-operated testnet run</span>
+      </header>
+      <div className="lab-copy">
+        <p>The previous route deliberately included a stale Uniswap transaction, settled a refreshed route, and released 0.01 tCTC. It remains expansion evidence, not a user or mainnet incident.</p>
+        <div className="receipt-links">
+          <ExplorerLink chain="sepolia" hash={CONTROLLED_LAB.failedTransactionHash}>Failed testnet route</ExplorerLink>
+          <ExplorerLink chain="sepolia" hash={CONTROLLED_LAB.successfulTransactionHash}>Completed testnet route</ExplorerLink>
+          <ExplorerLink chain="creditcoin" hash={CONTROLLED_LAB.releaseTransactionHash}>Testnet credit release</ExplorerLink>
+        </div>
+      </div>
+    </section>
+  </div>;
+}
+
+function ProtocolPage({ config }) {
+  return <div className="route-page protocol-page">
+    <PageHeading
+      title="The predicate accepts one narrow kind of recovery."
+      body="The campaign does not reward any failure and any later success. It verifies a dedicated paid SeaDrop pair, binds the source wallet, and consumes the exact evidence once."
+    />
+    <div className="protocol-layout">
+      <article className="protocol-copy">
+        <section>
+          <h2>Exact paid SeaDrop action</h2>
+          <p>Both Ethereum transactions must call canonical <code>mintSigned</code> on SeaDrop. The source wallet, collection, fee recipient, quantity, value, and stable mint parameters must match. Only the refreshed salt and signature may change.</p>
+          <p>The OpenSea attribution suffix <code>{OPEN_SEA_ATTRIBUTION_SUFFIX}</code> is preserved and checked rather than discarded as arbitrary trailing calldata.</p>
+        </section>
+        <section>
+          <h2>Failure before completion</h2>
+          <p>The first receipt must fail without logs. The next source nonce must complete within the campaign’s block-gap limit, emit the exact SeaDrop mint event, and mint the expected token quantity to the payer.</p>
+        </section>
+        <section>
+          <h2>Native batch, derived payout</h2>
+          <p>Attestcoin verifies both Ethereum receipts as one native batch on Creditcoin using source chain key 3. The recovery contract derives the only beneficiary from the proven source wallet; neither the browser nor the relayer supplies a destination.</p>
+        </section>
+        <section>
+          <h2>Fixed pool and replay boundary</h2>
+          <p>Campaign funding, credit amount, slot count, source rule, and deadline are fixed at creation. Each wallet, transaction query, and pair can release once. After the deadline, only the unused campaign remainder can return to its sponsor.</p>
+        </section>
+        <section className="truth-limits">
+          <h2>What the proof does not say</h2>
+          <p>Attestcoin proves transaction inclusion and continuity. It does not prove a human-readable revert reason, the wallet owner’s identity, market demand, platform endorsement, insurance coverage, or an exact gas refund.</p>
+        </section>
+      </article>
+      <aside className="protocol-register" aria-labelledby="register-heading">
+        <h2 id="register-heading">Live boundary</h2>
+        <dl>
+          <ProtocolField label="Source" value={`${config?.source?.name ?? "Ethereum Mainnet"} · key ${config?.source?.chainKey ?? 3}`} />
+          <ProtocolField label="Settlement" value={config?.settlement?.name ?? "Creditcoin Testnet"} />
+          <ProtocolField label="Campaign" value={config?.campaignNumber ? `#${config.campaignNumber}` : "Not published"} />
+          <ProtocolField label="Recovery pool" value={config?.poolAddress} />
+          <ProtocolField label="Pair verifier" value={config?.verifierAddress} />
+          <ProtocolField label="Predicate" value={config?.predicateAddress} />
+          <ProtocolField label="Fee recipient" value={config?.rule?.feeRecipient} />
+          <ProtocolField label="Terms hash" value={config?.campaign?.termsHash} />
+        </dl>
+      </aside>
+    </div>
+  </div>;
+}
+
+function PageHeading({ body, title }) {
+  return <header className="page-heading">
+    <h1>{title}</h1>
+    <p>{body}</p>
+  </header>;
+}
+
+function CaseField({ chain, label, value }) {
+  return <div className="case-field">
+    <span>{label}</span>
+    <code>{value}</code>
+    {chain && value && <ExplorerLink chain={chain} hash={value}>Inspect</ExplorerLink>}
+  </div>;
+}
+
+function EmptyCase({ text }) {
+  return <div className="empty-case"><Radio aria-hidden="true" /><p>{text}</p></div>;
+}
+
+function ProtocolField({ label, value }) {
+  return <div><dt>{label}</dt><dd>{value ? <code>{value}</code> : "Awaiting live configuration"}</dd></div>;
+}
+
+function ExplorerLink({ chain, children, hash }) {
+  const origins = {
+    ethereum: ETHEREUM_EXPLORER,
+    sepolia: "https://sepolia.etherscan.io",
+    creditcoin: CREDITCOIN_EXPLORER,
+  };
+  return <a href={`${origins[chain]}/tx/${hash}`} target="_blank" rel="noreferrer">
+    <span>{children}</span><ExternalLink aria-hidden="true" />
+  </a>;
+}
+
+function deskCopy(flow, eligibility, releaseResult) {
+  const copies = {
+    "loading-config": ["Opening the campaign file", "Loading funding, capacity, and claim-window terms from the recovery service."],
+    disconnected: ["Check this wallet", "Connect the Ethereum wallet that made both mint attempts. Checking is read-only."],
+    checking: ["Reading the source history", "RetryCredit is looking for the exact failed-to-completed pair inside the fixed campaign window."],
+    ineligible: ["This wallet is outside this campaign", eligibility?.reason || "No qualifying pair was found in the bounded source window. The public case remains available to inspect."],
+    eligible: ["This wallet can recover", `The source pair qualifies for ${formatCredit(eligibility?.creditAmount)}. One personal signature authorizes this fixed campaign release.`],
+    authorizing: ["Authorization requested", "Confirm the bounded personal signature in your wallet. It cannot move Ethereum assets or choose another recipient."],
+    "proof-pending": ["Building the native batch", "Attestcoin is proving the ordered Ethereum pair. RetryCredit will relay the fixed release when it is ready."],
+    "relay-pending": ["Relaying on Creditcoin", "The source pair is ready and the one-time Creditcoin release is being submitted."],
+    released: ["Credit reached the source wallet", `${formatCredit(releaseResult?.creditAmount)} was released once on Creditcoin Testnet.`],
+    "already-claimed": ["This wallet already recovered", "The campaign recognizes the prior release and will not pay the same wallet or pair again."],
+    "service-unavailable": ["The recovery service is unavailable", "Your wallet has not lost eligibility. Retry the service without reconnecting or changing networks."],
+    "retryable-error": ["The action did not finish", "Your connected wallet and eligibility state are preserved. Read the notice, then retry the same step."],
+    "account-changed": ["The connected wallet changed", "Check the new address before authorizing. RetryCredit will never reuse another wallet’s eligibility result."],
+    offline: ["You are offline", "Reconnect to the internet, then retry. No release request was sent while this browser was offline."],
+  };
+  const [title, body] = copies[flow] ?? copies.disconnected;
+  return { title, body };
+}
+
+function primaryLabel(flow, configState) {
+  if (configState === "loading") return "Loading live campaign";
+  const labels = {
+    disconnected: "Connect wallet and check",
+    checking: "Checking Ethereum history",
+    ineligible: "Check this wallet again",
+    eligible: "Authorize fixed recovery",
+    authorizing: "Confirm in your wallet",
+    "proof-pending": "Building native proof",
+    "relay-pending": "Relaying fixed credit",
+    released: "Credit released",
+    "already-claimed": "Already claimed",
+    "service-unavailable": "Retry recovery service",
+    "retryable-error": "Try the same step again",
+    "account-changed": "Check this wallet",
+    offline: "Offline",
+  };
+  return labels[flow] ?? "Check wallet eligibility";
+}
+
+function stateIcon(flow) {
+  if (flow === "released" || flow === "already-claimed") return <Check />;
+  if (flow === "eligible") return <ShieldCheck />;
+  if (["checking", "authorizing", "proof-pending", "relay-pending", "loading-config"].includes(flow)) return <LoaderCircle className="spin" />;
+  if (["ineligible", "retryable-error", "service-unavailable", "offline"].includes(flow)) return <AlertCircle />;
+  return <Wallet />;
+}
+
+function formatCredit(value) {
+  if (value === undefined || value === null || value === "") return "Amount pending";
+  try {
+    const formatted = formatEther(BigInt(value));
+    return `${trimDecimal(formatted)} tCTC`;
+  } catch {
+    return `${value} tCTC`;
+  }
+}
+
+function formatCapacity(capacity) {
+  if (!capacity) return "Capacity pending";
+  return `${capacity.remaining} of ${capacity.total} slots remain`;
+}
+
+function formatWindow(rule) {
+  if (!rule?.startBlock || !rule?.endBlock) return "Block window pending";
+  return `${Number(rule.startBlock).toLocaleString()}–${Number(rule.endBlock).toLocaleString()}`;
+}
+
+function formatDeadline(value) {
+  if (!value) return "Deadline pending";
+  const numeric = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
+  const date = new Date(typeof numeric === "number" && numeric < 10_000_000_000 ? numeric * 1000 : numeric);
+  if (Number.isNaN(date.getTime())) return "Deadline pending";
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(date);
+}
+
+function formatDiscovery(value) {
+  if (!Number.isFinite(Number(value))) return "No discovery count is published yet.";
+  return `${Number(value).toLocaleString()} matching source ${Number(value) === 1 ? "pair" : "pairs"} observed.`;
+}
+
+function trimDecimal(value) {
+  return value.includes(".") ? value.replace(/0+$/, "").replace(/\.$/, "") : value;
+}
+
+function serviceLabel(state) {
+  return ({
+    loading: "Loading campaign",
+    ready: "Recovery live",
+    unavailable: "Service unavailable",
+    offline: "Browser offline",
+  })[state] ?? "Checking service";
+}
+
+function cleanError(error) {
+  if (error instanceof TemporaryUnavailableError || error?.temporaryUnavailable) {
+    return "The recovery service did not answer in time. Retry without reconnecting your wallet.";
+  }
+  const message = String(error?.message ?? "The request could not be completed.");
+  if (/ECONN|fetch|network|socket|127\.0\.0\.1/i.test(message)) {
+    return "The recovery service could not be reached. Check your connection and try again.";
+  }
+  return message.length > 220 ? `${message.slice(0, 217)}…` : message;
+}
+
+function short(value) {
+  if (!value || value.length < 14) return value || "—";
+  return `${value.slice(0, 7)}…${value.slice(-5)}`;
+}
+
+function safeAddress(value) {
+  if (!value) return "";
+  try { return getAddress(value); } catch { return ""; }
+}
+
+function readSavedRelease() {
+  try {
+    const value = JSON.parse(localStorage.getItem(RELEASE_STORAGE_KEY) ?? "null");
+    return value?.wallet && value?.release ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRoute(path) {
+  if (path === "/activity") return "/cases";
+  return ROUTES.some((item) => item.path === path) ? path : "/";
+}
+
+function navigate(event, path) {
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  if (window.location.pathname !== path) {
+    window.history.pushState({}, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+}
+
+function usePathname() {
+  const [path, setPath] = useState(window.location.pathname);
+  useEffect(() => {
+    const update = () => setPath(window.location.pathname);
+    window.addEventListener("popstate", update);
+    return () => window.removeEventListener("popstate", update);
+  }, []);
+  return path;
+}
+
+createRoot(document.getElementById("root")).render(<App />);

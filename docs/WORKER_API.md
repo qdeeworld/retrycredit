@@ -1,8 +1,8 @@
-# RetryCredit proof and execution API
+# RetryCredit Recovery Campaign API
 
-The API operates the bounded public RetryCredit V3 testnet journey. It authenticates the beneficiary, creates and funds an exact service credit, commits two raw signed source routes before broadcast, executes the bounded Sepolia pair, and requests one Creditcoin release after Attestcoin finality.
+The active API operates one pre-funded Recovery Campaign over a closed set of paid Ethereum-mainnet SeaDrop failure-to-completion pairs. It re-reads both source transactions and receipts, authenticates the deployed Creditcoin bindings, asks the source wallet for a five-minute offchain consent, builds one pair-local Attestcoin batch, simulates the immutable campaign, and relays the fixed release.
 
-The visitor's wallet signs only a short-lived ownership message. It does not submit a transaction, deposit an asset, or approve a token.
+The wallet does not submit a transaction, switch networks, deposit an asset, or choose a destination. The contract derives the beneficiary from the proven Ethereum sender. Earlier Sepolia/Uniswap V3 endpoints remain available for rollback and archived evidence.
 
 ## Run locally
 
@@ -37,13 +37,16 @@ npm run app:dev
 | `PUBLIC_ORIGIN` | Origin bound into wallet challenge text and signature verification. |
 | `RETRYCREDIT_PUBLIC_ENABLED` | Set to `true` only when the bounded public service is funded and configured. |
 | `RETRYCREDIT_DEMO_PRIVATE_KEY` | Secret testnet service key. Never expose it to the frontend, logs, docs, or repository. |
+| `RETRYCREDIT_RECOVERY_ENABLED` | Optional explicit recovery kill switch. Set to `false` to disable even when addresses are configured. |
+| `RETRYCREDIT_RECOVERY_POOL_ADDRESS` | Active `RetryCreditRecoveryCampaign` address. |
+| `RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER` | Positive active campaign number. |
 | `RETRYCREDIT_POOL_ADDRESS` | Active Creditcoin RetryCredit pool. |
 | `RETRYCREDIT_VERIFIER_ADDRESS` | Active Creditcoin Attestcoin verifier. |
 | `SEPOLIA_RPC_URL` | Ethereum Sepolia execution RPC. |
 | `CREDITCOIN_RPC` | Creditcoin Testnet RPC. |
 | `ATTESTCOIN_PROOF_BUILDER` | Creditcoin Testnet Attestcoin proof-builder URL. |
 
-`RULEDROP_POOL_ADDRESS`, `RULEDROP_POOL_VERSION`, and `ETHEREUM_RPC_URLS` support archived RuleDrop compatibility endpoints that remain in the process; they are not requirements of the V3 RetryCredit journey. The frontend build uses `VITE_RETRYCREDIT_API_ORIGIN` to select the public API origin.
+`ETHEREUM_RPC_URLS` is used by the Recovery Campaign to re-read mainnet source data and also supports archived RuleDrop compatibility endpoints. `RULEDROP_POOL_ADDRESS` and `RULEDROP_POOL_VERSION` are legacy-only. The frontend build uses `VITE_RETRYCREDIT_API_ORIGIN` to select the public API origin.
 
 ## HTTP behavior
 
@@ -51,13 +54,57 @@ npm run app:dev
 - Errors use `{ "error": { "code", "message", "requestId" } }`.
 - Every response includes `x-request-id` for operational correlation.
 - Browser CORS emits the one configured `ALLOWED_ORIGIN`; CORS is not authentication and does not block non-browser clients.
-- Creation, execution, and release operations are replay-safe against their durable onchain state. A retry returns or reconstructs the existing lifecycle instead of creating a second release.
+- Recovery release operations are serialized in-process and replay-safe against campaign-scoped onchain state. A concurrent or repeated request returns the existing current-campaign release instead of sending a second credit.
 
 ## Routes
 
 ### `GET /health`
 
-Returns process identity, Creditcoin network `102031`, and whether the public demo service was configured at process start. This is a process-health check, not a live reserve or allocation measurement.
+Returns process identity, Creditcoin network `102031`, legacy-service configuration, and the Recovery Campaign lifecycle state (`disabled`, `waking`, `ready`, or `error`). This is process health, not a live reserve measurement.
+
+### `GET /api/recovery/config`
+
+Returns a stable disabled/waking shape until recovery is ready, then the authenticated source and settlement identities, pool/verifier/predicate addresses, campaign number, immutable terms, live capacity, featured public case, and discovery size. The service authenticates contract bytecode and all native/source bindings before entering `ready`.
+
+### `POST /api/recovery/eligibility`
+
+Request:
+
+```json
+{ "wallet": "0x..." }
+```
+
+Returns `eligible`, a stable status (`eligible`, `claimed`, `not-found`, `closed`, `full`, or `replayed`), the exact source pair when known, fixed credit amount, and any current-campaign release. Discovery is a closed three-address index; live Ethereum transactions, receipts, rule checks, and current campaign state remain authority.
+
+### `POST /api/recovery/challenge`
+
+Request:
+
+```json
+{ "wallet": "0x..." }
+```
+
+Requires current eligibility and returns a five-minute EIP-191 message bound to the public origin, wallet, pool, campaign number, and both transaction hashes. The API stores no challenge session; it reconstructs and verifies the signed message exactly.
+
+### `POST /api/recovery/release`
+
+Request:
+
+```json
+{
+  "wallet": "0x...",
+  "message": "...",
+  "issuedAt": 0,
+  "expiresAt": 0,
+  "signature": "0x..."
+}
+```
+
+Destination fields are forbidden. After signature verification, the service requests one Attestcoin batch for the exact pair, validates block/hash/order and native transaction indexes, derives the campaign-scoped query and pair IDs, checks replay, simulates `releaseCredit`, and submits through the configured Creditcoin testnet relayer. It then verifies the exact beneficiary balance delta, event fields, campaign count/accounting, and replay markers.
+
+HTTP `425` means the recovery service is waking or the exact Attestcoin batch is not yet ready. The frontend retries only `425` with bounded backoff. Other errors are terminal for that attempt.
+
+## Archived V3 routes
 
 ### `GET /api/retry-credit/config`
 
@@ -114,6 +161,6 @@ HTTP `425` means the source window or transactions are not ready, or Attestcoin 
 
 ## Trust boundary
 
-API validation, RPC checks, proof construction, and simulations fail fast and improve operator feedback; they are not payout authority. The Creditcoin pool stores the funded terms and committed source hashes. The native Attestcoin verifier proves the two ordered Sepolia receipts, the predicate enforces the exact signed-route and Uniswap settlement semantics, and the pool consumes query, pair, action, and service-credit replay identifiers before releasing funds.
+API validation, source RPC reads, proof construction, native index calculation, and simulations fail fast and improve operator feedback; they are not payout authority. The active campaign stores exact funded terms. The native Attestcoin verifier proves the two ordered Ethereum receipts, the predicate enforces canonical paid SeaDrop failure-to-completion semantics, and the campaign derives the destination and consumes current-campaign wallet/query/pair replay before releasing funds.
 
-The service process holds a secret testnet root key and derives distinct sponsor/source, route-signer, and relayer role addresses. Those role boundaries are explicit, but they are not independent secret stores. Never expose the root key.
+The service process holds a secret Creditcoin testnet relayer key. It can pay gas and relay any valid proof, but cannot redirect a credit, change campaign terms, create source evidence, withdraw active capacity, or bypass replay. Never expose the key.

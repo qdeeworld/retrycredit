@@ -3,161 +3,135 @@ import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
 const root = new URL("../", import.meta.url);
-const files = await Promise.all([
+const [html, app, styles, api, gitignore, redirects] = await Promise.all([
   readFile(new URL("web/index.html", root), "utf8"),
   readFile(new URL("web/src/main.jsx", root), "utf8"),
   readFile(new URL("web/src/styles.css", root), "utf8"),
   readFile(new URL("web/src/api.mjs", root), "utf8"),
-  readFile(new URL("README.md", root), "utf8"),
-  readFile(new URL("docs/DEPLOYMENTS.md", root), "utf8"),
-  readFile(new URL("docs/WORKER_API.md", root), "utf8"),
-  readFile(new URL(".env.example", root), "utf8"),
   readFile(new URL(".gitignore", root), "utf8"),
-  readFile(new URL("render.yaml", root), "utf8"),
-  readFile(new URL("src/server.mjs", root), "utf8"),
-  readFile(new URL("package.json", root), "utf8"),
   readFile(new URL("web/public/_redirects", root), "utf8"),
 ]);
-const [html, app, styles, api, readme, deployments, workerDoc, envExample, gitignore, render, server, packageJson, redirects] = files;
 
-test("public brand and primary action describe one recoverable RetryCredit journey", () => {
-  assert.match(html, /<title>RetryCredit \| The retry pays for the failure<\/title>/);
-  assert.match(html, /https:\/\/retrycredit\.dolepee\.com\/retrycredit-og-v1\.png/);
-  assert.match(app, /https:\/\/github\.com\/dolepee\/retrycredit/);
-  assert.doesNotMatch(html, /github\.com\/dolepee\/ruledrop/);
-  assert.doesNotMatch(html, /RuleDrop/);
-
-  assert.match(app, /Finish the swap/);
-  assert.match(app, /The retry pays for the failure/);
-  assert.match(app, /className="recovery-cockpit"/);
-  assert.match(app, /Five checks\. One release\./);
-  assert.match(app, /className="route-spine"/);
-  assert.match(app, /hasActiveStage \? `Step \$\{displayIndex \+ 1\} of \$\{stages\.length\}` : "Route complete"/);
-  assert.match(app, /`\$\{stages\.length\}\/\$\{stages\.length\} cleared`/);
-  assert.match(app, /path: "\/activity"/);
-  assert.match(app, /path: "\/protocol"/);
-  assert.match(app, /className="action-bay" id="start"/);
+test("the public shell is a multi-route Recovery Dispatch, not the old cockpit", () => {
+  assert.match(html, /<title>RetryCredit \| Check a paid retry for recovery<\/title>/);
+  assert.match(html, /Ethereum Mainnet → Creditcoin Testnet/);
+  assert.match(app, /path: "\/", label: "Recovery"/);
+  assert.match(app, /path: "\/cases", label: "Cases"/);
+  assert.match(app, /path: "\/protocol", label: "Protocol"/);
+  assert.match(app, /className="app-header"/);
+  assert.match(app, /className="campaign-layout"/);
+  assert.match(app, /className="campaign-file"/);
+  assert.match(app, /className=\{`eligibility-desk state-\$\{flow\}`\}/);
   assert.match(app, /window\.history\.pushState/);
   assert.match(app, /aria-current=\{route === path \? "page"/);
   assert.match(redirects, /^\/\* \/index\.html 200$/m);
-  assert.match(app, /Connect wallet to start/);
-  assert.match(app, /hexlify\(toUtf8Bytes\(challenge\.message\)\)/);
-  assert.match(app, /The release boundary/);
-  assert.match(app, /Restart saved run/);
-  assert.match(app, /session && <button className="reset-action" onClick=\{onReset\} disabled=\{busy\}/);
-  assert.doesNotMatch(app, /href="#proof"/);
-  assert.doesNotMatch(app, />Proof</);
-  assert.doesNotMatch(app, /judge/i);
-  assert.match(app, /no mainnet asset or token approval/i);
 
-  assert.match(app, /useState\("idle"\)/);
-  for (const state of ["waking", "ready", "paused", "temporarily-unavailable"]) {
-    assert.match(app, new RegExp(`"${state}"`));
+  assert.doesNotMatch(app, /recovery-cockpit|route-spine|action-bay|app-rail|Five checks\. One release\./);
+  assert.doesNotMatch(app, /The retry pays for the failure/);
+  assert.doesNotMatch(styles, /\.recovery-cockpit|\.route-spine|\.app-rail|\.mobile-nav/);
+  assert.doesNotMatch(styles, /\.hero\b|linear-gradient|radial-gradient|backdrop-filter|box-shadow/);
+});
+
+test("Recovery leads with campaign truth and one source-wallet action", () => {
+  assert.match(app, /A completed mint can unlock one fixed credit\./);
+  for (const label of ["Fixed amount", "Capacity", "Source window", "Claim deadline"]) {
+    assert.match(app, new RegExp(label));
   }
+  assert.match(app, /RetryCredit pre-funds the bounded Creditcoin release/);
+  assert.match(app, /SeaDrop, OpenSea, and the NFT collection do not sponsor or endorse this pilot/);
+  assert.match(app, /Connect wallet and check/);
+  assert.match(app, /Authorize fixed recovery/);
+  assert.match(app, /No destination field and no network switch/);
+  assert.match(app, /contract derives the payout wallet from that pair/);
+  assert.doesNotMatch(app, /wallet_switchEthereumChain|wallet_addEthereumChain/);
+  assert.doesNotMatch(app, /<input/);
+
+  assert.match(app, /One wallet\. One ordered source pair\. One fixed release\./);
+  assert.match(app, /Mint did not complete/);
+  assert.match(app, /NFT mint completed/);
+  assert.match(app, /Fixed credit released/);
+  assert.match(app, /config\?\.featuredCase/);
+  assert.match(app, /eligibility\?\.pair/);
+});
+
+test("the wallet desk includes every required resilient state", () => {
+  for (const state of [
+    "loading-config",
+    "disconnected",
+    "checking",
+    "ineligible",
+    "eligible",
+    "authorizing",
+    "proof-pending",
+    "relay-pending",
+    "released",
+    "already-claimed",
+    "service-unavailable",
+    "retryable-error",
+    "account-changed",
+    "offline",
+  ]) assert.match(app, new RegExp(`"${state}"`));
+
   assert.match(app, /role="status" aria-live="polite" aria-atomic="true"/);
-  assert.match(app, /Waking the proof service — the first start can take up to about 45 seconds/);
-  assert.match(app, /Wake service and retry/);
-  assert.match(app, /Your saved recovery is unchanged; try again/);
-  assert.match(app, /disabled=\{busy \|\| wrongWallet \|\| phase === "released"\}/);
-  assert.match(app, /className="primary-action"[^>]*aria-busy=\{busy\}/);
-  assert.doesNotMatch(app, /className="action-bay" id="start" aria-busy/);
-  assert.match(app, /The proof service is paused\. Your saved recovery is unchanged; check again later\./);
-  assert.match(app, /Check service again/);
-  assert.doesNotMatch(app, /className="wallet-button" disabled=/);
-  assert.match(app, /session\?\.beneficiary && session\.beneficiary\.toLowerCase\(\) !== wallet\.toLowerCase\(\)/);
-  assert.match(app, /const beneficiary = session\?\.beneficiary \|\| account/);
-  assert.match(app, /Saved recovery receipts/);
-  assert.match(app, /session\.failedTransactionHash && <SavedReceipt/);
-  assert.match(app, /session\.successfulTransactionHash && <SavedReceipt/);
-  assert.match(app, /session\.release\?\.transactionHash && <SavedReceipt/);
-  assert.match(app, /document\.getElementById\("main-content"\)\?\.focus\(\{ preventScroll: true \}\)/);
-  assert.match(app, /}, \[path\]\)/);
+  assert.match(app, /role="alert"/);
+  assert.match(app, /checkedWallet\.current\.toLowerCase\(\) !== account\.toLowerCase\(\)/);
+  assert.match(app, /disabled=\{disabled\} aria-busy=\{busy\}/);
+  assert.match(app, /Inspect the public case/);
+  assert.match(app, /Your connected wallet and eligibility state are preserved/);
+});
 
-  assert.match(styles, /\.wallet-button \{ min-height:44px/);
-  assert.doesNotMatch(styles, /\.wallet-button\s*\{[^}]*font-size:0/);
-  assert.match(styles, /\.primary-action \{[^}]*min-height:84px/);
-  assert.match(styles, /\.mobile-nav a \{[^}]*min-height:60px/);
-  assert.match(styles, /@media\(prefers-reduced-motion:reduce\)/);
-  assert.doesNotMatch(styles, /\.hero\b/);
-  assert.doesNotMatch(styles, /\.action-panel\b/);
+test("Cases keeps recovered, observed, and controlled evidence distinct", () => {
+  assert.match(app, /Public recovery case/);
+  assert.match(app, /Eligible observations/);
+  assert.match(app, /Onchain records, not users/);
+  assert.match(app, /It does not establish customers, demand, identity, or sponsorship/);
+  assert.match(app, /Earlier Uniswap controlled lab/);
+  assert.match(app, /Founder-operated testnet run/);
+  assert.match(app, /not a user or mainnet incident/);
+  assert.match(app, /0\.01 tCTC/);
+});
 
-  assert.match(api, /CONFIG_WAKE_TOTAL_TIMEOUT_MS = 45_000/);
-  assert.match(api, /CONFIG_WAKE_REQUEST_TIMEOUT_MS = 38_000/);
-  assert.match(api, /CONFIG_WAKE_ATTEMPT_OFFSETS_MS = \[0, 3_000, 8_000\]/);
+test("Protocol states the exact predicate, payout, and truth limits", () => {
+  assert.match(app, /dedicated paid SeaDrop pair/);
+  assert.match(app, /canonical <code>mintSigned<\/code>/);
+  assert.match(app, /0x3d958fe2/);
+  assert.match(app, /source chain key 3/);
+  assert.match(app, /neither the browser nor the relayer supplies a destination/);
+  assert.match(app, /Each wallet, transaction query, and pair can release once/);
+  assert.match(app, /only the unused campaign remainder can return to its sponsor/);
+  assert.match(app, /does not prove a human-readable revert reason/);
+  assert.match(app, /market demand/);
+  assert.match(app, /exact gas refund/);
+});
+
+test("the V2 API surface is bounded and the V3 helpers remain available", () => {
+  for (const route of [
+    "/api/recovery/config",
+    "/api/recovery/eligibility",
+    "/api/recovery/challenge",
+    "/api/recovery/release",
+  ]) assert.match(api, new RegExp(route.replaceAll("/", "\\/")));
+  assert.match(api, /body: \{ wallet, message, issuedAt, expiresAt, signature \}/);
+  assert.match(api, /error\?\.status !== 425/);
+  assert.match(api, /onPending\?\./);
+  assert.match(api, /RECOVERY_ACTION_REQUEST_TIMEOUT_MS = 30_000/);
   assert.match(api, /RELEASE_REQUEST_TIMEOUT_MS = 150_000/);
-  assert.match(api, /RetryCredit is temporarily unavailable\. Please try again shortly\./);
+  assert.match(api, /export async function wakeConfig/);
+  assert.match(api, /export async function releaseWhenReady/);
   assert.doesNotMatch(api, /ECONNREFUSED|127\.0\.0\.1:4179/);
 });
 
-test("public evidence links bind the exact fresh lifecycle", () => {
-  const hashes = [
-    "0x9cb81e134e33f32b702786589510948d097ae98d0ef3ffec4c631a1288a0ee07",
-    "0x81e96116c5b3e050a1b4ac6d1cea611817e7d028636003e7aa6d12f5c412f9b0",
-    "0xb787581b58bab15bc4e8e78389c6d0d4bb362896d265bdbe2263df7d7eb77cdf",
-  ];
-  for (const hash of hashes) {
-    assert.match(app, new RegExp(hash));
-    assert.match(readme, new RegExp(hash));
-    assert.match(deployments, new RegExp(hash));
-  }
-  assert.match(readme, /founder-funded service credit/);
-  assert.match(readme, /not independent adoption or customer demand/);
-  assert.match(app, /From stale route to credit in 552 seconds/);
-  assert.match(app, /0\.218500 test USDC/);
-  assert.match(app, /Creditcoin · 0\.01 tCTC/);
-  assert.match(readme, /reviewed V3 pilot/);
-  assert.match(deployments, /controlled stale-route test/);
-});
-
-test("deployment and API docs describe the active V3 release", () => {
-  const addresses = [
-    "0xFB6E577ED8B472AC4aC99fA0Dbc0e3BF904BAFE3",
-    "0x6AF76Af54861f9F6E9F38cfD02A1002dc650bc86",
-    "0x97Fa88CfCaeE1a5D4Ae749b9b5698F2147b986fC",
-    "0x81b5d955F4EbfaE02FF6346cf368A2c4347248A1",
-    "0x0000000000000000000000000000000000000FD2",
-  ];
-  for (const address of addresses) assert.match(deployments, new RegExp(address));
-  assert.match(deployments, /Attestcoin `chainKey 1`/);
-  assert.match(deployments, /V3.*release marker/i);
-  assert.match(deployments, /archived proof-engine predecessor evidence/i);
-  assert.doesNotMatch(deployments, /live V1 deployment|judge-facing/i);
-
-  const routes = [
-    "GET /health",
-    "GET /api/retry-credit/config",
-    "POST /api/retry-credit/challenge",
-    "POST /api/retry-credit/prepare",
-    "GET /api/retry-credit/:serviceCreditNumber/status",
-    "POST /api/retry-credit/:serviceCreditNumber/execute",
-    "POST /api/retry-credit/:serviceCreditNumber/release",
-  ];
-  for (const route of routes) assert.match(workerDoc, new RegExp(route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(workerDoc, /HTTP `425`/);
-  assert.match(workerDoc, /x-request-id/);
-  assert.match(workerDoc, /CORS is not authentication/);
-  assert.match(workerDoc, /fail fast.*not payout authority/is);
-  assert.doesNotMatch(workerDoc, /^# RuleDrop Worker API/m);
-
-  for (const name of [
-    "ALLOWED_ORIGIN",
-    "PUBLIC_ORIGIN",
-    "RETRYCREDIT_PUBLIC_ENABLED",
-    "RETRYCREDIT_DEMO_PRIVATE_KEY",
-    "RETRYCREDIT_POOL_ADDRESS",
-    "RETRYCREDIT_VERIFIER_ADDRESS",
-    "SEPOLIA_RPC_URL",
-    "CREDITCOIN_RPC",
-    "ATTESTCOIN_PROOF_BUILDER",
-  ]) assert.match(envExample, new RegExp(`^${name}=`, "m"));
-  assert.match(envExample, /^RETRYCREDIT_DEMO_PRIVATE_KEY=$/m);
-
-  assert.match(render, /RETRYCREDIT_PUBLIC_ENABLED\n\s+value: "true"/);
-  assert.match(render, /RETRYCREDIT_DEMO_PRIVATE_KEY\n\s+sync: false/);
-  assert.match(render, /name: retrycredit-api/);
-  assert.match(server, /0x81b5d955F4EbfaE02FF6346cf368A2c4347248A1/);
-  assert.match(render, /https:\/\/retrycredit\.dolepee\.com/);
-  assert.match(packageJson, /"build:web:cloudflare": "VITE_RETRYCREDIT_API_ORIGIN=https:\/\/retrycredit-api\.onrender\.com vite build"/);
+test("the interface keeps the public accessibility and responsive floor", () => {
+  assert.match(app, /className="skip-link"/);
+  assert.match(app, /document\.getElementById\("main-content"\)\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(styles, /:focus-visible \{ outline:3px solid var\(--focus\)/);
+  assert.match(styles, /\.wallet-button \{[^}]*min-height:44px/s);
+  assert.match(styles, /\.secondary-action \{[^}]*min-height:44px/s);
+  assert.match(styles, /@media\(max-width:420px\)/);
+  assert.match(styles, /@media\(prefers-reduced-motion:reduce\)/);
+  assert.match(styles, /@media\(forced-colors:active\)/);
+  assert.match(styles, /overflow-wrap:anywhere/);
+  assert.match(styles, /min-width:320px/);
 });
 
 test("private demo and submission preparation stays out of the repository", async () => {
@@ -166,4 +140,5 @@ test("private demo and submission preparation stays out of the repository", asyn
   assert.match(gitignore, /demo-script\.\*/);
   assert.match(gitignore, /docs\/\*SUBMISSION\*\.md/);
   assert.match(gitignore, /submission-checklist\.\*/);
+  assert.doesNotMatch(app, /judge page|submission checklist|demo script/i);
 });
