@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title description">
+  <title id="title">RetryCredit Recovery Dispatch</title>
+  <desc id="description">A warm incident sheet connects a failed Ethereum mint, its completed retry, and one fixed Creditcoin release.</desc>
+
+  <rect width="1200" height="675" fill="#f4f0e4"/>
+  <rect width="1200" height="104" fill="#111512"/>
+  <rect x="54" y="28" width="46" height="46" fill="none" stroke="#f4f0e4" stroke-width="1"/>
+  <text x="77" y="57" fill="#f4f0e4" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="13" font-weight="600" text-anchor="middle">RC</text>
+  <text x="120" y="61" fill="#f4f0e4" font-family="'Familjen Grotesk', 'Helvetica Neue', Arial, sans-serif" font-size="26" font-weight="700" letter-spacing="-0.6">RetryCredit</text>
+  <text x="774" y="57" fill="#c8c4b7" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="13">ETHEREUM MAINNET</text>
+  <path d="M932 52h44m-9-8 9 8-9 8" fill="none" stroke="#97988e" stroke-width="1.5"/>
+  <text x="995" y="57" fill="#c8c4b7" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="12">CREDITCOIN TESTNET</text>
+
+  <rect x="55" y="149" width="733" height="445" fill="#f4f0e4" stroke="#15170f" stroke-width="1"/>
+  <rect x="55" y="149" width="733" height="5" fill="#15170f"/>
+  <rect x="55" y="589" width="733" height="5" fill="#15170f"/>
+  <rect x="86" y="139" width="8" height="25" fill="#ebe6d8" stroke="#15170f" stroke-width="1"/>
+  <rect x="101" y="139" width="8" height="25" fill="#ebe6d8" stroke="#15170f" stroke-width="1"/>
+  <rect x="116" y="139" width="8" height="25" fill="#ebe6d8" stroke="#15170f" stroke-width="1"/>
+
+  <text x="91" y="225" fill="#15170f" font-family="'Familjen Grotesk', 'Helvetica Neue', Arial, sans-serif" font-size="59" font-weight="700" letter-spacing="-2.2">
+    <tspan x="91" dy="0">A completed mint</tspan>
+    <tspan x="91" dy="57">can unlock one</tspan>
+    <tspan x="91" dy="57">fixed credit.</tspan>
+  </text>
+  <text x="92" y="425" fill="#5e6057" font-family="'Familjen Grotesk', 'Helvetica Neue', Arial, sans-serif" font-size="18">The source wallet is the payout address.</text>
+  <text x="92" y="451" fill="#5e6057" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="12">ONE ORDERED PAIR · ONE PRE-FUNDED RELEASE · REPLAY BLOCKED</text>
+
+  <line x1="91" y1="486" x2="748" y2="486" stroke="#97988e" stroke-width="1"/>
+  <rect x="91" y="510" width="42" height="42" fill="#d64521"/>
+  <text x="112" y="536" fill="#f4f0e4" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="12" font-weight="600" text-anchor="middle">A</text>
+  <text x="146" y="526" fill="#15170f" font-family="'Familjen Grotesk', 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="700">MINT FAILED</text>
+  <text x="146" y="547" fill="#5e6057" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="10">STATUS 0</text>
+  <path d="M270 531h36m-8-7 8 7-8 7" fill="none" stroke="#1458d4" stroke-width="2"/>
+
+  <rect x="326" y="510" width="42" height="42" fill="#087642"/>
+  <text x="347" y="536" fill="#f4f0e4" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="12" font-weight="600" text-anchor="middle">B</text>
+  <text x="381" y="526" fill="#15170f" font-family="'Familjen Grotesk', 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="700">MINT COMPLETED</text>
+  <text x="381" y="547" fill="#5e6057" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="10">SAME WALLET</text>
+  <path d="M534 531h36m-8-7 8 7-8 7" fill="none" stroke="#1458d4" stroke-width="2"/>
+
+  <rect x="590" y="510" width="42" height="42" fill="#111512"/>
+  <text x="611" y="536" fill="#f4f0e4" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="12" font-weight="600" text-anchor="middle">C</text>
+  <text x="645" y="526" fill="#15170f" font-family="'Familjen Grotesk', 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="700">CREDIT</text>
+  <text x="645" y="547" fill="#5e6057" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="10">RELEASE ONCE</text>
+
+  <rect x="748" y="190" width="397" height="354" fill="#ebe6d8" stroke="#15170f" stroke-width="1"/>
+  <rect x="748" y="190" width="397" height="8" fill="#1458d4"/>
+  <rect x="782" y="229" width="52" height="52" fill="#1458d4"/>
+  <path d="m798 255 8 8 15-18" fill="none" stroke="#f4f0e4" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"/>
+  <text x="856" y="249" fill="#15170f" font-family="'Familjen Grotesk', 'Helvetica Neue', Arial, sans-serif" font-size="25" font-weight="700" letter-spacing="-0.5">CHECK THE</text>
+  <text x="856" y="277" fill="#15170f" font-family="'Familjen Grotesk', 'Helvetica Neue', Arial, sans-serif" font-size="25" font-weight="700" letter-spacing="-0.5">SOURCE WALLET</text>
+
+  <rect x="782" y="320" width="329" height="66" fill="#f4f0e4" stroke="#97988e" stroke-width="1"/>
+  <text x="798" y="343" fill="#5e6057" font-family="'Familjen Grotesk', 'Helvetica Neue', Arial, sans-serif" font-size="12">Wallet under review</text>
+  <text x="798" y="369" fill="#15170f" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="13">CONNECTED SOURCE WALLET</text>
+
+  <rect x="782" y="411" width="329" height="74" fill="#f6c84f" stroke="#15170f" stroke-width="1"/>
+  <text x="802" y="455" fill="#15170f" font-family="'Familjen Grotesk', 'Helvetica Neue', Arial, sans-serif" font-size="20" font-weight="700">CHECK ELIGIBILITY</text>
+  <path d="M1067 448h22m-7-7 7 7-7 7" fill="none" stroke="#15170f" stroke-width="2"/>
+  <text x="783" y="518" fill="#5e6057" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="10">NO DESTINATION FIELD · NO NETWORK SWITCH</text>
+
+  <text x="55" y="635" fill="#5e6057" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="12">RECOVERY DISPATCH</text>
+  <line x1="204" y1="630" x2="994" y2="630" stroke="#c8c4b7" stroke-width="1"/>
+  <text x="1015" y="635" fill="#15170f" font-family="'Familjen Grotesk', 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="700">retrycredit.dolepee.com</text>
+</svg>

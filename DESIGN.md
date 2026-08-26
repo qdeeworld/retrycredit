@@ -1,7 +1,7 @@
 ---
 version: alpha
-name: RetryCredit Recovery Cockpit
-description: A warm, ruled recovery cockpit that leads with one active decision and compresses the full sponsored route into a legible operational spine.
+name: RetryCredit Recovery Dispatch
+description: A warm, ruled incident-recovery desk that leads with wallet eligibility and makes an organic failed-to-completed mainnet action legible without turning proof into the product.
 colors:
   sheet: "#f4f0e4"
   sheet-2: "#ebe6d8"
@@ -27,7 +27,7 @@ components:
     typography: "{typography.interface}"
     rounded: "0px"
     padding: "15px 18px"
-    height: "84px"
+    height: "76px"
   primary-action-hover:
     backgroundColor: "#ffd869"
   wallet-button:
@@ -45,24 +45,18 @@ components:
     typography: "{typography.technical}"
     rounded: "0px"
     height: "32px"
-  application-rail:
-    backgroundColor: "{colors.rail}"
-    textColor: "{colors.sheet}"
-    typography: "{typography.interface}"
-    rounded: "0px"
-    width: "140px"
-  route-signal-current:
+  incident-status-current:
     backgroundColor: "{colors.primary}"
     textColor: "{colors.sheet}"
     typography: "{typography.technical}"
     rounded: "0px"
     size: "44px"
-  route-signal-blocked:
+  incident-status-failed:
     backgroundColor: "{colors.red}"
     typography: "{typography.technical}"
     rounded: "0px"
     size: "38px"
-  route-signal-cleared:
+  incident-status-completed:
     backgroundColor: "{colors.green}"
     textColor: "{colors.sheet}"
     typography: "{typography.technical}"
@@ -74,10 +68,34 @@ components:
     typography: "{typography.technical}"
     rounded: "0px"
     size: "8px"
-  ledger-row-hover:
+  case-row-hover:
     backgroundColor: "{colors.sheet-2}"
     textColor: "{colors.ink}"
     typography: "{typography.interface}"
+  campaign-file:
+    backgroundColor: "{colors.sheet}"
+    textColor: "{colors.ink}"
+    typography: "{typography.interface}"
+  eligibility-desk:
+    backgroundColor: "{colors.sheet-2}"
+    textColor: "{colors.ink}"
+    typography: "{typography.interface}"
+  technical-note:
+    textColor: "{colors.muted}"
+    typography: "{typography.technical}"
+  application-header:
+    backgroundColor: "{colors.rail}"
+    textColor: "{colors.sheet}"
+    typography: "{typography.interface}"
+  strong-rule:
+    backgroundColor: "{colors.rule}"
+    height: "1px"
+  soft-rule:
+    backgroundColor: "{colors.rule-soft}"
+    height: "1px"
+  focus-ring:
+    backgroundColor: "{colors.focus}"
+    size: "3px"
 omitted:
   - section: rounded
     reason: "The implementation uses square geometry directly rather than a named radius scale."
@@ -85,107 +103,102 @@ omitted:
     reason: "The implementation has responsive measurements but no governing named spacing scale."
 ---
 
-# Design System: RetryCredit Recovery Cockpit
+# Design System: RetryCredit Recovery Dispatch
 
 ## Overview
 
-**Creative North Star: "The Recovery Cockpit"**
+**Creative North Star: “The Recovery Dispatch”**
 
-RetryCredit is an Operate product for clearing one blocked DeFi route, not a promotional landing page. Its visual world is a warm signal sheet held together by black rules, technical registers, and authored route geometry. The interface should feel like a recovery cockpit: the next user decision is unmistakable, the active position has visual authority, and the complete route remains legible as compact operational context.
+RetryCredit is an operational desk for one result: tell a wallet whether a funded recovery campaign recognizes its real onchain failure-to-completion pair, then deliver the fixed credit to that same source address. It is not a promotional landing page, a proof explorer, or a generic claims dashboard.
 
-The application remains one coherent instrument across Recovery, Activity, and Protocol. The live run is the primary work surface, the ledger preserves the relationship among the included failure, exact settlement, and one-time release, and the manual explains the protocol boundary without becoming a judge-facing proof page.
+The existing warm signal-sheet world remains the product identity, while the composition changes from a five-stage cockpit into an asymmetric incident file. Recovery is the live eligibility and release surface, Cases records actual campaign outcomes, and Protocol explains the paired-receipt boundary. These remain separate routes with shared chrome.
 
-**Key Characteristics:**
-
-- Warm, flat signal-sheet surfaces bounded by near-black rules.
-- Persistent application chrome and compact technical status fields.
-- One dominant active position backed by a compact five-stage interlocking spine.
-- Square controls and state blocks, with color reinforced by labels and position.
-- User action first; transaction receipts remain contextual confirmation.
+The mainnet incident is the protagonist. Attestcoin proof and Creditcoin receipts appear exactly where they explain eligibility or confirm the result; they never become a separate evaluator surface.
 
 ## Colors
 
-The palette uses warm paper neutrals for the working field, ink and rules for structure, route blue for the active path, blocked red for the included stale attempt, cleared green for settlement and release, and amber for waiting or constrained service states.
+Warm paper neutrals carry the working field, ink and rules establish structure, blue marks the current user decision, red marks the included failed attempt, green marks the completed action or released credit, and amber marks waiting or constrained service states.
 
-**The Signal Is Semantic Rule.** Blue marks the active route, red marks the included blocked route, green marks cleared settlement or release, and amber marks waiting or service conditions. Never use these hues as interchangeable decoration.
-
-**The Redundant State Rule.** Every color-coded state also carries a label, stage position, icon, line treatment, or explicit status text.
+Every semantic color must be reinforced by a label, position, icon, rule treatment, or explicit status. Do not use status hues as interchangeable decoration.
 
 ## Typography
 
-Familjen Grotesk carries navigation, instructions, action labels, and compact page titles. IBM Plex Mono carries route identifiers, amounts, timestamps, network facts, stage numbers, state stamps, and service registers.
+Familjen Grotesk carries navigation, campaign language, decisions, and actions. IBM Plex Mono carries addresses, transaction hashes, block and nonce relationships, amounts, network facts, campaign capacity, and service states.
 
-Hierarchy comes from weight, scale, alignment, and ruled grouping. Page titles are compact and operational; the current recovery decision is the strongest interface-scale statement; technical labels are terse, often uppercase, and deliberately smaller than the values they classify.
-
-**The Instrument Type Rule.** Keep task language in the interface face and machine-verifiable facts in the monospaced face. Do not introduce an editorial display serif, oversized marketing headline, or decorative italic into the application shell.
+The campaign statement may be large but remains operational and left aligned. Use the interface face for what the wallet can do and the monospaced face for what the chain establishes. Do not introduce an editorial display serif, oversized marketing slogan, or decorative italic.
 
 ## Layout
 
-On wide screens, a persistent navigation rail and sticky status strip frame the work area. Recovery uses a dominant action-and-state cockpit paired with a compact five-stage progress spine and a secondary route register; Activity uses a ruled event ledger; Protocol uses a reading column paired with a limits register. These are three first-class routes with shared chrome, not anchor-linked sections on one landing page.
+Use top application chrome rather than a dashboard sidebar. On wide screens, the Recovery route opens as an offset incident file: campaign scope and plain-language result occupy the larger field; the wallet eligibility desk occupies a narrower ruled field aligned to the action. A full-width evidence band below them shows the failed attempt, the completed mint, and the fixed release as one paired sequence.
 
-At the intermediate layout, the cockpit becomes one column without introducing horizontal scrolling. On narrow screens, navigation moves to fixed bottom chrome, the current decision and primary action remain together, and the route compresses into a short vertical progress list instead of five expanded diagrams. Long identifiers wrap safely, controls remain operable at high zoom, and primary interactive targets meet the product's minimum touch size.
+Cases uses a ruled chronological register with one expanded recovery record, not metric cards. Protocol uses a reading column and a compact limits sheet. Supporting explanation may continue below the primary instrument, but the routes must not collapse into anchor-linked sections on one page.
 
-**The First-Viewport Clearance Rule.** The current state, service condition, wallet control, and next recovery action must remain visible before supporting route detail on narrow screens.
+On narrow screens, order the campaign statement, capacity and deadline, wallet result, primary action, then paired evidence. Keep the action and its explanation in the first viewport when practical. Long identifiers wrap safely, high zoom preserves reading order, and controls remain at least 44px tall.
 
 ## Elevation & Depth
 
-This is a flat system with no box-shadow vocabulary. Hierarchy comes from sheet changes, dark fills, rule weight, registration-like borders, and state blocks. A pressed control may move by one physical step, but no surface should float above the route sheet.
+This is a flat system with no box-shadow vocabulary. Hierarchy comes from paper-tone changes, dark fills, rule weight, registration marks, clipped bands, and controlled overlap between the campaign file and eligibility desk.
 
-**The Ruled Surface Rule.** Use borders, aligned fields, and tonal sheet changes to establish depth. Do not add shadows, glass, ambient glow, or a floating console.
+Do not add glass, ambient glow, floating cards, or shadowed crypto panels. Pressed controls may move by one physical step.
 
 ## Shapes
 
-The form language is rectilinear: square signal blocks, hard-edged buttons, ruled rows, straight route lines, short angled branches, a dashed blocked bypass, and terminal blocks at the ends of the five-position route. The distinct switch, branch, bypass, and terminal silhouettes are functional state anatomy, not interchangeable decoration.
+The form language is rectilinear: ruled files, square status marks, hard-edged buttons, ledger rows, block-height ticks, and a paired transaction line that visibly terminates at one release. A small stamped state may rotate slightly when it communicates issued, eligible, or released status.
 
-Large containers remain square. Compact network or availability markers may use a constrained badge silhouette only when it materially improves scanning; decorative pills and rounded card shells do not belong in this world.
+Large containers remain square. Compact availability markers may use a constrained badge silhouette only when it improves scanning. Decorative pills and rounded card shells do not belong in this world.
 
 ## Components
 
 ### Application chrome
 
-Keep the RetryCredit identity, three first-class routes, current network path, service state, and wallet control persistent. The active route uses position, type, and a rail marker in addition to blue. Desktop uses the side rail; mobile uses fixed bottom navigation while preserving the same information architecture.
+Keep RetryCredit, Recovery, Cases, Protocol, the Ethereum Mainnet to Creditcoin Testnet path, service state, and wallet control persistent. The active route needs a rule or positional marker in addition to color. Mobile navigation stays reachable without covering the primary action.
 
-### Interlocking route board
+### Live campaign file
 
-Show five truthful positions in this order: Authorize, Funded, Stale included, Retry settled, Credit released. The spine gives every position a numbered square signal, explicit state label, and connected route segment. Only the active position expands into detailed state and result fields; the remaining positions stay compact. Preserve the branch, bypass, and terminal geometry in the shared route motif rather than repeating a large diagram inside every stage. Current, queued, included, and cleared states must not depend on animation.
+Lead with the bounded campaign in plain language: who can recover, which source window is recognized, the fixed credit, remaining capacity, and the claim deadline. State clearly when RetryCredit funds the pilot itself. Do not imply SeaDrop, OpenSea, or an NFT collection sponsors or endorses the campaign.
 
-### Clearance strip and actions
+### Eligibility desk
 
-Keep wallet connection independent from the recovery action. Pair the current recovery explanation, service condition, and primary amber action inside one dominant ruled cockpit so the user never has to reconstruct the decision from separated panels. The control keeps explicit hover, pressed, busy, and disabled states. Name the operation in button and loading copy; explain paused service, temporary unavailability, wrong-wallet state, and recoverable errors beside the affected action. Preserve saved state and prevent duplicate submission while work is in flight.
+The desk owns one primary action and all of its states: disconnected, checking, ineligible, eligible, authorization requested, proof building, release relaying, released, already claimed, service unavailable, and retryable error. Preserve the connected address and user input across recoverable failures. Prevent duplicate submission and describe the current operation in busy copy.
 
-### Service and status registers
+An ineligible result is a complete product state, not a dead end. Explain the bounded window and offer the public recovered case as evidence without pretending the visitor qualified.
 
-Use compact ruled fields with monospaced labels for network, service availability, wallet, deposit, and release facts. Signal squares accompany availability text. Queued and muted states retain explicit accessible foreground colors rather than relying on opacity.
+### Paired evidence band
 
-### Route ledger
+Show the included failed mint and later completed mint as one semantic pair. Lead each side with the human result, then show block, nonce, value, NFT outcome, and explorer link. The visual connector must make order and shared wallet clear without requiring animation. Credit release sits at the terminus, visually distinct from the two Ethereum receipts.
 
-Lead each row with its plain-language result, chain, state, and time relationship. Use a colored square plus text for event state, keep the full technical identifier available in a secondary monospaced field, and provide an external explorer action. Separate the saved browser run from the completed public lifecycle.
+### Recovery outcome
+
+The released state leads with the beneficiary and fixed Creditcoin amount. Pair it with one replay-safe receipt and the exact source pair. A relayer may submit the proof, but the interface must make clear that the contract derives the only payout address from the source wallet.
+
+### Cases register
+
+Use real verified recoveries and clearly labeled eligible observations. Distinguish founder-operated release, unrelated source facts, and unrelated user completion. Never turn an observed address into a customer, human, or adopter claim.
 
 ### Protocol manual
 
-Use the reading column to explain the ordered receipts and the one-time release, and the dark-headed limits register to state the current network, asset, route, visitor-funding, and credit boundaries. The verification sequence reuses the ruled, square route language without competing with the main recovery board.
+Explain the dedicated SeaDrop `mintSigned` predicate, exact stable-field match, ordered status transition, mint outcome, source-derived payout, fixed campaign capacity, and global replay boundary. State that Attestcoin does not prove the human-readable revert reason or market demand.
 
 ### Notices
 
-Notices are compact ink panels with a white rule, semantic icon color, explicit status or alert semantics, and a square dismissal target. They report outcomes and errors without obscuring the clearance action.
+Notices stay inline with the affected action whenever possible. Use direct language, semantic icon and text, square dismissal targets, and live-region announcements. Do not obscure the eligibility desk with a modal.
 
-## Do's and Don'ts
+## Do’s and Don’ts
 
 ### Do
 
-- **Do** open directly on the live recovery task.
-- **Do** preserve Recovery, Activity, and Protocol as separate navigable routes with shared application chrome.
-- **Do** preserve the five-stage order while compressing non-active stages into a connected progress spine.
-- **Do** keep the active state, service condition, and next action in one visual group.
-- **Do** keep queued-state text at full opacity with explicit accessible colors.
-- **Do** keep loading, empty, error, wrong-wallet, saved-session, settled, and released states useful.
-- **Do** provide keyboard navigation, visible focus, reduced-motion support, semantic live status, safe identifier wrapping, high-zoom operation, and minimum touch targets.
+- **Do** open directly on the live campaign and wallet outcome.
+- **Do** preserve Recovery, Cases, and Protocol as separate routes with shared application chrome.
+- **Do** keep campaign funding, window, capacity, deadline, and source-derived destination visible.
+- **Do** make ineligible, loading, service-error, already-claimed, relaying, released, offline, wrong-wallet, and empty states useful.
+- **Do** provide keyboard navigation, visible focus, reduced-motion support, semantic live status, safe identifier wrapping, high-zoom operation, and 44px touch targets.
+- **Do** keep the previous Uniswap public lifecycle as contextual expansion evidence, not the V2 protagonist.
 
-### Don't
+### Don’t
 
-- **Don't** reproduce an oversized landing-page hero or floating dark action card.
-- **Don't** give all five route stages equal visual weight or repeat full diagrams vertically on mobile.
-- **Don't** flatten the multi-route application into anchor-linked sections.
-- **Don't** introduce generic metric cards, rounded card stacks, ambient gradients, glass, neon glow, or ornamental crypto imagery.
-- **Don't** create judge navigation, a proof page, an invoice product, or a business-validation surface.
-- **Don't** make receipts more prominent than the user's next action or imply insurance, mainnet readiness, exact gas reimbursement, user deposits, or token approval requirements.
+- **Don’t** reproduce the previous dark cockpit, five equal stages, left application rail, or oversized landing-page hero.
+- **Don’t** introduce generic metric cards, rounded card stacks, ambient gradients, glass, neon glow, ornamental crypto imagery, or a grid of equal features.
+- **Don’t** flatten the multi-route product into one page.
+- **Don’t** create judge navigation, a proof page, an invoice product, or a business-validation surface.
+- **Don’t** let receipts outrank the wallet’s eligibility or result.
+- **Don’t** imply insurance, exact gas reimbursement, platform sponsorship, eight independent users, user adoption, or market validation.

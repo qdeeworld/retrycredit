@@ -1475,15 +1475,17 @@ function requireMutationOutputPaths() {
 }
 
 function getMutationOutputPaths(required) {
-  const privateControlRoot = path.resolve(
-    "/Users/qdee/Documents/Codex/competition-controls/buidl-ctc-2026-fall",
-  );
   const rawStatePath = process.env.SPIKE_STATE_OUTPUT;
   const rawJournalPath = process.env.SPIKE_JOURNAL_PATH;
   if (required && (!rawStatePath || !rawJournalPath)) {
     throw new Error("SPIKE_STATE_OUTPUT and SPIKE_JOURNAL_PATH are required for every mutating phase");
   }
   if (!rawStatePath || !rawJournalPath) return null;
+  const rawControlRoot = process.env.SPIKE_CONTROL_ROOT;
+  if (!rawControlRoot || !path.isAbsolute(rawControlRoot)) {
+    throw new Error("SPIKE_CONTROL_ROOT must be an absolute private control directory");
+  }
+  const privateControlRoot = path.resolve(rawControlRoot);
   const statePath = path.resolve(rawStatePath);
   const journalPath = path.resolve(rawJournalPath);
   for (const [label, candidate] of [["state", statePath], ["journal", journalPath]]) {

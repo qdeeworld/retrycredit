@@ -1,61 +1,55 @@
 # RetryCredit
 
-**The retry pays for the failure.**
+**A fixed recovery credit for a completed onchain retry.**
 
-RetryCredit is a pre-funded execution service credit for signed DeFi routes. A wallet user authorizes the recipient, the sponsored service runs an included stale Uniswap route and a refreshed retry for the same funded action, and one native Attestcoin batch proves both Ethereum receipts before Creditcoin releases the fixed credit exactly once.
+RetryCredit is a pre-funded recovery campaign for an exact Ethereum transaction pattern: one paid SeaDrop mint fails, the same wallet completes the same mint on its next nonce, and one native Attestcoin batch proves both receipts before Creditcoin releases a fixed credit to that source wallet.
 
-- [Use the public testnet app](https://retrycredit.dolepee.com)
-- [Inspect the active deployment and public receipts](docs/DEPLOYMENTS.md)
-- [Run or integrate the proof and execution API](docs/WORKER_API.md)
-- [Read the active pool](contracts/src/RetryCreditUniversalRouterPoolV2.sol), [verifier](contracts/src/AttestcoinRetryCreditUniversalRouterVerifierV2.sol), and [predicate](contracts/src/RetryCreditUniversalRouterPredicateV2.sol)
+- [Use the public recovery app](https://retrycredit.dolepee.com)
+- [Inspect the live contracts and receipts](docs/DEPLOYMENTS.md)
+- [Run or integrate the recovery API](docs/WORKER_API.md)
+- Read the [campaign](contracts/src/RetryCreditRecoveryCampaign.sol), [verifier](contracts/src/AttestcoinSeaDropRetryVerifier.sol), and [predicate](contracts/src/SeaDropPaidRetryPredicateV1.sol)
 
-The current public pilot is deliberately narrow:
+## The recovery path
 
-- Ethereum Sepolia source chain and Creditcoin Testnet settlement.
-- Official Uniswap Universal Router 2.1.1.
-- One WETH → Circle test-USDC fee-500 route.
-- One bounded sponsor-funded credit per visitor wallet.
-- A relayed testnet route: the visitor signs only to name the wallet that receives both test-USDC output and the Creditcoin credit.
-- Test assets only; no mainnet value, insurance, or exact gas reimbursement.
+1. Connect the Ethereum wallet that appears in a known paid failure-to-completion pair.
+2. RetryCredit re-reads both mainnet transactions and receipts; a static discovery list is never payout authority.
+3. The wallet signs a five-minute, offchain consent bound to the exact pair, public origin, campaign, and pool.
+4. The relayer builds one pair-local Attestcoin batch and simulates the immutable campaign release.
+5. The contract derives the beneficiary from the proven source transaction and releases exactly `0.1 tCTC`. There is no destination field.
+
+The first campaign is intentionally small: three fixed slots, exactly `0.3 tCTC` funded, and unused funds recoverable only by the sponsor after the deadline. Each wallet, query, and pair is consumed within that campaign. Replay state is campaign-scoped so an outsider cannot poison the official campaign with a dust-funded copy.
 
 ## Why Attestcoin is load-bearing
 
-The Creditcoin release requires one native Attestcoin batch containing both ordered source receipts. The verifier enforces:
+The verifier accepts exactly two ordered Ethereum-mainnet transactions in one native Attestcoin batch. The predicate then requires:
 
-1. The same service executor, visitor beneficiary, funded action, official router, input amount, and signed intent.
-2. A status-0 receipt followed by a status-1 receipt in a bounded source window.
-3. A newer route nonce, quote marker, deadline, and improved minimum output.
-4. One exact Uniswap pool `Swap` and one exact Circle test-USDC transfer to the trader.
-5. One-time query, pair, action, and service-credit consumption.
+- Type-2 transactions to the canonical SeaDrop contract and canonical `mintSigned` calldata, optionally followed only by OpenSea's measured `0x3d958fe2` attribution suffix.
+- One source wallet, consecutive nonces, a one-to-five-block gap, and the same NFT, quantity, payment, fee recipient, minter, and all eight mint parameters.
+- A status-0 first receipt with no logs.
+- A status-1 second receipt with one exact `SeaDropMint` and the requested number of distinct ERC-721 mints to the same source wallet.
+- A nonzero, exact paid mint value and a payout beneficiary derived only from the shared source sender.
 
-Remove Attestcoin and the Creditcoin pool cannot authorize the release. The proof builder is not trusted for integrity: every candidate batch is checked locally and then simulated against the exact funded pool before the relayer may submit it.
+Remove Attestcoin and the Creditcoin campaign cannot establish inclusion, receipt status, order, or mint outcome. API checks and the proof builder only fail fast; the native verifier, predicate, and funded campaign remain payout authority.
 
-## Public evidence
+## Live evidence
 
-A fresh lifecycle completed through the deployed public HTTPS service on August 22, 2026:
+The Recovery Campaign lifecycle completed on August 26, 2026:
 
-- Included status-0 route: [`0x9cb8…ee07`](https://sepolia.etherscan.io/tx/0x9cb81e134e33f32b702786589510948d097ae98d0ef3ffec4c631a1288a0ee07)
-- Next-block settled retry: [`0x81e9…f9b0`](https://sepolia.etherscan.io/tx/0x81e96116c5b3e050a1b4ac6d1cea611817e7d028636003e7aa6d12f5c412f9b0)
-- Creditcoin release: [`0xb787…7cdf`](https://creditcoin-testnet.blockscout.com/tx/0xb787581b58bab15bc4e8e78389c6d0d4bb362896d265bdbe2263df7d7eb77cdf)
-- Source-to-credit time: 552 seconds.
-- Public replay returned the same release and produced no second `CreditReleased` event.
+- Organic paid failure: [`0xed17…d3ff`](https://etherscan.io/tx/0xed178b60188933f758d9ab42275929be0fbed986662a1c90a1a40c829f88d3ff)
+- Same-wallet completion two blocks later: [`0x8dbb…ec3a`](https://etherscan.io/tx/0x8dbb2cae48049b6ce4f0d469c7719f4f20a444e2465886a3ed7dcab41b25ec3a)
+- Exact `0.1 tCTC` Creditcoin release: [`0xc6e8…2a85`](https://creditcoin-testnet.blockscout.com/tx/0xc6e8ff4ec62f6a74de408c185ea0bdec318067c9bc9dab421118c13b1ed22a85)
+- Active campaign: [`0x646c…dF66`](https://creditcoin-testnet.blockscout.com/address/0x646c5c766Ce3B6058B44F41e89fE716f54E3dF66), campaign `#1`
 
-The execution used test assets and a founder-funded service credit. It proves public causability and public-chain execution, not independent adoption or customer demand.
+At the release block, the proven beneficiary moved from `0` to `0.1 tCTC`, the campaign moved from `0.3` to `0.2 tCTC`, claim count became `1/3`, and the failure query, success query, and pair replay markers were all consumed. This is E2 public execution relayed by the founder against an unrelated historical address; it is not public-product causability or proof that the wallet owner used RetryCredit, consented to the unsolicited testnet credit, or represents customer demand.
 
 ## Contracts
 
-- `RetryCreditUniversalRouterPoolV2`: pre-funded drafts, a distinct visitor beneficiary, committed source transactions, fixed release, refunds, and replay consumption.
-- `AttestcoinRetryCreditUniversalRouterVerifierV2`: native batch verification and source identity derivation.
-- `RetryCreditUniversalRouterPredicateV2`: canonical signed-router decoding, beneficiary-bound retry correlation, receipt ordering, and exact settlement evidence.
-- `EvmV1Decoder`: strict Attestcoin EVM receipt decoding.
+- `RetryCreditRecoveryCampaign`: immutable funded terms, fixed capacity, proof-derived payouts, campaign-scoped replay, one claim per wallet, and accounted-only remainder recovery.
+- `AttestcoinSeaDropRetryVerifier`: exact two-transaction native batch verification on Attestcoin chain key `3` / Ethereum chain ID `1`.
+- `SeaDropPaidRetryPredicateV1`: canonical call decoding and strict failed-then-completed paid-mint semantics.
+- `EvmV1Decoder`: strict Attestcoin EVM transaction and receipt decoding.
 
-The previous RuleDrop contracts remain in the repository as an archived proof-engine predecessor. They are not the current product or public release claim.
-
-## Public service
-
-The reviewed V3 pilot authenticates one short-lived wallet challenge, pre-funds the Creditcoin service credit, signs two official Universal Router routes from a separate service role, and commits the exact raw signed source transactions on Creditcoin before either is broadcast. It then executes the bounded Sepolia retry with the visitor as the test-USDC recipient, waits for Attestcoin finality, simulates the exact release, and submits through a distinct relayer role. The visitor wallet never deposits an asset or approves a token; the same address receives the settled test-USDC and the Creditcoin credit. Durable authorization, source commitments, and replay state remain onchain. V3 is the public release marker; the deployed contract class names retain their V2 suffixes.
-
-The V3 pilot is enabled at pool `0x81b5d955F4EbfaE02FF6346cf368A2c4347248A1` after two fresh end-to-end releases with distinct beneficiaries and a service restart. Public sponsorship remains founder-funded, testnet-only, capped per deployment, and fails closed when the service wallet or reserve is unavailable.
+The earlier Sepolia/Uniswap service remains in the repository and its public receipts remain documented as a controlled predecessor. It is not the protagonist of the Recovery Campaign release.
 
 ## Local verification
 
@@ -66,10 +60,8 @@ npm run build
 npm run build:web:cloudflare
 ```
 
-The repository covers the V1 evidence path and the V2 relayed path, including malformed proofs, route mutations, source identity drift, replay, unauthenticated infrastructure, distinct beneficiary binding, restart-safe source commitments, and sponsor/relayer separation.
-
-For a local browser journey, copy `.env.example` to `.env`, populate only testnet values, run `node --env-file=.env src/server.mjs`, and start `npm run app:dev` in a second terminal. See [the API guide](docs/WORKER_API.md) for route semantics, retry behavior, environment names, and the onchain trust boundary.
+For a local journey, copy `.env.example` to `.env`, populate only testnet values, run `node --env-file=.env src/server.mjs`, and start `npm run app:dev` in a second terminal. See [the API guide](docs/WORKER_API.md) for route contracts, retry behavior, configuration, and trust boundaries.
 
 ## Truth boundary
 
-Attestcoin proves an authorized included failure and a later exact settlement. It does **not** prove the human-readable revert reason, organic user loss, exact gas expenditure, or an insurance event. The first route in this pilot is a disclosed controlled stale-route test.
+Attestcoin proves the included paid failure, later completion, and exact onchain outcome. It does **not** prove a human-readable failure reason, human identity, intent, user loss, exact gas expenditure, insurance eligibility, adoption, or demand. The three-wallet paid cohort is a closed public-chain discovery set, not three users.

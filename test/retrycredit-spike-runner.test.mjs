@@ -384,11 +384,13 @@ test("rule comparison rejects any changed funded term", () => {
 });
 
 test("mutation outputs are restricted to the private CTC control directory", () => {
+  const previousControlRoot = process.env.SPIKE_CONTROL_ROOT;
   const previousState = process.env.SPIKE_STATE_OUTPUT;
   const previousJournal = process.env.SPIKE_JOURNAL_PATH;
   try {
-    process.env.SPIKE_STATE_OUTPUT = "/Users/qdee/Documents/Codex/competition-controls/buidl-ctc-2026-fall/retrycredit-test.json";
-    process.env.SPIKE_JOURNAL_PATH = "/Users/qdee/Documents/Codex/competition-controls/buidl-ctc-2026-fall/retrycredit-test.jsonl";
+    process.env.SPIKE_CONTROL_ROOT = "/tmp/retrycredit-private-control-test";
+    process.env.SPIKE_STATE_OUTPUT = "/tmp/retrycredit-private-control-test/retrycredit-test.json";
+    process.env.SPIKE_JOURNAL_PATH = "/tmp/retrycredit-private-control-test/retrycredit-test.jsonl";
     assert.deepEqual(getMutationOutputPaths(true), {
       statePath: process.env.SPIKE_STATE_OUTPUT,
       journalPath: process.env.SPIKE_JOURNAL_PATH,
@@ -396,6 +398,8 @@ test("mutation outputs are restricted to the private CTC control directory", () 
     process.env.SPIKE_STATE_OUTPUT = "/tmp/retrycredit-test.json";
     assert.throws(() => getMutationOutputPaths(true), /private CTC competition-control directory/);
   } finally {
+    if (previousControlRoot === undefined) delete process.env.SPIKE_CONTROL_ROOT;
+    else process.env.SPIKE_CONTROL_ROOT = previousControlRoot;
     if (previousState === undefined) delete process.env.SPIKE_STATE_OUTPUT;
     else process.env.SPIKE_STATE_OUTPUT = previousState;
     if (previousJournal === undefined) delete process.env.SPIKE_JOURNAL_PATH;
