@@ -106,24 +106,30 @@ if (recoveryBootstrap.enabled) {
 }
 
 export function resolveRecoveryBootstrap(env = {}) {
-  const mode = env.RETRYCREDIT_RECOVERY_ENABLED;
+  const mode = optionalEnvironmentValue(env.RETRYCREDIT_RECOVERY_ENABLED);
   const publicOrigin = env.PUBLIC_ORIGIN ?? env.ALLOWED_ORIGIN ?? "http://localhost:3000";
-  const hasConfiguredAddress = Boolean(
-    env.RETRYCREDIT_RECOVERY_POOL_ADDRESS || env.RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER,
-  );
-  const productionDefault = mode === undefined
+  const configuredPoolAddress = optionalEnvironmentValue(env.RETRYCREDIT_RECOVERY_POOL_ADDRESS);
+  const configuredCampaignNumber = optionalEnvironmentValue(env.RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER);
+  const hasConfiguredAddress = Boolean(configuredPoolAddress || configuredCampaignNumber);
+  const productionDefault = mode === null
     && env.RETRYCREDIT_PUBLIC_ENABLED === "true"
     && publicOrigin === RECOVERY_RELEASE_DEFAULTS.publicOrigin
     && !hasConfiguredAddress;
   const releaseDefaultsRequested = (mode === "true" && !hasConfiguredAddress) || productionDefault;
-  const poolAddress = env.RETRYCREDIT_RECOVERY_POOL_ADDRESS
+  const poolAddress = configuredPoolAddress
     ?? (releaseDefaultsRequested ? RECOVERY_RELEASE_DEFAULTS.poolAddress : null);
-  const campaignNumber = env.RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER
+  const campaignNumber = configuredCampaignNumber
     ?? (releaseDefaultsRequested ? RECOVERY_RELEASE_DEFAULTS.campaignNumber : null);
   const enabled = mode !== "false"
     && (mode === "true" || Boolean(poolAddress) || Boolean(campaignNumber));
 
   return Object.freeze({ enabled, poolAddress, campaignNumber, productionDefault });
+}
+
+function optionalEnvironmentValue(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized === "" ? null : normalized;
 }
 
 export function createAppHandler({

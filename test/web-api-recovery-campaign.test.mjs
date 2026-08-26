@@ -48,6 +48,36 @@ test("production public mode selects the reviewed recovery release without dashb
   assert.deepEqual(
     resolveRecoveryBootstrap({
       RETRYCREDIT_RECOVERY_ENABLED: "true",
+      RETRYCREDIT_RECOVERY_POOL_ADDRESS: "",
+      RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER: "   ",
+    }),
+    {
+      enabled: true,
+      poolAddress: RECOVERY_RELEASE_DEFAULTS.poolAddress,
+      campaignNumber: RECOVERY_RELEASE_DEFAULTS.campaignNumber,
+      productionDefault: false,
+    },
+  );
+
+  assert.deepEqual(
+    resolveRecoveryBootstrap({
+      RETRYCREDIT_PUBLIC_ENABLED: "true",
+      PUBLIC_ORIGIN: RECOVERY_RELEASE_DEFAULTS.publicOrigin,
+      RETRYCREDIT_RECOVERY_ENABLED: " ",
+      RETRYCREDIT_RECOVERY_POOL_ADDRESS: "",
+      RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER: "   ",
+    }),
+    {
+      enabled: true,
+      poolAddress: RECOVERY_RELEASE_DEFAULTS.poolAddress,
+      campaignNumber: RECOVERY_RELEASE_DEFAULTS.campaignNumber,
+      productionDefault: true,
+    },
+  );
+
+  assert.deepEqual(
+    resolveRecoveryBootstrap({
+      RETRYCREDIT_RECOVERY_ENABLED: "true",
       RETRYCREDIT_RECOVERY_POOL_ADDRESS: wallet,
     }),
     { enabled: true, poolAddress: wallet, campaignNumber: null, productionDefault: false },
