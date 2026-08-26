@@ -23,6 +23,8 @@ services:
         value: 0x646c5c766Ce3B6058B44F41e89fE716f54E3dF66
       - key: RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER
         value: "1"
+      - key: RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE
+        value: disabled
       - key: RETRYCREDIT_DEMO_PRIVATE_KEY
         sync: false
       - key: RETRYCREDIT_POOL_ADDRESS

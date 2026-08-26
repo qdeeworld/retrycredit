@@ -7,6 +7,7 @@ import {
   RECOVERY_RELEASE_DEFAULTS,
   createAppHandler,
   normalizeDeploymentRevision,
+  recoveryV2HealthSnapshot,
   resolveLegacyWritesEnabled,
   resolveRecoveryBootstrap,
 } from "../src/server.mjs";
@@ -104,9 +105,152 @@ test("health exposes only an exact normalized Render revision", async () => {
       const body = await response.json();
       assert.equal(body.revision, revision.toLowerCase());
       assert.equal(body.recoveryState, "disabled");
+      assert.deepEqual(body.recoveryV2, {
+        mode: "disabled",
+        state: "disabled",
+        publicProfile: "v1",
+      });
     },
     { deploymentRevision: normalizeDeploymentRevision(revision) },
   );
+});
+
+test("health keeps V1 live while the separate V2 readiness route requires exact armed finality", async () => {
+  const prepared = {
+    contractAddress: "0x3Eee179eDD6Fe6e40D7d23f0110ea639f2DA82B8",
+    initCodeHash: `0x${"11".repeat(32)}`,
+    runtimeCodeHash: `0x${"22".repeat(32)}`,
+    transactionHash: `0x${"33".repeat(32)}`,
+  };
+  let readinessCalls = 0;
+  let startCalls = 0;
+  const prepareSupervisor = {
+    readiness() {
+      readinessCalls += 1;
+      return {
+        ready: true,
+        statusCode: 200,
+        mode: "prepare",
+        deploymentState: "prepared",
+        publicProfile: "v1",
+        prepared,
+        rawTransaction: "0xsecret",
+      };
+    },
+    async start() { startCalls += 1; },
+  };
+  await withServer(
+    { state: "disabled", service: null, error: null },
+    async (base) => {
+      const response = await fetch(`${base}/health`);
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.equal(body.ok, true);
+      assert.deepEqual(body.recoveryV2, {
+        mode: "prepare",
+        state: "prepared",
+        publicProfile: "v1",
+        prepared,
+      });
+      assert.doesNotMatch(JSON.stringify(body), /secret|rawTransaction/i);
+      const readiness = await fetch(`${base}/health/recovery-v2`);
+      assert.equal(readiness.status, 200);
+      assert.equal((await readiness.json()).ok, true);
+    },
+    { recoveryV2: prepareSupervisor },
+  );
+  assert.equal(readinessCalls, 2);
+  assert.equal(startCalls, 0);
+
+  const failedPrepareSupervisor = fixedRecoveryV2Readiness({
+    ready: false,
+    statusCode: 503,
+    mode: "prepare",
+    deploymentState: "prepare-failed",
+    reason: "RECOVERY_V2_PREPARE_FAILED",
+    publicProfile: "v1",
+  });
+  await withServer(
+    { state: "disabled", service: null, error: null },
+    async (base) => {
+      const liveness = await fetch(`${base}/health`);
+      assert.equal(liveness.status, 200);
+      assert.equal((await liveness.json()).ok, true);
+      const readiness = await fetch(`${base}/health/recovery-v2`);
+      assert.equal(readiness.status, 503);
+      assert.equal((await readiness.json()).ok, false);
+    },
+    { recoveryV2: failedPrepareSupervisor },
+  );
+
+  const pendingSupervisor = fixedRecoveryV2Readiness({
+    ready: false,
+    statusCode: 503,
+    mode: "armed",
+    deploymentState: "pending",
+    reason: "EXPECTED_TRANSACTION_PENDING",
+    publicProfile: "v1",
+  });
+  await withServer(
+    { state: "disabled", service: null, error: null },
+    async (base) => {
+      const response = await fetch(`${base}/health`);
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.equal(body.ok, true);
+      assert.deepEqual(body.recoveryV2, {
+        mode: "armed",
+        state: "pending",
+        publicProfile: "v1",
+        reason: "EXPECTED_TRANSACTION_PENDING",
+      });
+      const readiness = await fetch(`${base}/health/recovery-v2`);
+      assert.equal(readiness.status, 503);
+      assert.equal((await readiness.json()).ok, false);
+    },
+    { recoveryV2: pendingSupervisor },
+  );
+
+  const finalizedSupervisor = fixedRecoveryV2Readiness({
+    ready: true,
+    statusCode: 200,
+    mode: "armed",
+    deploymentState: "finalized",
+    reason: "FINALIZED_PLUS_TWO_VERIFIED",
+    publicProfile: "v1",
+  });
+  await withServer(
+    { state: "disabled", service: null, error: null },
+    async (base) => {
+      const response = await fetch(`${base}/health`);
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).recoveryV2.state, "finalized");
+      const readiness = await fetch(`${base}/health/recovery-v2`);
+      assert.equal(readiness.status, 200);
+      assert.equal((await readiness.json()).ok, true);
+    },
+    { recoveryV2: finalizedSupervisor },
+  );
+
+  assert.deepEqual(recoveryV2HealthSnapshot({
+    readiness() {
+      return {
+        ready: true,
+        statusCode: 200,
+        mode: "armed",
+        deploymentState: "pending",
+        reason: "RPC_SECRET_0xfeed",
+        publicProfile: "v1",
+      };
+    },
+  }), {
+    statusCode: 503,
+    publicState: {
+      mode: "armed",
+      state: "pending",
+      publicProfile: "v1",
+    },
+  });
 });
 
 test("archived writes default off and accept only the exact explicit opt-in", () => {
@@ -445,4 +589,8 @@ function post(base, path, body) {
     headers: { "content-type": "application/json", origin },
     body: JSON.stringify(body),
   });
+}
+
+function fixedRecoveryV2Readiness(value) {
+  return { readiness() { return value; } };
 }
