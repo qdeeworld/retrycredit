@@ -27,6 +27,9 @@ import {
   decodeCanonicalSeaDropMintSigned,
   validateSeaDropRecoveryPair,
 } from "./seadrop-recovery.mjs";
+import { PUBLIC_CC3_RELAYER_ROLE, deriveRoleKey } from "./role-key.mjs";
+
+export const RECOVERY_RELAYER_ROLE = PUBLIC_CC3_RELAYER_ROLE;
 
 export const RECOVERY_DISCOVERY_INDEX = Object.freeze([
   Object.freeze({
@@ -98,7 +101,13 @@ export class RecoveryCampaignService {
       RECOVERY_DEFAULTS.settlementChainId,
       { staticNetwork: true },
     );
-    const relayerWallet = new Wallet(privateKey, ccProvider);
+    // Keep permissionless proof relay writes out of the campaign sponsor's
+    // nonce domain. This role is already used as the isolated CC3 relayer by
+    // the archived public pilot and is never campaign-funding authority.
+    const relayerWallet = new Wallet(
+      deriveRoleKey(privateKey, RECOVERY_RELAYER_ROLE),
+      ccProvider,
+    );
     const sourceLookupTimeoutMs = requireBoundedInteger(
       config.sourceLookupTimeoutMs ?? RECOVERY_DEFAULTS.sourceLookupTimeoutMs,
       "source lookup timeout",
@@ -335,6 +344,7 @@ export class RecoveryCampaignService {
         chainId: this.config.settlementChainId,
       },
       publicOrigin: this.publicOrigin,
+      relayerAddress: this.relayerWallet.address,
       poolAddress: this.poolAddress,
       verifierAddress: infrastructure.verifierAddress,
       predicateAddress: infrastructure.predicateAddress,

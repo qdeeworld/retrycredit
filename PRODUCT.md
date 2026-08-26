@@ -8,7 +8,7 @@ web
 
 ## Users
 
-Owners of Ethereum wallets in the closed paid SeaDrop recovery cohort. Their job is to check whether the wallet's already-public failed-then-completed mint qualifies, consent with that same wallet, and receive one fixed Creditcoin Testnet recovery without selecting a destination.
+Owners of Ethereum wallets whose paid SeaDrop failure and same-wallet completed retry may satisfy the currently selected campaign. Anyone can check an exact transaction pair without connecting a wallet; only the source wallet derived from live Ethereum facts can authorize the hosted relayer for that pair.
 
 ## Product Purpose
 
@@ -20,7 +20,7 @@ One native Attestcoin batch must prove a paid Ethereum SeaDrop failure and the s
 
 ## Operating Context
 
-The source evidence is on Ethereum Mainnet and settlement is on Creditcoin Testnet. The public journey is connect the source wallet, check the closed discovery cohort against live transactions and receipts, sign a five-minute consent, wait for one pair-local Attestcoin proof, and inspect the fixed release. No source transaction or network switch is requested.
+The source evidence is on Ethereum Mainnet and settlement is on Creditcoin Testnet. The public journey is to paste an exact failed and completed transaction pair, check it against live transactions, receipts, and the selected campaign, connect only after the source wallet is derived, sign a five-minute hosted-relayer consent with that wallet, wait for one pair-local Attestcoin proof, and inspect the fixed release. The published examples are not eligibility authority. No source transaction or network switch is requested.
 
 ## Capabilities and Constraints
 
@@ -28,7 +28,7 @@ The source evidence is on Ethereum Mainnet and settlement is on Creditcoin Testn
 - The source transactions already exist; the product never manufactures the failure or completion.
 - The relayer cannot supply or replace the destination. The predicate returns the shared Ethereum source sender.
 - Eligibility requires type-2 canonical paid `mintSigned` calls, consecutive nonces, bounded blocks, status `0 → 1`, one exact `SeaDropMint`, and quantity-matched ERC-721 mints.
-- The fixed credit releases once per wallet inside the campaign; campaign-scoped query and pair replay markers prevent duplicates without enabling outsider dust-campaign poisoning.
+- Within one campaign, each source wallet can receive at most one fixed credit and each query or pair marker can be consumed once. Those replay records are campaign-scoped; a later campaign does not inherit them and may admit the same historical pair again.
 - The interface must preserve loading, unavailable, offline, disconnected, checking, ineligible, eligible, authorizing, proof-pending, relay-pending, released, already-claimed, account-changed, and retryable-error states.
 - The pilot is testnet-only and is not insurance, custody, exact gas reimbursement, or a production-asset service.
 - There is no judge page, invoice product, or business-validation requirement.
@@ -48,7 +48,7 @@ The source evidence is on Ethereum Mainnet and settlement is on Creditcoin Testn
 - Lead with the completed recovery and the source wallet's next action.
 - Keep Recovery, Cases, and Protocol as separate navigable surfaces.
 - Preserve the relationship between paid failure, completed mint, and one fixed release.
-- State network, sponsorship, cohort, deadline, and testnet limits where they affect a decision.
+- State network, sponsorship, source window, deadline, and testnet limits where they affect a decision.
 - Treat receipts as contextual confirmation and never present public addresses as users.
 
 ## Accessibility & Inclusion

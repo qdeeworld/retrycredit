@@ -36,7 +36,8 @@ npm run app:dev
 | `ALLOWED_ORIGIN` | Single browser origin returned by CORS, such as `http://localhost:3000`. |
 | `PUBLIC_ORIGIN` | Origin bound into wallet challenge text and signature verification. |
 | `RETRYCREDIT_PUBLIC_ENABLED` | Archived V3 service switch; it does not enable the active Recovery Campaign. |
-| `RETRYCREDIT_DEMO_PRIVATE_KEY` | Shared secret testnet relayer key. Never expose it to the frontend, logs, docs, or repository. |
+| `RETRYCREDIT_LEGACY_WRITES_ENABLED` | Explicit opt-in for archived V3 sponsor/release writes. It defaults to disabled and remains disabled in production so archived routes cannot share the campaign sponsor's nonce domain. |
+| `RETRYCREDIT_DEMO_PRIVATE_KEY` | Root testnet secret for domain-separated sponsor, route-signer, and relayer roles. Never expose it to the frontend, logs, docs, or repository. |
 | `RETRYCREDIT_RECOVERY_ENABLED` | Optional explicit recovery kill switch. Set to `false` to disable even when addresses are configured. |
 | `RETRYCREDIT_RECOVERY_POOL_ADDRESS` | Active `RetryCreditRecoveryCampaign` address. |
 | `RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER` | Positive active campaign number. |
@@ -48,7 +49,7 @@ npm run app:dev
 
 `ETHEREUM_RPC_URLS` is used by the Recovery Campaign to re-read mainnet source data and also supports archived RuleDrop compatibility endpoints. `RULEDROP_POOL_ADDRESS` and `RULEDROP_POOL_VERSION` are legacy-only. The frontend build uses `VITE_RETRYCREDIT_API_ORIGIN` to select the public API origin.
 
-The reviewed release also carries the active pool and campaign as source defaults. They are selected only when recovery is explicitly enabled with no address override, or when the existing public V3 service runs at the exact production origin with no recovery override. This keeps the isolated production service reproducible without weakening partial-configuration checks. Set `RETRYCREDIT_RECOVERY_ENABLED=false` to disable recovery immediately without disabling the legacy V3 API routes. The V2 interface will report that recovery is unavailable; it does not rebind itself to the V3 journey.
+The reviewed release also carries the active pool and campaign as source defaults. They are selected only when recovery is explicitly enabled with no address override, or when the existing public V3 service runs at the exact production origin with no recovery override. This keeps the isolated production service reproducible without weakening partial-configuration checks. Set `RETRYCREDIT_RECOVERY_ENABLED=false` to disable recovery immediately without removing the archived V3 read, challenge, and status routes. Archived prepare, execute, and release remain HTTP `410` unless their separate write switch is explicitly enabled. The V2 interface will report that recovery is unavailable; it does not rebind itself to the V3 journey.
 
 ## Hosting and rollback
 
@@ -56,7 +57,7 @@ The production API authority is the isolated Render service `retrycredit-api` (`
 
 Use two levels of rollback:
 
-1. For immediate Recovery Campaign containment, set `RETRYCREDIT_RECOVERY_ENABLED=false` on the stable API service and redeploy its current reviewed build. This preserves the V3 API routes but leaves the V2 interface truthfully unavailable.
+1. For immediate Recovery Campaign containment, set `RETRYCREDIT_RECOVERY_ENABLED=false` on the stable API service and redeploy its current reviewed build. This preserves only the archived V3 read/challenge/status surface by default; its mutation routes remain HTTP `410`, and the V2 interface becomes truthfully unavailable.
 2. To restore a previous public product journey, roll the stable Render API back to the intended reviewed deploy and roll Cloudflare Pages back to the matching reviewed frontend deployment. The API and frontend must be treated as one release pair because the current interface calls only the V2 recovery routes.
 
 For the config-bound consent release, deploy and verify the stable Render API first, including `enabled: true`, `waking: false`, and the canonical `publicOrigin`; only then publish the matching Cloudflare frontend. The older frontend safely ignores the added config field, while the new frontend intentionally fails closed against an older API that does not provide it. Roll back in the reverse order: frontend first, API second.
@@ -79,11 +80,11 @@ After either operation, verify the exact deployed source, `GET /health`, both co
 
 ### `GET /health`
 
-Returns process identity, Creditcoin network `102031`, legacy-service configuration, and the Recovery Campaign lifecycle state (`disabled`, `waking`, `ready`, or `error`). This is process health, not a live reserve measurement.
+Returns process identity, Creditcoin network `102031`, legacy-service configuration, the Recovery Campaign lifecycle state (`disabled`, `waking`, `ready`, or `error`), and `revision`. The revision is the normalized 40-character Git commit supplied by Render, or `null` when that exact deployment identity is unavailable. This is process health and rollout identity, not a live reserve measurement.
 
 ### `GET /api/recovery/config`
 
-Returns a stable disabled/waking shape until recovery is ready, then the canonical public origin, authenticated source and settlement identities, pool/verifier/predicate addresses, campaign number, immutable terms, live capacity, featured public case, and discovery size. `capabilities.selfServePairIntake` is exactly `true` when this API contract is present. `consent.scope` is `hosted-relayer` and `consent.protocolEnforced` is `false`: the wallet signature authorizes this hosted service to build and relay the exact pair, but the deployed permissionless campaign contract does not itself verify that offchain signature. The browser uses the origin and returned identities to reconstruct the exact five-minute consent before opening `personal_sign`. The service authenticates contract bytecode and all native/source bindings before entering `ready`.
+Returns a stable disabled/waking shape until recovery is ready, then the canonical public origin, dedicated public `relayerAddress`, authenticated source and settlement identities, pool/verifier/predicate addresses, campaign number, immutable terms, live capacity, featured public case, and discovery size. `capabilities.selfServePairIntake` is exactly `true` when this API contract is present. `consent.scope` is `hosted-relayer` and `consent.protocolEnforced` is `false`: the wallet signature authorizes this hosted service to build and relay the exact pair, but the deployed permissionless campaign contract does not itself verify that offchain signature. The browser uses the origin and returned identities to reconstruct the exact five-minute consent before opening `personal_sign`. The service authenticates contract bytecode and all native/source bindings before entering `ready`.
 
 ### `POST /api/recovery/intake/eligibility`
 
@@ -186,7 +187,7 @@ HTTP `409` / `RECOVERY_REPLAYED` means an exact query or pair marker is already 
 
 ### `GET /api/retry-credit/config`
 
-Returns whether the public service is configured, source and settlement chain identities, fixed pilot amounts, the sponsorship cap, and the active pool address. The frontend uses a bounded retry sequence for a sleeping service.
+Returns source and settlement chain identities, fixed pilot amounts, the sponsorship cap, and the archived pool address. Both `enabled` and `writesEnabled` are true only when the archived service is configured and `RETRYCREDIT_LEGACY_WRITES_ENABLED=true`; configuration alone is reported separately by `/health.publicDemoConfigured`. The production default is `false`.
 
 ### `POST /api/retry-credit/challenge`
 
@@ -210,7 +211,7 @@ Request:
 }
 ```
 
-After wallet ownership is verified, the service authenticates its configured infrastructure, pre-funds the fixed Creditcoin service credit, activates it, signs both exact Universal Router routes from its testnet service role, and commits the raw source transactions on Creditcoin before either route is broadcast. Repeating preparation for the same beneficiary resumes the existing active or released lifecycle.
+By default this route returns HTTP `410` / `LEGACY_WRITES_DISABLED`. With the explicit legacy-write switch enabled, wallet ownership is verified before the service authenticates its configured infrastructure, pre-funds the fixed Creditcoin service credit, activates it, signs both exact Universal Router routes from its testnet service role, and commits the raw source transactions on Creditcoin before either route is broadcast. Repeating preparation for the same beneficiary resumes the existing active or released lifecycle.
 
 ### `GET /api/retry-credit/:serviceCreditNumber/status`
 
@@ -218,9 +219,9 @@ Returns durable pool state (`draft`, `active`, `released`, or `refunded`), the b
 
 ### `POST /api/retry-credit/:serviceCreditNumber/execute`
 
-Broadcasts the already committed stale and refreshed Sepolia routes. Execution enforces the bounded source window, expected first-route failure, ordering, maximum block gap, and successful retry. Repeating the request returns the existing source hashes and any release already won by a concurrent request.
+By default this route returns HTTP `410` / `LEGACY_WRITES_DISABLED`. With the explicit legacy-write switch enabled, it broadcasts the already committed stale and refreshed Sepolia routes. Execution enforces the bounded source window, expected first-route failure, ordering, maximum block gap, and successful retry. Repeating the request returns the existing source hashes and any release already won by a concurrent request.
 
-The service sends both source transactions from its own funded testnet role; the beneficiary receives the exact test-USDC output.
+When explicitly enabled, the service sends both source transactions from its own funded testnet role; the beneficiary receives the exact test-USDC output.
 
 ### `POST /api/retry-credit/:serviceCreditNumber/release`
 
@@ -233,7 +234,7 @@ Request:
 }
 ```
 
-The hashes are checked against the committed source transactions. When omitted, the service uses the committed hashes. It builds one Attestcoin batch for the ordered receipts, performs the exact pool `staticCall`, and only then submits through the testnet relayer role.
+By default this route returns HTTP `410` / `LEGACY_WRITES_DISABLED`. With the explicit legacy-write switch enabled, the hashes are checked against the committed source transactions. When omitted, the service uses the committed hashes. It builds one Attestcoin batch for the ordered receipts, performs the exact pool `staticCall`, and only then submits through the testnet relayer role.
 
 HTTP `425` means the source window or transactions are not ready, or Attestcoin has not finalized both receipts. Retry this route with bounded backoff; do not treat unrelated `4xx` responses as retryable. If another request wins the release race, the API returns the existing release. Replay never emits a second credit.
 
@@ -241,4 +242,4 @@ HTTP `425` means the source window or transactions are not ready, or Attestcoin 
 
 API validation, source RPC reads, proof construction, native index calculation, and simulations fail fast and improve operator feedback; they are not payout authority. The active campaign stores exact funded terms. The native Attestcoin verifier proves the two ordered Ethereum receipts, the predicate enforces canonical paid SeaDrop failure-to-completion semantics, and the campaign derives the destination and consumes current-campaign wallet/query/pair replay before releasing funds.
 
-The service process holds a secret Creditcoin testnet relayer key. It can pay gas and relay any valid proof, but cannot redirect a credit, change campaign terms, create source evidence, withdraw active capacity, or bypass replay. Never expose the key.
+The service process derives a dedicated Creditcoin testnet relayer role from its secret. Recovery releases use that role rather than the campaign sponsor's nonce domain. The relayer can pay gas and relay any valid proof, but cannot redirect a credit, change campaign terms, create source evidence, withdraw active capacity, or bypass replay. Archived V3 write routes are disabled unless `RETRYCREDIT_LEGACY_WRITES_ENABLED=true` is explicitly set. Never expose either key.

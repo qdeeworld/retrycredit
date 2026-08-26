@@ -11,11 +11,13 @@ import {
 
 import {
   RECOVERY_DISCOVERY_INDEX,
+  RECOVERY_RELAYER_ROLE,
   RecoveryCampaignService,
   deriveRecoveryReplayIds,
   normalizeRecoveryBatchProof,
   recoveryChallengeMessage,
 } from "../src/recovery-campaign-service.mjs";
+import { deriveRoleKey } from "../src/role-key.mjs";
 import { recoveryCampaignAbi } from "../src/pool-abi.mjs";
 import { MINT_SIGNED_SELECTOR, SEA_DROP_MAINNET } from "../src/seadrop-recovery.mjs";
 import { WorkerError } from "../src/proof-worker.mjs";
@@ -93,6 +95,7 @@ test("configuration authenticates every binding and serializes campaign capacity
   assert.equal(config.verifierAddress, verifierAddress);
   assert.equal(config.predicateAddress, predicateAddress);
   assert.equal(config.publicOrigin, "https://retrycredit.example");
+  assert.equal(config.relayerAddress, relayer.address);
   assert.equal(config.campaignNumber, 7);
   assert.equal(config.campaign.creditAmount, parseEther("0.01").toString());
   assert.deepEqual(config.capacity, { total: 3, claimed: 0, remaining: 3 });
@@ -146,6 +149,11 @@ test("the production factory gives every Ethereum RPC request a finite deadline 
   });
 
   assert.equal(service.ethereumProviders.length, 2);
+  assert.equal(
+    service.relayerWallet.address,
+    new Wallet(deriveRoleKey(relayer.privateKey, RECOVERY_RELAYER_ROLE)).address,
+  );
+  assert.notEqual(service.relayerWallet.address, relayer.address);
   for (const provider of service.ethereumProviders) {
     assert.equal(provider._getConnection().timeout, 6_000);
     assert.ok(provider._getConnection().timeout * 3 < 20_000);
