@@ -6,6 +6,8 @@ import { WorkerError } from "../src/proof-worker.mjs";
 import {
   RECOVERY_RELEASE_DEFAULTS,
   createAppHandler,
+  normalizeDeploymentRevision,
+  resolveLegacyWritesEnabled,
   resolveRecoveryBootstrap,
 } from "../src/server.mjs";
 
@@ -86,6 +88,108 @@ test("production public mode selects the reviewed recovery release without dashb
     }),
     { enabled: true, poolAddress: wallet, campaignNumber: null, productionDefault: false },
   );
+});
+
+test("health exposes only an exact normalized Render revision", async () => {
+  const revision = "AB".repeat(20);
+  assert.equal(normalizeDeploymentRevision(` ${revision} `), revision.toLowerCase());
+  assert.equal(normalizeDeploymentRevision("abc123"), null);
+  assert.equal(normalizeDeploymentRevision(undefined), null);
+
+  await withServer(
+    { state: "disabled", service: null, error: null },
+    async (base) => {
+      const response = await fetch(`${base}/health`);
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.equal(body.revision, revision.toLowerCase());
+      assert.equal(body.recoveryState, "disabled");
+    },
+    { deploymentRevision: normalizeDeploymentRevision(revision) },
+  );
+});
+
+test("archived writes default off and accept only the exact explicit opt-in", () => {
+  assert.equal(resolveLegacyWritesEnabled({}), false);
+  assert.equal(resolveLegacyWritesEnabled({ RETRYCREDIT_LEGACY_WRITES_ENABLED: "false" }), false);
+  assert.equal(resolveLegacyWritesEnabled({ RETRYCREDIT_LEGACY_WRITES_ENABLED: "TRUE" }), false);
+  assert.equal(resolveLegacyWritesEnabled({ RETRYCREDIT_LEGACY_WRITES_ENABLED: "true" }), true);
+});
+
+test("archived sponsor writes are disabled by default without disabling read-only routes", async () => {
+  const calls = [];
+  const legacyRetryCreditService = {
+    challenge(beneficiary) {
+      calls.push("challenge");
+      return { beneficiary };
+    },
+    async prepare() { calls.push("prepare"); return { prepared: true }; },
+    async execute() { calls.push("execute"); return { executed: true }; },
+    async release() { calls.push("release"); return { released: true }; },
+  };
+  await withServer(
+    { state: "disabled", service: null, error: null },
+    async (base) => {
+      const configResponse = await fetch(`${base}/api/retry-credit/config`);
+      assert.equal(configResponse.status, 200);
+      const config = await configResponse.json();
+      assert.equal(config.enabled, false);
+      assert.equal(config.writesEnabled, false);
+
+      const challengeResponse = await fetch(`${base}/api/retry-credit/challenge`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ beneficiary: "0x1111111111111111111111111111111111111111" }),
+      });
+      assert.equal(challengeResponse.status, 200);
+
+      for (const pathname of [
+        "/api/retry-credit/prepare",
+        "/api/retry-credit/1/execute",
+        "/api/retry-credit/1/release",
+      ]) {
+        const response = await fetch(`${base}${pathname}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+        assert.equal(response.status, 410);
+        const body = await response.json();
+        assert.equal(body.error.code, "LEGACY_WRITES_DISABLED");
+      }
+    },
+    { legacyRetryCreditService },
+  );
+  assert.deepEqual(calls, ["challenge"]);
+});
+
+test("archived sponsor writes require an explicit server opt-in", async () => {
+  let prepareCalls = 0;
+  const legacyRetryCreditService = {
+    async prepare() {
+      prepareCalls += 1;
+      return { prepared: true };
+    },
+  };
+  await withServer(
+    { state: "disabled", service: null, error: null },
+    async (base) => {
+      const configResponse = await fetch(`${base}/api/retry-credit/config`);
+      const config = await configResponse.json();
+      assert.equal(config.enabled, true);
+      assert.equal(config.writesEnabled, true);
+
+      const response = await fetch(`${base}/api/retry-credit/prepare`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { prepared: true });
+    },
+    { legacyRetryCreditService, legacyWritesEnabled: true },
+  );
+  assert.equal(prepareCalls, 1);
 });
 
 test("disabled recovery config is shape-stable and CORS applies to GET and preflight", async () => {
@@ -310,7 +414,7 @@ test("invalid JSON and disabled release never become internal errors", async () 
   });
 });
 
-async function withServer(recovery, callback) {
+async function withServer(recovery, callback, handlerOptions = {}) {
   const campaignWorker = {
     async getLatestCampaign() { throw new Error("legacy route should not run"); },
     async getCampaign() { throw new Error("legacy route should not run"); },
@@ -321,6 +425,7 @@ async function withServer(recovery, callback) {
     legacyRetryCreditService: null,
     recovery,
     allowedOrigin: origin,
+    ...handlerOptions,
   }));
   await new Promise((resolve, reject) => {
     server.once("error", reject);

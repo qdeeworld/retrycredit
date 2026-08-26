@@ -22,10 +22,12 @@ const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? "http://localhost:3000";
 const POOL_VERSION = process.env.RULEDROP_POOL_VERSION ?? "1";
 const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN ?? ALLOWED_ORIGIN;
 const RETRY_CREDIT_ENABLED = process.env.RETRYCREDIT_PUBLIC_ENABLED === "true";
+const LEGACY_WRITES_ENABLED = resolveLegacyWritesEnabled(process.env);
 const RETRY_CREDIT_POOL_ADDRESS = process.env.RETRYCREDIT_POOL_ADDRESS ?? "0x81b5d955F4EbfaE02FF6346cf368A2c4347248A1";
 const RETRY_CREDIT_VERIFIER_ADDRESS = process.env.RETRYCREDIT_VERIFIER_ADDRESS ?? "0x97Fa88CfCaeE1a5D4Ae749b9b5698F2147b986fC";
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com";
 const ethereumRpcUrls = (process.env.ETHEREUM_RPC_URLS ?? "").split(",").map((value) => value.trim());
+const DEPLOYMENT_REVISION = normalizeDeploymentRevision(process.env.RENDER_GIT_COMMIT);
 export const RECOVERY_RELEASE_DEFAULTS = Object.freeze({
   publicOrigin: "https://retrycredit.dolepee.com",
   poolAddress: "0x646c5c766Ce3B6058B44F41e89fE716f54E3dF66",
@@ -126,6 +128,16 @@ export function resolveRecoveryBootstrap(env = {}) {
   return Object.freeze({ enabled, poolAddress, campaignNumber, productionDefault });
 }
 
+export function normalizeDeploymentRevision(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return /^[0-9a-f]{40}$/.test(normalized) ? normalized : null;
+}
+
+export function resolveLegacyWritesEnabled(env = {}) {
+  return env.RETRYCREDIT_LEGACY_WRITES_ENABLED === "true";
+}
+
 function optionalEnvironmentValue(value) {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
@@ -137,6 +149,8 @@ export function createAppHandler({
   legacyRetryCreditService = retryCreditService,
   recovery = recoveryLifecycle,
   allowedOrigin = ALLOWED_ORIGIN,
+  legacyWritesEnabled = LEGACY_WRITES_ENABLED,
+  deploymentRevision = DEPLOYMENT_REVISION,
 } = {}) {
   return async (request, response) => {
   const requestId = crypto.randomUUID();
@@ -156,6 +170,7 @@ export function createAppHandler({
         network: 102031,
         publicDemoConfigured: Boolean(legacyRetryCreditService),
         recoveryState: recovery.state,
+        revision: deploymentRevision,
       });
       return;
     }
@@ -218,7 +233,8 @@ export function createAppHandler({
 
     if (request.method === "GET" && url.pathname === "/api/retry-credit/config") {
       sendJson(response, 200, {
-        enabled: Boolean(legacyRetryCreditService),
+        enabled: Boolean(legacyRetryCreditService) && legacyWritesEnabled,
+        writesEnabled: Boolean(legacyRetryCreditService) && legacyWritesEnabled,
         source: { name: "Ethereum Sepolia", chainId: 11155111 },
         settlement: { name: "Creditcoin Testnet", chainId: 102031 },
         creditAmount: PUBLIC_DEMO_DEFAULTS.creditAmount.toString(),
@@ -238,6 +254,7 @@ export function createAppHandler({
 
     if (request.method === "POST" && url.pathname === "/api/retry-credit/prepare") {
       requireRetryCreditService(legacyRetryCreditService);
+      requireLegacyWrites(legacyWritesEnabled);
       const body = await readJson(request);
       sendJson(response, 200, await legacyRetryCreditService.prepare(body));
       return;
@@ -253,6 +270,7 @@ export function createAppHandler({
     const retryExecuteMatch = url.pathname.match(/^\/api\/retry-credit\/(\d+)\/execute$/);
     if (request.method === "POST" && retryExecuteMatch) {
       requireRetryCreditService(legacyRetryCreditService);
+      requireLegacyWrites(legacyWritesEnabled);
       sendJson(response, 200, await legacyRetryCreditService.execute(retryExecuteMatch[1]));
       return;
     }
@@ -260,6 +278,7 @@ export function createAppHandler({
     const retryReleaseMatch = url.pathname.match(/^\/api\/retry-credit\/(\d+)\/release$/);
     if (request.method === "POST" && retryReleaseMatch) {
       requireRetryCreditService(legacyRetryCreditService);
+      requireLegacyWrites(legacyWritesEnabled);
       const body = await readJson(request);
       sendJson(response, 200, await legacyRetryCreditService.release({
         serviceCreditNumber: retryReleaseMatch[1],
@@ -357,6 +376,16 @@ function requireRetryCreditService(service) {
   }
 }
 
+function requireLegacyWrites(enabled) {
+  if (!enabled) {
+    throw new WorkerError(
+      "LEGACY_WRITES_DISABLED",
+      "Archived RetryCredit writes are disabled on this deployment",
+      410,
+    );
+  }
+}
+
 function requireRecoveryService(recovery) {
   if (recovery.state === "waking") {
     throw new WorkerError(
@@ -396,6 +425,7 @@ function unavailableRecoveryConfig(waking, service = null) {
       chainId: RECOVERY_DEFAULTS.settlementChainId,
     },
     publicOrigin: service?.publicOrigin ?? null,
+    relayerAddress: service?.relayerWallet?.address ?? null,
     poolAddress: service?.poolAddress ?? null,
     verifierAddress: null,
     predicateAddress: null,

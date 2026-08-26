@@ -5,9 +5,7 @@ import {
   Transaction,
   Wallet,
   ZeroAddress,
-  concat,
   getAddress,
-  getBytes,
   isHexString,
   keccak256,
   parseEther,
@@ -21,6 +19,9 @@ import {
   WorkerError,
   computeUniswapRetryCreditIntent,
 } from "./proof-worker.mjs";
+import { PUBLIC_CC3_RELAYER_ROLE, deriveRoleKey } from "./role-key.mjs";
+
+export { deriveRoleKey } from "./role-key.mjs";
 
 export const PUBLIC_DEMO_DEFAULTS = Object.freeze({
   creditAmount: parseEther("0.01"),
@@ -153,7 +154,7 @@ export class UniswapRetryCreditDemoService {
       sponsorWallet: new Wallet(privateKey, ccProvider),
       sourceFunderWallet: new Wallet(privateKey, sepoliaProvider),
       routeSignerWallet: new Wallet(deriveRoleKey(privateKey, "RETRYCREDIT_PUBLIC_ROUTE_SIGNER_V2")),
-      relayerWallet: new Wallet(deriveRoleKey(privateKey, "RETRYCREDIT_PUBLIC_CC3_RELAYER_V2"), ccProvider),
+      relayerWallet: new Wallet(deriveRoleKey(privateKey, PUBLIC_CC3_RELAYER_ROLE), ccProvider),
     });
   }
 
@@ -753,12 +754,6 @@ async function waitForReceipt(provider, transactionHash) {
   const receipt = await provider.waitForTransaction(transactionHash, 1, 120_000);
   if (!receipt) throw new WorkerError("SOURCE_TRANSACTION_TIMEOUT", "A sponsored source transaction timed out", 503);
   return receipt;
-}
-
-export function deriveRoleKey(privateKey, label) {
-  const value = keccak256(concat([getBytes(privateKey), toUtf8Bytes(label)]));
-  if (/^0x0+$/.test(value)) throw new Error(`derived an invalid ${label} key`);
-  return value;
 }
 
 function currentChallengeBucket(windowMs) {
