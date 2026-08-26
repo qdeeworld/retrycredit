@@ -1,6 +1,6 @@
 # RetryCredit Recovery Campaign API
 
-The active API operates one pre-funded Recovery Campaign over a closed set of paid Ethereum-mainnet SeaDrop failure-to-completion pairs. It re-reads both source transactions and receipts, authenticates the deployed Creditcoin bindings, asks the source wallet for a five-minute offchain consent, builds one pair-local Attestcoin batch, simulates the immutable campaign, and relays the fixed release.
+The active API operates one pre-funded Recovery Campaign for paid Ethereum-mainnet SeaDrop failure-to-completion pairs. Its namespaced Open Pair Intake accepts an exact failed/successful transaction-hash pair, derives the source wallet from live Ethereum facts, authenticates the deployed Creditcoin bindings, asks that wallet for a five-minute offchain consent, builds one pair-local Attestcoin batch, simulates the immutable campaign, and relays the fixed release. The earlier three-address discovery index remains a public example and staged-compatibility path; it is not eligibility authority for the intake routes.
 
 The wallet does not submit a transaction, switch networks, deposit an asset, or choose a destination. The contract derives the beneficiary from the proven Ethereum sender. Earlier Sepolia/Uniswap V3 endpoints remain available as an API-level predecessor and for archived evidence. The current Recovery Campaign interface does not fall back to those routes automatically, so their availability alone is not a product rollback.
 
@@ -35,16 +35,16 @@ npm run app:dev
 | `PORT` | HTTP port. |
 | `ALLOWED_ORIGIN` | Single browser origin returned by CORS, such as `http://localhost:3000`. |
 | `PUBLIC_ORIGIN` | Origin bound into wallet challenge text and signature verification. |
-| `RETRYCREDIT_PUBLIC_ENABLED` | Set to `true` only when the bounded public service is funded and configured. |
-| `RETRYCREDIT_DEMO_PRIVATE_KEY` | Secret testnet service key. Never expose it to the frontend, logs, docs, or repository. |
+| `RETRYCREDIT_PUBLIC_ENABLED` | Archived V3 service switch; it does not enable the active Recovery Campaign. |
+| `RETRYCREDIT_DEMO_PRIVATE_KEY` | Shared secret testnet relayer key. Never expose it to the frontend, logs, docs, or repository. |
 | `RETRYCREDIT_RECOVERY_ENABLED` | Optional explicit recovery kill switch. Set to `false` to disable even when addresses are configured. |
 | `RETRYCREDIT_RECOVERY_POOL_ADDRESS` | Active `RetryCreditRecoveryCampaign` address. |
 | `RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER` | Positive active campaign number. |
-| `RETRYCREDIT_POOL_ADDRESS` | Active Creditcoin RetryCredit pool. |
-| `RETRYCREDIT_VERIFIER_ADDRESS` | Active Creditcoin Attestcoin verifier. |
-| `SEPOLIA_RPC_URL` | Ethereum Sepolia execution RPC. |
-| `CREDITCOIN_RPC` | Creditcoin Testnet RPC. |
-| `ATTESTCOIN_PROOF_BUILDER` | Creditcoin Testnet Attestcoin proof-builder URL. |
+| `RETRYCREDIT_POOL_ADDRESS` | Archived V3 Creditcoin pool. |
+| `RETRYCREDIT_VERIFIER_ADDRESS` | Archived V3 Attestcoin verifier. |
+| `SEPOLIA_RPC_URL` | Archived V3 Ethereum Sepolia execution RPC. |
+| `CREDITCOIN_RPC` | Shared Creditcoin Testnet RPC. |
+| `ATTESTCOIN_PROOF_BUILDER` | Shared Creditcoin Testnet Attestcoin proof-builder URL. |
 
 `ETHEREUM_RPC_URLS` is used by the Recovery Campaign to re-read mainnet source data and also supports archived RuleDrop compatibility endpoints. `RULEDROP_POOL_ADDRESS` and `RULEDROP_POOL_VERSION` are legacy-only. The frontend build uses `VITE_RETRYCREDIT_API_ORIGIN` to select the public API origin.
 
@@ -70,6 +70,8 @@ After either operation, verify the exact deployed source, `GET /health`, both co
 - Every response includes `x-request-id` for operational correlation.
 - Browser CORS emits the one configured `ALLOWED_ORIGIN`; CORS is not authentication and does not block non-browser clients.
 - Recovery release operations are serialized in-process and replay-safe against campaign-scoped onchain state.
+- The whole public intake pipeline is bounded to four active requests and sixteen queued requests; source resolution has its own matching bound. Campaign reads share a short generation-safe flight/cache, identical pair lookups share one flight, successful pair validation is held in a bounded 256-entry ten-minute cache, invalid-pair results are held for thirty seconds, one lookup receives at most three configured Ethereum providers, and a lookup times out after twenty seconds. Saturation returns HTTP `429` / `RECOVERY_BUSY` with `Retry-After: 5`.
+- At most eight hosted release operations may be active or queued. Each queued release freshly re-reads campaign and claimant state before requesting an Attestcoin proof. Replay IDs are then derived and checked after proof construction and before simulation, so a closed, full, already-claimed, or consumed release cannot reach the relay step.
 - Existing release receipts are searched in `10,000`-block chunks across the latest `250,000` Creditcoin blocks. Within that supported window, a concurrent or repeated request returns the existing current-campaign release instead of sending a second credit.
 - If the campaign records a wallet claim but its exact `CreditReleased` event is not discoverable inside that bounded window, the service fails closed with HTTP `503` / `RECOVERY_STATE_INCONSISTENT`. It does not reconstruct unverified evidence or send another credit.
 
@@ -81,7 +83,64 @@ Returns process identity, Creditcoin network `102031`, legacy-service configurat
 
 ### `GET /api/recovery/config`
 
-Returns a stable disabled/waking shape until recovery is ready, then the canonical public origin, authenticated source and settlement identities, pool/verifier/predicate addresses, campaign number, immutable terms, live capacity, featured public case, and discovery size. The browser uses that origin and the other returned identities to reconstruct the exact five-minute consent before opening `personal_sign`. The service authenticates contract bytecode and all native/source bindings before entering `ready`.
+Returns a stable disabled/waking shape until recovery is ready, then the canonical public origin, authenticated source and settlement identities, pool/verifier/predicate addresses, campaign number, immutable terms, live capacity, featured public case, and discovery size. `capabilities.selfServePairIntake` is exactly `true` when this API contract is present. `consent.scope` is `hosted-relayer` and `consent.protocolEnforced` is `false`: the wallet signature authorizes this hosted service to build and relay the exact pair, but the deployed permissionless campaign contract does not itself verify that offchain signature. The browser uses the origin and returned identities to reconstruct the exact five-minute consent before opening `personal_sign`. The service authenticates contract bytecode and all native/source bindings before entering `ready`.
+
+### `POST /api/recovery/intake/eligibility`
+
+Request:
+
+```json
+{
+  "pair": {
+    "failedTransactionHash": "0x...",
+    "successfulTransactionHash": "0x..."
+  }
+}
+```
+
+The body accepts only this pair object, and the pair accepts only the two distinct 32-byte hashes. No wallet or destination is accepted as authority. The service re-reads both Ethereum transactions and receipts under bounded source-work limits, validates the exact immutable campaign predicate, and derives the claimant from the live source sender. The response uses the existing eligibility shape and includes that derived `wallet`, the full validated pair, campaign amount, status, and any exact current-campaign release. Status `processing` means a valid signed release for this exact wallet/pair is already inside hosted preflight, proof, or relay work; clients must check again instead of requesting another signature.
+
+### `POST /api/recovery/intake/challenge`
+
+Request:
+
+```json
+{
+  "pair": {
+    "failedTransactionHash": "0x...",
+    "successfulTransactionHash": "0x..."
+  }
+}
+```
+
+The service re-resolves the pair, derives its source wallet, requires current eligibility, and returns a canonical 300-second EIP-191 message bound to the public origin, pool, campaign, derived wallet, and both hashes. The browser must reconstruct that message from its live configuration and response before requesting a signature.
+
+### `POST /api/recovery/intake/release`
+
+Request:
+
+```json
+{
+  "wallet": "0x...",
+  "pair": {
+    "failedTransactionHash": "0x...",
+    "successfulTransactionHash": "0x..."
+  },
+  "issuedAt": 0,
+  "expiresAt": 0,
+  "signature": "0x..."
+}
+```
+
+The wallet is present only so the service can reconstruct and verify the pair-bound consent before starting new Ethereum RPC or proof work. It is not payout authority: after signature verification, the service re-resolves the pair and requires the live-derived claimant to equal the signer. The request does not echo a mutable message, and destination, recipient, beneficiary, payout, or additional authoritative fields are rejected. After a fresh queued-state recheck, the existing exact proof normalization, replay checks, static simulation, relay, balance delta, event, and campaign-accounting verification apply unchanged.
+
+The hosted consent prevents this service from relaying for an unsigned or pair-mutated request. It does not make wallet consent an onchain invariant: another party with a valid Attestcoin proof can call the current permissionless contract, consume a slot, and send the fixed credit only to the proof-derived source wallet. It still cannot substitute a destination or take the credit.
+
+Malformed bodies and forbidden destination fields return HTTP `400`; invalid, altered, or expired consent returns HTTP `401`. HTTP `409` covers closed, full, claimed, or replayed state. Non-retryable HTTP `422` covers malformed live pair semantics or missing exact source facts (`RECOVERY_PAIR_INVALID`), a signer that differs from the wallet derived from the pair (`RECOVERY_PAIR_WALLET_MISMATCH`), and a release rejected by immutable campaign simulation (`RECOVERY_SIMULATION_REJECTED`). HTTP `425` covers an active release or Attestcoin lag. HTTP `429` / `RECOVERY_BUSY` covers intake or release queue saturation. Bounded source/state failure returns HTTP `503`, while proof or relay verification may return safe `502`/`503` domain errors. Every error keeps the stable `{ code, message, requestId }` envelope.
+
+The namespaced routes are additive for API-first rollout. The unnamespaced discovery routes below remain functional until the matching frontend release is verified; the public Open Pair Intake uses only the namespaced routes.
+
+## Indexed compatibility routes
 
 ### `POST /api/recovery/eligibility`
 
@@ -91,7 +150,7 @@ Request:
 { "wallet": "0x..." }
 ```
 
-Returns `eligible`, a stable status (`eligible`, `claimed`, `not-found`, `closed`, or `full`), the exact source pair when known, fixed credit amount, and any current-campaign release. Discovery is a closed three-address index; live Ethereum transactions, receipts, rule checks, and current campaign state remain authority.
+Returns `eligible`, a stable status (`eligible`, `claimed`, `not-found`, `closed`, or `full`), the exact source pair when known, fixed credit amount, and any current-campaign release. This staged-compatibility route still selects from the closed three-address example index; live Ethereum transactions, receipts, rule checks, and current campaign state remain authority.
 
 ### `POST /api/recovery/challenge`
 

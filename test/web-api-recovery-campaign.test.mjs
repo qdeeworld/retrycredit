@@ -11,6 +11,10 @@ import {
 
 const origin = "https://retrycredit.example";
 const wallet = "0x1111111111111111111111111111111111111111";
+const pair = {
+  failedTransactionHash: `0x${"11".repeat(32)}`,
+  successfulTransactionHash: `0x${"22".repeat(32)}`,
+};
 
 test("production public mode selects the reviewed recovery release without dashboard drift", () => {
   assert.deepEqual(
@@ -91,6 +95,7 @@ test("disabled recovery config is shape-stable and CORS applies to GET and prefl
     });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("access-control-allow-origin"), origin);
+    assert.equal(response.headers.get("access-control-expose-headers"), "retry-after, x-request-id");
     assert.equal(response.headers.get("cache-control"), "no-store");
     const body = await response.json();
     assert.equal(body.enabled, false);
@@ -101,6 +106,8 @@ test("disabled recovery config is shape-stable and CORS applies to GET and prefl
     assert.equal(body.rule, null);
     assert.equal(body.capacity, null);
     assert.equal(body.discoverySize, 3);
+    assert.deepEqual(body.capabilities, { selfServePairIntake: true });
+    assert.deepEqual(body.consent, { scope: "hosted-relayer", protocolEnforced: false });
     assert.deepEqual(body.source, { name: "Ethereum Mainnet", chainId: 1, chainKey: 3 });
 
     const preflight = await fetch(`${base}/api/recovery/release`, { method: "OPTIONS" });
@@ -140,6 +147,18 @@ test("ready API routes preserve the fixed recovery response contract", async () 
       calls.push(["eligibility", input]);
       return { eligible: true, status: "eligible", wallet: input, campaignNumber: 7 };
     },
+    async intakeEligibility(input) {
+      calls.push(["intakeEligibility", input]);
+      return { eligible: true, status: "eligible", wallet, campaignNumber: 7, pair: input.pair };
+    },
+    async intakeChallenge(input) {
+      calls.push(["intakeChallenge", input]);
+      return { wallet, message: "pair consent", issuedAt: 1, expiresAt: 301, pair: input.pair };
+    },
+    async intakeRelease(input) {
+      calls.push(["intakeRelease", input]);
+      return { status: "released", wallet: input.wallet, campaignNumber: 7, pair: input.pair };
+    },
     async challenge(input) {
       calls.push(["challenge", input]);
       return { wallet: input, message: "consent", issuedAt: 1, expiresAt: 301 };
@@ -156,6 +175,31 @@ test("ready API routes preserve the fixed recovery response contract", async () 
     const configBody = await config.json();
     assert.equal(configBody.campaignNumber, 7);
     assert.equal(configBody.publicOrigin, origin);
+
+    const intakeEligibilityBody = { pair };
+    const intakeEligibility = await post(
+      base,
+      "/api/recovery/intake/eligibility",
+      intakeEligibilityBody,
+    );
+    assert.equal(intakeEligibility.status, 200);
+    assert.equal((await intakeEligibility.json()).wallet, wallet);
+
+    const intakeChallengeBody = { pair };
+    const intakeChallenge = await post(base, "/api/recovery/intake/challenge", intakeChallengeBody);
+    assert.equal(intakeChallenge.status, 200);
+    assert.equal((await intakeChallenge.json()).message, "pair consent");
+
+    const intakeReleaseBody = {
+      wallet,
+      pair,
+      issuedAt: 1,
+      expiresAt: 301,
+      signature: `0x${"11".repeat(65)}`,
+    };
+    const intakeRelease = await post(base, "/api/recovery/intake/release", intakeReleaseBody);
+    assert.equal(intakeRelease.status, 200);
+    assert.equal((await intakeRelease.json()).status, "released");
 
     const eligibility = await post(base, "/api/recovery/eligibility", { wallet });
     assert.equal(eligibility.status, 200);
@@ -177,6 +221,9 @@ test("ready API routes preserve the fixed recovery response contract", async () 
     assert.equal((await release.json()).status, "released");
     assert.deepEqual(calls, [
       ["configuration"],
+      ["intakeEligibility", intakeEligibilityBody],
+      ["intakeChallenge", intakeChallengeBody],
+      ["intakeRelease", intakeReleaseBody],
       ["eligibility", wallet],
       ["challenge", wallet],
       ["release", releaseRequest],
@@ -201,6 +248,45 @@ test("recovery domain errors retain status, safe code/message, CORS, and request
   });
 });
 
+test("intake resource saturation returns explicit 429 state without internal details", async () => {
+  const service = {
+    async intakeEligibility() {
+      throw new WorkerError("RECOVERY_BUSY", "Recovery source intake is busy; retry shortly.", 429);
+    },
+  };
+  await withServer({ state: "ready", service, error: null }, async (base) => {
+    const response = await post(base, "/api/recovery/intake/eligibility", { pair });
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get("retry-after"), "5");
+    assert.equal(response.headers.get("access-control-expose-headers"), "retry-after, x-request-id");
+    assert.ok(response.headers.get("x-request-id"));
+    const body = await response.json();
+    assert.deepEqual(Object.keys(body.error).sort(), ["code", "message", "requestId"]);
+    assert.equal(body.error.code, "RECOVERY_BUSY");
+    assert.equal(body.error.message, "Recovery source intake is busy; retry shortly.");
+  });
+});
+
+test("the 16 KB JSON boundary counts bytes before intake dispatch", async () => {
+  let calls = 0;
+  const service = {
+    async intakeEligibility() {
+      calls += 1;
+      throw new Error("must not dispatch");
+    },
+  };
+  await withServer({ state: "ready", service, error: null }, async (base) => {
+    const response = await fetch(`${base}/api/recovery/intake/eligibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin },
+      body: JSON.stringify({ pair, padding: "🔒".repeat(4_200) }),
+    });
+    assert.equal(response.status, 413);
+    assert.equal((await response.json()).error.code, "BODY_TOO_LARGE");
+    assert.equal(calls, 0);
+  });
+});
+
 test("invalid JSON and disabled release never become internal errors", async () => {
   const service = { async release() { throw new Error("must not run"); } };
   await withServer({ state: "ready", service, error: null }, async (base) => {
@@ -217,6 +303,10 @@ test("invalid JSON and disabled release never become internal errors", async () 
     const response = await post(base, "/api/recovery/release", { wallet });
     assert.equal(response.status, 503);
     assert.equal((await response.json()).error.code, "RECOVERY_DISABLED");
+
+    const intake = await post(base, "/api/recovery/intake/release", { wallet, pair });
+    assert.equal(intake.status, 503);
+    assert.equal((await intake.json()).error.code, "RECOVERY_DISABLED");
   });
 });
 

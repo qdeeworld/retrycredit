@@ -14,6 +14,7 @@ import {
   RecoveryCampaignService,
   deriveRecoveryReplayIds,
   normalizeRecoveryBatchProof,
+  recoveryChallengeMessage,
 } from "../src/recovery-campaign-service.mjs";
 import { recoveryCampaignAbi } from "../src/pool-abi.mjs";
 import { MINT_SIGNED_SELECTOR, SEA_DROP_MAINNET } from "../src/seadrop-recovery.mjs";
@@ -86,6 +87,8 @@ test("configuration authenticates every binding and serializes campaign capacity
   const config = await fixture.service.configuration();
 
   assert.equal(config.enabled, true);
+  assert.deepEqual(config.capabilities, { selfServePairIntake: true });
+  assert.deepEqual(config.consent, { scope: "hosted-relayer", protocolEnforced: false });
   assert.equal(config.poolAddress, poolAddress);
   assert.equal(config.verifierAddress, verifierAddress);
   assert.equal(config.predicateAddress, predicateAddress);
@@ -111,11 +114,41 @@ test("release receipt scans reject unsafe provider ranges", () => {
     { releaseLogChunkBlocks: 50_001 },
     { releaseLogChunkBlocks: 500, releaseLogLookbackBlocks: 499 },
     { releaseLogLookbackBlocks: 1_000_001 },
+    { sourceLookupConcurrency: 0 },
+    { sourceLookupQueueLimit: 257 },
+    { sourceLookupTimeoutMs: 121_000 },
+    { intakeTimeoutMs: 999 },
+    { intakeTimeoutMs: 120_001 },
+    { sourceProviderAttempts: 4 },
+    { sourcePairCacheMaxEntries: 0 },
+    { sourcePairCacheTtlSeconds: 3_601 },
+    { sourcePairNegativeCacheTtlSeconds: 301 },
+    { campaignStateCacheTtlSeconds: 0 },
+    { campaignStateCacheTtlSeconds: 11 },
+    { releaseQueueLimit: 0 },
   ]) {
     assert.throws(
       () => serviceFixture({ configOverride }),
       (error) => error instanceof WorkerError && error.code === "INVALID_RECOVERY_CONFIGURATION",
     );
+  }
+});
+
+test("the production factory gives every Ethereum RPC request a finite deadline inside the source budget", () => {
+  const service = RecoveryCampaignService.fromPrivateKey({
+    privateKey: relayer.privateKey,
+    poolAddress,
+    campaignNumber: 7,
+    creditcoinRpc: "https://creditcoin.example",
+    proofBuilderUrl: "https://proof-builder.example",
+    ethereumRpcUrls: ["https://ethereum-one.example", "https://ethereum-two.example"],
+    publicOrigin: "https://retrycredit.example",
+  });
+
+  assert.equal(service.ethereumProviders.length, 2);
+  for (const provider of service.ethereumProviders) {
+    assert.equal(provider._getConnection().timeout, 6_000);
+    assert.ok(provider._getConnection().timeout * 3 < 20_000);
   }
 });
 
@@ -169,6 +202,519 @@ test("the stateless challenge binds origin, pool, campaign, wallet, pair, and a 
   assert.match(challenge.message, new RegExp(failedHash));
   assert.match(challenge.message, new RegExp(successHash));
   assert.match(challenge.message, /no destination can be substituted/i);
+});
+
+test("open-pair intake derives a non-indexed claimant and releases to that exact source wallet", async () => {
+  const openPair = pairIdentity(`0x${"91".repeat(32)}`, `0x${"92".repeat(32)}`);
+  assert.equal(RECOVERY_DISCOVERY_INDEX.some(
+    (entry) => entry.failedTransactionHash === openPair.failedTransactionHash,
+  ), false);
+  const resolved = summaryForPair(openPair);
+  const fixture = serviceFixture({
+    pairOverride: {
+      failed: resolved.failed,
+      successful: resolved.successful,
+    },
+  });
+
+  const eligibility = await fixture.service.intakeEligibility({ pair: openPair });
+  assert.equal(eligibility.eligible, true);
+  assert.equal(eligibility.wallet, source.address);
+  assert.deepEqual(
+    {
+      failedTransactionHash: eligibility.pair.failedTransactionHash,
+      successfulTransactionHash: eligibility.pair.successfulTransactionHash,
+    },
+    openPair,
+  );
+
+  const challenge = await fixture.service.intakeChallenge({ pair: openPair });
+  assert.equal(challenge.wallet, source.address);
+  assert.deepEqual(challenge.pair, openPair);
+  const request = await signedIntakeRequest(challenge, source);
+  const released = await fixture.service.intakeRelease(request);
+  assert.equal(released.status, "released");
+  assert.equal(released.wallet, source.address);
+  assert.equal(released.release.beneficiary, source.address);
+  assert.equal(fixture.releaseCalls, 1);
+
+  const repeated = await fixture.service.intakeRelease(request);
+  assert.equal(repeated.status, "claimed");
+  assert.equal(repeated.release.transactionHash, released.release.transactionHash);
+  assert.equal(fixture.proofCalls, 1);
+});
+
+test("open-pair intake rejects malformed, same, swapped, destination, and extra fields", async () => {
+  const malformed = serviceFixture();
+  for (const request of [
+    {},
+    { pair: { failedTransactionHash: "0x01", successfulTransactionHash: successHash } },
+    { pair: { failedTransactionHash: failedHash, successfulTransactionHash: successHash }, wallet: source.address },
+    { pair: { failedTransactionHash: failedHash, successfulTransactionHash: successHash, note: "extra" } },
+  ]) {
+    await assert.rejects(
+      malformed.service.intakeEligibility(request),
+      (error) => error instanceof WorkerError && error.code === "RECOVERY_REQUEST_INVALID",
+    );
+  }
+  await assert.rejects(
+    malformed.service.intakeEligibility({
+      pair: { failedTransactionHash: failedHash, successfulTransactionHash: failedHash },
+    }),
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_PAIR_INVALID",
+  );
+  await assert.rejects(
+    malformed.service.intakeEligibility({
+      pair: { failedTransactionHash: failedHash, successfulTransactionHash: successHash, beneficiary: outsider.address },
+    }),
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_DESTINATION_FORBIDDEN",
+  );
+  assert.equal(malformed.pairCalls, 0);
+
+  const swapped = serviceFixture();
+  await assert.rejects(
+    swapped.service.intakeEligibility({
+      pair: { failedTransactionHash: successHash, successfulTransactionHash: failedHash },
+    }),
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_PAIR_INVALID",
+  );
+  assert.equal(swapped.pairCalls, 1);
+});
+
+test("open-pair release authenticates exact consent before any live pair or proof work", async () => {
+  const fixture = serviceFixture();
+  const challenge = await fixture.service.intakeChallenge({ pair: pairIdentity() });
+  const pairCallsAfterChallenge = fixture.pairCalls;
+
+  await assert.rejects(
+    fixture.service.intakeRelease(await signedIntakeRequest(challenge, outsider)),
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_SIGNATURE_INVALID",
+  );
+
+  const mutated = await signedIntakeRequest(challenge, source);
+  mutated.pair = {
+    ...mutated.pair,
+    successfulTransactionHash: `0x${"99".repeat(32)}`,
+  };
+  await assert.rejects(
+    fixture.service.intakeRelease(mutated),
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_SIGNATURE_INVALID",
+  );
+  assert.equal(fixture.pairCalls, pairCallsAfterChallenge);
+  assert.equal(fixture.proofCalls, 0);
+  assert.equal(fixture.releaseCalls, 0);
+});
+
+test("a valid signature from a wallet not derived by the pair reaches bounded source validation but never proof", async () => {
+  const fixture = serviceFixture();
+  const request = await rawSignedIntakeRequest({ wallet: outsider, pair: pairIdentity() });
+  await assert.rejects(
+    fixture.service.intakeRelease(request),
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_PAIR_WALLET_MISMATCH",
+  );
+  assert.equal(fixture.pairCalls, 1);
+  assert.equal(fixture.proofCalls, 0);
+  assert.equal(fixture.releaseCalls, 0);
+});
+
+test("open-pair lookups deduplicate, cache, expire, and cap queued source work", async () => {
+  const lookup = deferred();
+  const fixture = serviceFixture({
+    pairResolverOverride: async () => {
+      await lookup.promise;
+      return pairSummary();
+    },
+  });
+  const first = fixture.service.intakeEligibility({ pair: pairIdentity() });
+  const second = fixture.service.intakeEligibility({ pair: pairIdentity() });
+  await nextTurn();
+  assert.equal(fixture.pairCalls, 1);
+  lookup.resolve();
+  await Promise.all([first, second]);
+  await fixture.service.intakeEligibility({ pair: pairIdentity() });
+  assert.equal(fixture.pairCalls, 1);
+  fixture.setNow(now + 601);
+  await fixture.service.intakeEligibility({ pair: pairIdentity() });
+  assert.equal(fixture.pairCalls, 2);
+
+  const pending = [];
+  const bounded = serviceFixture({
+    pairResolverOverride: async ({ discovery }) => {
+      const gate = deferred();
+      pending.push(gate);
+      await gate.promise;
+      return summaryForPair(discovery);
+    },
+    configOverride: {
+      sourceLookupConcurrency: 1,
+      sourceLookupQueueLimit: 1,
+      sourceLookupTimeoutMs: 1_000,
+    },
+  });
+  const pairs = ["a1", "b1", "c1"].map((prefix, index) => pairIdentity(
+    `0x${prefix.repeat(32)}`,
+    `0x${(`${String.fromCharCode(100 + index)}1`).repeat(32)}`,
+  ));
+  const active = bounded.service.intakeEligibility({ pair: pairs[0] });
+  await nextTurn();
+  const queued = bounded.service.intakeEligibility({ pair: pairs[1] });
+  await nextTurn();
+  await assert.rejects(
+    bounded.service.intakeEligibility({ pair: pairs[2] }),
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_BUSY" && error.status === 429,
+  );
+  pending[0].resolve();
+  await active;
+  while (pending.length < 2) await nextTurn();
+  pending[1].resolve();
+  await queued;
+});
+
+test("open-pair source lookup timeouts are bounded", async () => {
+  const never = deferred();
+  const fixture = serviceFixture({
+    pairResolverOverride: () => never.promise,
+    configOverride: { sourceLookupTimeoutMs: 250 },
+  });
+  await assert.rejects(
+    fixture.service.intakeEligibility({ pair: pairIdentity() }),
+    (error) => error instanceof WorkerError
+      && error.code === "RECOVERY_SOURCE_TIMEOUT"
+      && error.status === 503,
+  );
+  assert.equal(fixture.pairCalls, 1);
+});
+
+test("the whole public intake pipeline is bounded and campaign reads are single-flight", async () => {
+  const campaignGate = deferred();
+  const fixture = serviceFixture({
+    campaignReaderOverride: async ({ campaign }) => {
+      await campaignGate.promise;
+      return { ...campaign };
+    },
+    pairResolverOverride: ({ discovery }) => summaryForPair(discovery),
+    configOverride: {
+      sourceLookupConcurrency: 1,
+      sourceLookupQueueLimit: 1,
+      intakeTimeoutMs: 5_000,
+    },
+  });
+  const pairs = ["71", "72", "73"].map((prefix, index) => pairIdentity(
+    `0x${prefix.repeat(32)}`,
+    `0x${String(81 + index).repeat(32)}`,
+  ));
+
+  const first = fixture.service.intakeEligibility({ pair: pairs[0] });
+  await nextTurn();
+  const second = fixture.service.intakeEligibility({ pair: pairs[1] });
+  await nextTurn();
+  await assert.rejects(
+    fixture.service.intakeEligibility({ pair: pairs[2] }),
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_BUSY" && error.status === 429,
+  );
+  assert.equal(fixture.campaignReads, 1);
+  assert.equal(fixture.ruleReads, 1);
+
+  campaignGate.resolve();
+  await Promise.all([first, second]);
+  assert.equal(fixture.campaignReads, 1);
+  assert.equal(fixture.ruleReads, 1);
+});
+
+test("open-pair source resolution attempts at most three configured providers", async () => {
+  let providerAttempts = 0;
+  const ethereumProviders = Array.from({ length: 5 }, () => ({
+    async getNetwork() {
+      providerAttempts += 1;
+      return { chainId: 1n };
+    },
+    async getTransaction() { throw new Error("provider unavailable"); },
+    async getTransactionReceipt() { throw new Error("provider unavailable"); },
+  }));
+  const fixture = serviceFixture({ useEthereumResolver: true, ethereumProviders });
+  await assert.rejects(
+    fixture.service.intakeEligibility({ pair: pairIdentity() }),
+    (error) => error instanceof WorkerError
+      && error.code === "RECOVERY_SOURCE_UNAVAILABLE"
+      && error.status === 503,
+  );
+  assert.equal(providerAttempts, 3);
+});
+
+test("a responsive Ethereum provider with missing hashes returns pair-invalid, not infrastructure unavailable", async () => {
+  const ethereumProvider = {
+    async getNetwork() { return { chainId: 1n }; },
+    async getTransaction() { return null; },
+    async getTransactionReceipt() { return null; },
+  };
+  const fixture = serviceFixture({
+    useEthereumResolver: true,
+    ethereumProviders: [ethereumProvider],
+  });
+  await assert.rejects(
+    fixture.service.intakeEligibility({ pair: pairIdentity() }),
+    (error) => error instanceof WorkerError
+      && error.code === "RECOVERY_PAIR_INVALID"
+      && error.status === 422,
+  );
+});
+
+test("open-pair source resolution retries another provider after a complete semantic mismatch", async () => {
+  let networkChecks = 0;
+  const ethereumProviders = [
+    {
+      async getNetwork() {
+        networkChecks += 1;
+        return { chainId: 1n };
+      },
+      async getTransaction() { return { type: 0 }; },
+      async getTransactionReceipt() { return {}; },
+    },
+    {
+      async getNetwork() {
+        networkChecks += 1;
+        return { chainId: 1n };
+      },
+      async getTransaction() { throw new Error("provider unavailable"); },
+      async getTransactionReceipt() { throw new Error("provider unavailable"); },
+    },
+  ];
+  const fixture = serviceFixture({ useEthereumResolver: true, ethereumProviders });
+  await assert.rejects(
+    fixture.service.intakeEligibility({ pair: pairIdentity() }),
+    (error) => error instanceof WorkerError
+      && error.code === "RECOVERY_PAIR_INVALID"
+      && error.status === 422,
+  );
+  assert.equal(networkChecks, 2);
+});
+
+test("open-pair release queue rejects overflow before a second proof starts", async () => {
+  const proofGate = deferred();
+  const secondPair = pairIdentity(`0x${"a9".repeat(32)}`, `0x${"b9".repeat(32)}`);
+  const fixture = serviceFixture({
+    pairResolverOverride: ({ discovery }) => summaryForPair(discovery),
+    proofBuilderOverride: async ({ resolved }) => {
+      await proofGate.promise;
+      return { success: true, data: batchProofFixture(resolved) };
+    },
+    configOverride: { releaseQueueLimit: 1 },
+  });
+  const firstChallenge = await fixture.service.intakeChallenge({ pair: pairIdentity() });
+  const secondChallenge = await fixture.service.intakeChallenge({ pair: secondPair });
+  const firstRelease = fixture.service.intakeRelease(await signedIntakeRequest(firstChallenge, source));
+  await waitFor(() => fixture.proofCalls === 1);
+  await assert.rejects(
+    fixture.service.intakeRelease(await signedIntakeRequest(secondChallenge, source)),
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_BUSY" && error.status === 429,
+  );
+  assert.equal(fixture.proofCalls, 1);
+  proofGate.resolve();
+  await firstRelease;
+  assert.equal(fixture.releaseCalls, 1);
+});
+
+test("a signed release is publicly reconcilable as processing until it settles", async () => {
+  const proofGate = deferred();
+  const fixture = serviceFixture({
+    proofBuilderOverride: async ({ resolved }) => {
+      await proofGate.promise;
+      return { success: true, data: batchProofFixture(resolved) };
+    },
+  });
+  const challenge = await fixture.service.intakeChallenge({ pair: pairIdentity() });
+  const release = fixture.service.intakeRelease(await signedIntakeRequest(challenge, source));
+  await waitFor(() => fixture.proofCalls === 1);
+
+  const status = await fixture.service.intakeEligibility({ pair: pairIdentity() });
+  assert.equal(status.status, "processing");
+  assert.equal(status.eligible, false);
+  assert.equal(status.release, null);
+  const legacyStatus = await fixture.service.eligibility(source.address);
+  assert.equal(legacyStatus.status, "eligible");
+  assert.equal(legacyStatus.eligible, true);
+  await assert.rejects(
+    fixture.service.intakeChallenge({ pair: pairIdentity() }),
+    (error) => error instanceof WorkerError
+      && error.code === "RECOVERY_RELEASE_PENDING"
+      && error.status === 425,
+  );
+
+  proofGate.resolve();
+  assert.equal((await release).status, "released");
+  assert.equal((await fixture.service.intakeEligibility({ pair: pairIdentity() })).status, "claimed");
+});
+
+test("a claimed wallet's different pair is rejected without attaching the prior receipt", async () => {
+  const otherPair = pairIdentity(`0x${"e9".repeat(32)}`, `0x${"f9".repeat(32)}`);
+  const fixture = serviceFixture({
+    pairResolverOverride: ({ discovery }) => {
+      const summary = summaryForPair(discovery);
+      return discovery.failedTransactionHash === otherPair.failedTransactionHash
+        ? { ...summary, actionId: id("different-qualified-action") }
+        : summary;
+    },
+  });
+  const firstChallenge = await fixture.service.intakeChallenge({ pair: pairIdentity() });
+  await fixture.service.intakeRelease(await signedIntakeRequest(firstChallenge, source));
+  const proofCalls = fixture.proofCalls;
+
+  await assert.rejects(
+    fixture.service.intakeEligibility({ pair: otherPair }),
+    (error) => error instanceof WorkerError
+      && error.code === "RECOVERY_ALREADY_CLAIMED"
+      && error.status === 409,
+  );
+  assert.equal(fixture.proofCalls, proofCalls);
+  assert.equal(fixture.releaseCalls, 1);
+});
+
+test("a queued open-pair release rechecks capacity and claim state before proof", async () => {
+  const proofGate = deferred();
+  const secondPair = pairIdentity(`0x${"c9".repeat(32)}`, `0x${"d9".repeat(32)}`);
+  const fixture = serviceFixture({
+    pairResolverOverride: ({ discovery }) => summaryForPair(discovery),
+    campaignOverride: {
+      maxClaims: 1n,
+      fundedAmount: parseEther("0.01"),
+    },
+    proofBuilderOverride: async ({ resolved }) => {
+      await proofGate.promise;
+      return { success: true, data: batchProofFixture(resolved) };
+    },
+    configOverride: { releaseQueueLimit: 2 },
+  });
+  const firstChallenge = await fixture.service.intakeChallenge({ pair: pairIdentity() });
+  const secondChallenge = await fixture.service.intakeChallenge({ pair: secondPair });
+  const firstRelease = fixture.service.intakeRelease(await signedIntakeRequest(firstChallenge, source));
+  await waitFor(() => fixture.proofCalls === 1);
+  const queuedRelease = fixture.service.intakeRelease(await signedIntakeRequest(secondChallenge, source));
+  await nextTurn();
+  assert.equal(fixture.proofCalls, 1);
+  proofGate.resolve();
+  const [first, second] = await Promise.all([firstRelease, queuedRelease]);
+  assert.equal(first.status, "released");
+  assert.equal(second.status, "claimed");
+  assert.equal(fixture.proofCalls, 1);
+  assert.equal(fixture.releaseCalls, 1);
+});
+
+test("a distinct queued claimant sees a freshly filled campaign before a second proof", async () => {
+  const proofGate = deferred();
+  const secondPair = pairIdentity(`0x${"ca".repeat(32)}`, `0x${"cb".repeat(32)}`);
+  const fixture = serviceFixture({
+    pairResolverOverride: ({ discovery }) => {
+      const summary = summaryForPair(discovery);
+      if (discovery.failedTransactionHash !== secondPair.failedTransactionHash) return summary;
+      return {
+        ...summary,
+        claimant: secondSource.address,
+        payer: secondSource.address,
+        recipient: secondSource.address,
+        actionId: id("second-claimant-qualified-action"),
+      };
+    },
+    campaignOverride: {
+      maxClaims: 1n,
+      fundedAmount: parseEther("0.01"),
+    },
+    proofBuilderOverride: async ({ resolved }) => {
+      await proofGate.promise;
+      return { success: true, data: batchProofFixture(resolved) };
+    },
+    configOverride: { releaseQueueLimit: 2 },
+  });
+  const firstChallenge = await fixture.service.intakeChallenge({ pair: pairIdentity() });
+  const secondChallenge = await fixture.service.intakeChallenge({ pair: secondPair });
+  const firstRelease = fixture.service.intakeRelease(await signedIntakeRequest(firstChallenge, source));
+  await waitFor(() => fixture.proofCalls === 1);
+  const secondRelease = fixture.service.intakeRelease(
+    await signedIntakeRequest(secondChallenge, secondSource),
+  );
+  await nextTurn();
+  assert.equal(fixture.proofCalls, 1);
+
+  proofGate.resolve();
+  assert.equal((await firstRelease).status, "released");
+  await assert.rejects(
+    secondRelease,
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_FULL" && error.status === 409,
+  );
+  assert.equal(fixture.proofCalls, 1);
+  assert.equal(fixture.releaseCalls, 1);
+});
+
+test("fresh release reads never join or recache an older normal campaign-state flight", async () => {
+  const staleReadStarted = deferred();
+  const staleReadGate = deferred();
+  let blockNextCampaignRead = false;
+  const secondPair = pairIdentity(`0x${"da".repeat(32)}`, `0x${"db".repeat(32)}`);
+  const fixture = serviceFixture({
+    campaignReaderOverride: async ({ campaign }) => {
+      const snapshot = { ...campaign };
+      if (blockNextCampaignRead) {
+        blockNextCampaignRead = false;
+        staleReadStarted.resolve();
+        await staleReadGate.promise;
+      }
+      return snapshot;
+    },
+    pairResolverOverride: ({ discovery }) => {
+      const summary = summaryForPair(discovery);
+      if (discovery.failedTransactionHash !== secondPair.failedTransactionHash) return summary;
+      return {
+        ...summary,
+        claimant: secondSource.address,
+        payer: secondSource.address,
+        recipient: secondSource.address,
+        actionId: id("generation-race-second-action"),
+      };
+    },
+    campaignOverride: {
+      maxClaims: 1n,
+      fundedAmount: parseEther("0.01"),
+    },
+  });
+  const firstChallenge = await fixture.service.intakeChallenge({ pair: pairIdentity() });
+  const secondChallenge = await fixture.service.intakeChallenge({ pair: secondPair });
+
+  fixture.setNow(now + 2);
+  blockNextCampaignRead = true;
+  const staleConfiguration = fixture.service.configuration();
+  await staleReadStarted.promise;
+
+  const first = await fixture.service.intakeRelease(await signedIntakeRequest(firstChallenge, source));
+  assert.equal(first.status, "released");
+  await assert.rejects(
+    fixture.service.intakeRelease(await signedIntakeRequest(secondChallenge, secondSource)),
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_FULL" && error.status === 409,
+  );
+  assert.equal(fixture.proofCalls, 1);
+
+  staleReadGate.resolve();
+  assert.equal((await staleConfiguration).capacity.remaining, 1);
+  const current = await fixture.service.configuration();
+  assert.deepEqual(current.capacity, { total: 1, claimed: 1, remaining: 0 });
+  assert.equal(current.campaign.open, false);
+});
+
+test("open-pair release rejects closed and full campaigns before source or proof work", async (t) => {
+  for (const scenario of [
+    { name: "closed", campaignOverride: { deadline: now - 1 }, code: "RECOVERY_CLOSED" },
+    { name: "full", campaignOverride: { claimCount: 3n }, code: "RECOVERY_FULL" },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const fixture = serviceFixture({ campaignOverride: scenario.campaignOverride });
+      const request = await rawSignedIntakeRequest({ wallet: source, pair: pairIdentity() });
+      await assert.rejects(
+        fixture.service.intakeRelease(request),
+        (error) => error instanceof WorkerError && error.code === scenario.code,
+      );
+      assert.equal(fixture.pairCalls, 0);
+      assert.equal(fixture.proofCalls, 0);
+      assert.equal(fixture.releaseCalls, 0);
+    });
+  }
 });
 
 test("release refuses a different signer, an altered consent message, and an expired consent", async () => {
@@ -288,10 +834,17 @@ test("batch normalization rejects unexpected hashes and keeps the exact two-entr
 
 function serviceFixture({
   pairOverride = {},
+  pairResolverOverride,
   campaignOverride = {},
   proofResult,
+  proofBuilderOverride,
+  ethereumProviders = [],
+  useEthereumResolver = false,
   replayConsumed = false,
   verifierPredicate = predicateAddress,
+  campaignReaderOverride,
+  ruleReaderOverride,
+  claimedReaderOverride,
   configOverride = {},
 } = {}) {
   let currentNow = now;
@@ -300,7 +853,10 @@ function serviceFixture({
   let staticCalls = 0;
   let releaseCalls = 0;
   let sourceBalance = 0n;
-  let claimed = false;
+  let campaignReads = 0;
+  let ruleReads = 0;
+  let claimedReads = 0;
+  const claimedWallets = new Set();
   const logQueries = [];
   const consumedQueries = new Set();
   const consumedPairs = new Set();
@@ -326,7 +882,7 @@ function serviceFixture({
   };
   const releaseCredit = async () => {
     releaseCalls += 1;
-    claimed = true;
+    claimedWallets.add(source.address.toLowerCase());
     campaign.claimCount += 1n;
     sourceBalance += campaign.creditAmount;
     consumedQueries.add(failureQueryId);
@@ -363,9 +919,21 @@ function serviceFixture({
     async chainInfo() { return "0x0000000000000000000000000000000000000fd3"; },
     async SOURCE_CHAIN_KEY() { return 3n; },
     async SOURCE_CHAIN_ID() { return 1n; },
-    async getCampaign() { return { ...campaign }; },
-    async getRule() { return { ...rule }; },
-    async claimedByCampaign() { return claimed; },
+    async getCampaign() {
+      campaignReads += 1;
+      if (campaignReaderOverride) return campaignReaderOverride({ campaign, rule });
+      return { ...campaign };
+    },
+    async getRule() {
+      ruleReads += 1;
+      if (ruleReaderOverride) return ruleReaderOverride({ campaign, rule });
+      return { ...rule };
+    },
+    async claimedByCampaign(_campaignNumber, wallet) {
+      claimedReads += 1;
+      if (claimedReaderOverride) return claimedReaderOverride({ wallet, claimedWallets });
+      return claimedWallets.has(getAddress(wallet).toLowerCase());
+    },
     async queryFilter(_filter, fromBlock, toBlock) {
       logQueries.push([fromBlock, toBlock]);
       return releases.filter(
@@ -418,7 +986,8 @@ function serviceFixture({
     proofBuilder: {
       async getBatchProof(hashes) {
         proofCalls += 1;
-        assert.deepEqual(hashes, [failedHash, successHash]);
+        assert.deepEqual(hashes, [resolved.failed.transactionHash, resolved.successful.transactionHash]);
+        if (proofBuilderOverride) return proofBuilderOverride({ hashes, resolved });
         return builderResult;
       },
     },
@@ -428,11 +997,15 @@ function serviceFixture({
     predicateContract: predicate,
     nativeVerifierContract: nativeVerifier,
     discoveryIndex,
-    async pairResolver({ discovery }) {
-      pairCalls += 1;
-      assert.equal(discovery.wallet, source.address);
-      return resolved;
-    },
+    ethereumProviders,
+    ...(!useEthereumResolver ? {
+      async pairResolver(input) {
+        pairCalls += 1;
+        if (pairResolverOverride) return pairResolverOverride(input);
+        if (input.discovery.wallet) assert.equal(input.discovery.wallet, source.address);
+        return resolved;
+      },
+    } : {}),
     now: () => currentNow,
     config: {
       releaseLogChunkBlocks: 100,
@@ -443,11 +1016,15 @@ function serviceFixture({
   return {
     service,
     setNow(value) { currentNow = value; },
+    setCampaign(value) { Object.assign(campaign, value); },
     balance() { return sourceBalance; },
     get pairCalls() { return pairCalls; },
     get proofCalls() { return proofCalls; },
     get staticCalls() { return staticCalls; },
     get releaseCalls() { return releaseCalls; },
+    get campaignReads() { return campaignReads; },
+    get ruleReads() { return ruleReads; },
+    get claimedReads() { return claimedReads; },
     get logQueries() { return logQueries.slice(); },
   };
 }
@@ -460,6 +1037,71 @@ async function signedRequest(challenge, signer) {
     expiresAt: challenge.expiresAt,
     signature: await signer.signMessage(challenge.message),
   };
+}
+
+async function signedIntakeRequest(challenge, signer, overrides = {}) {
+  return {
+    wallet: challenge.wallet,
+    pair: { ...challenge.pair },
+    issuedAt: challenge.issuedAt,
+    expiresAt: challenge.expiresAt,
+    signature: await signer.signMessage(challenge.message),
+    ...overrides,
+  };
+}
+
+function pairIdentity(failedTransactionHash = failedHash, successfulTransactionHash = successHash) {
+  return { failedTransactionHash, successfulTransactionHash };
+}
+
+async function rawSignedIntakeRequest({ wallet, pair, issuedAt = now, expiresAt = issuedAt + 300 }) {
+  const message = recoveryChallengeMessage({
+    origin: "https://retrycredit.example",
+    poolAddress,
+    campaignNumber: 7,
+    wallet: wallet.address,
+    failedTransactionHash: pair.failedTransactionHash,
+    successfulTransactionHash: pair.successfulTransactionHash,
+    issuedAt,
+    expiresAt,
+  });
+  return {
+    wallet: wallet.address,
+    pair: { ...pair },
+    issuedAt,
+    expiresAt,
+    signature: await wallet.signMessage(message),
+  };
+}
+
+function summaryForPair(pair) {
+  const base = pairSummary();
+  return pairSummary({
+    failed: { ...base.failed, transactionHash: pair.failedTransactionHash },
+    successful: { ...base.successful, transactionHash: pair.successfulTransactionHash },
+  });
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function nextTurn() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function waitFor(predicate, attempts = 100) {
+  for (let index = 0; index < attempts; index += 1) {
+    if (predicate()) return;
+    await nextTurn();
+  }
+  throw new Error("condition did not become true");
 }
 
 function pairSummary(overrides = {}) {

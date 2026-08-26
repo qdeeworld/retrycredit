@@ -1,6 +1,7 @@
 import {
   AbiCoder,
   Contract,
+  FetchRequest,
   Interface,
   JsonRpcProvider,
   Wallet,
@@ -55,6 +56,16 @@ export const RECOVERY_DEFAULTS = Object.freeze({
   releaseGasLimit: 6_000_000n,
   releaseLogChunkBlocks: 10_000,
   releaseLogLookbackBlocks: 250_000,
+  sourceLookupConcurrency: 4,
+  sourceLookupQueueLimit: 16,
+  sourceLookupTimeoutMs: 20_000,
+  intakeTimeoutMs: 25_000,
+  sourceProviderAttempts: 3,
+  sourcePairCacheMaxEntries: 256,
+  sourcePairCacheTtlSeconds: 10 * 60,
+  sourcePairNegativeCacheTtlSeconds: 30,
+  campaignStateCacheTtlSeconds: 1,
+  releaseQueueLimit: 8,
 });
 
 const DEFAULT_CREDITCOIN_RPC = "https://rpc.cc3-testnet.creditcoin.network";
@@ -77,17 +88,39 @@ export class RecoveryCampaignService {
     proofBuilderUrl = DEFAULT_PROOF_BUILDER,
     ethereumRpcUrls = DEFAULT_ETHEREUM_RPCS,
     publicOrigin,
+    config = {},
     ...options
   }) {
+    const creditcoinRequest = new FetchRequest(creditcoinRpc);
+    creditcoinRequest.timeout = 15_000;
     const ccProvider = new JsonRpcProvider(
-      creditcoinRpc,
+      creditcoinRequest,
       RECOVERY_DEFAULTS.settlementChainId,
       { staticNetwork: true },
     );
     const relayerWallet = new Wallet(privateKey, ccProvider);
-    const ethereumProviders = ethereumRpcUrls.map(
-      (url) => new JsonRpcProvider(url, RECOVERY_DEFAULTS.sourceChainId, { staticNetwork: true }),
+    const sourceLookupTimeoutMs = requireBoundedInteger(
+      config.sourceLookupTimeoutMs ?? RECOVERY_DEFAULTS.sourceLookupTimeoutMs,
+      "source lookup timeout",
+      { minimum: 250, maximum: 120_000 },
     );
+    const sourceProviderAttempts = requireBoundedInteger(
+      config.sourceProviderAttempts ?? RECOVERY_DEFAULTS.sourceProviderAttempts,
+      "source provider attempts",
+      { minimum: 1, maximum: 3 },
+    );
+    // The outer work-pool deadline protects callers and queue capacity. Each
+    // underlying HTTP request also needs a finite deadline so a dead RPC cannot
+    // retain a pool slot forever after the caller has timed out.
+    const sourceProviderRequestTimeoutMs = Math.max(
+      250,
+      Math.min(6_000, Math.floor(sourceLookupTimeoutMs / sourceProviderAttempts) - 250),
+    );
+    const ethereumProviders = ethereumRpcUrls.map((url) => {
+      const request = new FetchRequest(url);
+      request.timeout = sourceProviderRequestTimeoutMs;
+      return new JsonRpcProvider(request, RECOVERY_DEFAULTS.sourceChainId, { staticNetwork: true });
+    });
     const normalizedPool = requireNonzeroAddress(poolAddress, "recovery pool");
     const poolContract = new Contract(normalizedPool, recoveryCampaignAbi, relayerWallet);
     return new RecoveryCampaignService({
@@ -102,6 +135,7 @@ export class RecoveryCampaignService {
         RECOVERY_DEFAULTS.proofTimeoutMs,
       ),
       publicOrigin,
+      config,
       poolContract,
       contractFactory: (address, abi) => new Contract(address, abi, ccProvider),
       ...options,
@@ -164,10 +198,110 @@ export class RecoveryCampaignService {
         500,
       );
     }
-    this.config = { ...mergedConfig, releaseLogChunkBlocks, releaseLogLookbackBlocks };
+    const sourceLookupConcurrency = requireBoundedInteger(
+      mergedConfig.sourceLookupConcurrency,
+      "source lookup concurrency",
+      { minimum: 1, maximum: 32 },
+    );
+    const sourceLookupQueueLimit = requireBoundedInteger(
+      mergedConfig.sourceLookupQueueLimit,
+      "source lookup queue limit",
+      { minimum: 0, maximum: 256 },
+    );
+    const sourceLookupTimeoutMs = requireBoundedInteger(
+      mergedConfig.sourceLookupTimeoutMs,
+      "source lookup timeout",
+      { minimum: 250, maximum: 120_000 },
+    );
+    const intakeTimeoutMs = requireBoundedInteger(
+      mergedConfig.intakeTimeoutMs,
+      "recovery intake timeout",
+      { minimum: 1_000, maximum: 120_000 },
+    );
+    const sourceProviderAttempts = requireBoundedInteger(
+      mergedConfig.sourceProviderAttempts,
+      "source provider attempts",
+      { minimum: 1, maximum: 3 },
+    );
+    const sourcePairCacheMaxEntries = requireBoundedInteger(
+      mergedConfig.sourcePairCacheMaxEntries,
+      "source pair cache size",
+      { minimum: 1, maximum: 4_096 },
+    );
+    const sourcePairCacheTtlSeconds = requireBoundedInteger(
+      mergedConfig.sourcePairCacheTtlSeconds,
+      "source pair cache TTL",
+      { minimum: 1, maximum: 3_600 },
+    );
+    const sourcePairNegativeCacheTtlSeconds = requireBoundedInteger(
+      mergedConfig.sourcePairNegativeCacheTtlSeconds,
+      "source pair negative cache TTL",
+      { minimum: 1, maximum: 300 },
+    );
+    const campaignStateCacheTtlSeconds = requireBoundedInteger(
+      mergedConfig.campaignStateCacheTtlSeconds,
+      "campaign state cache TTL",
+      { minimum: 1, maximum: 10 },
+    );
+    const releaseQueueLimit = requireBoundedInteger(
+      mergedConfig.releaseQueueLimit,
+      "release queue limit",
+      { minimum: 1, maximum: 64 },
+    );
+    this.config = {
+      ...mergedConfig,
+      releaseLogChunkBlocks,
+      releaseLogLookbackBlocks,
+      sourceLookupConcurrency,
+      sourceLookupQueueLimit,
+      sourceLookupTimeoutMs,
+      intakeTimeoutMs,
+      sourceProviderAttempts,
+      sourcePairCacheMaxEntries,
+      sourcePairCacheTtlSeconds,
+      sourcePairNegativeCacheTtlSeconds,
+      campaignStateCacheTtlSeconds,
+      releaseQueueLimit,
+    };
     this.infrastructurePromise = null;
+    this.sourcePairCache = new Map();
+    this.sourcePairFlights = new Map();
+    this.sourceLookupPool = new BoundedWorkPool({
+      concurrency: sourceLookupConcurrency,
+      queueLimit: sourceLookupQueueLimit,
+      timeoutMs: sourceLookupTimeoutMs,
+      busyError: () => new WorkerError(
+        "RECOVERY_BUSY",
+        "Recovery source intake is busy; retry shortly.",
+        429,
+      ),
+      timeoutError: () => new WorkerError(
+        "RECOVERY_SOURCE_TIMEOUT",
+        "Ethereum source validation timed out; retry shortly.",
+        503,
+      ),
+    });
+    this.intakePool = new BoundedWorkPool({
+      concurrency: sourceLookupConcurrency,
+      queueLimit: sourceLookupQueueLimit,
+      timeoutMs: intakeTimeoutMs,
+      busyError: () => new WorkerError(
+        "RECOVERY_BUSY",
+        "Recovery intake is busy; retry shortly.",
+        429,
+      ),
+      timeoutError: () => new WorkerError(
+        "RECOVERY_SOURCE_TIMEOUT",
+        "Recovery intake timed out; retry shortly.",
+        503,
+      ),
+    });
+    this.campaignStateCache = null;
+    this.campaignStateGeneration = 0;
+    this.campaignStateFlights = { normal: null, fresh: null };
     this.releaseFlights = new Map();
     this.releaseQueue = Promise.resolve();
+    this.releaseQueueDepth = 0;
   }
 
   async readiness() {
@@ -184,6 +318,13 @@ export class RecoveryCampaignService {
     return {
       enabled: true,
       waking: false,
+      capabilities: {
+        selfServePairIntake: true,
+      },
+      consent: {
+        scope: "hosted-relayer",
+        protocolEnforced: false,
+      },
       source: {
         name: "Ethereum Mainnet",
         chainId: this.config.sourceChainId,
@@ -226,12 +367,36 @@ export class RecoveryCampaignService {
       };
     }
 
-    const context = await this.#eligibilityContext(wallet, discovery);
+    const context = await this.intakePool.run(
+      () => this.#eligibilityContext(wallet, discovery),
+    );
+    // Preserve the staged legacy route's exact status vocabulary during the
+    // API-first rollout. Only namespaced pair intake exposes hosted-flight state.
     return publicEligibility(context);
   }
 
+  async intakeEligibility(request = {}) {
+    const pairInput = normalizeIntakePairRequest(request);
+    const context = await this.intakePool.run(
+      () => this.#openPairEligibilityContext(pairInput),
+    );
+    return this.#publicEligibility(context);
+  }
+
   async challenge(walletValue) {
-    const eligibility = await this.eligibility(walletValue);
+    const wallet = requireNonzeroAddress(walletValue, "wallet");
+    const discovery = this.discoveryByWallet.get(wallet.toLowerCase());
+    if (!discovery) {
+      throw new WorkerError(
+        "RECOVERY_NOT_FOUND",
+        "This wallet is not in the closed paid-retry discovery cohort.",
+        404,
+      );
+    }
+    const context = await this.intakePool.run(
+      () => this.#eligibilityContext(wallet, discovery),
+    );
+    const eligibility = this.#publicEligibility(context);
     if (!eligibility.eligible) throw eligibilityError(eligibility);
     const issuedAt = this.now();
     const expiresAt = issuedAt + this.config.challengeLifetimeSeconds;
@@ -257,6 +422,16 @@ export class RecoveryCampaignService {
         successfulTransactionHash: eligibility.pair.successfulTransactionHash,
       },
     };
+  }
+
+  async intakeChallenge(request = {}) {
+    const pairInput = normalizeIntakePairRequest(request);
+    const context = await this.intakePool.run(
+      () => this.#openPairEligibilityContext(pairInput),
+    );
+    const eligibility = this.#publicEligibility(context);
+    if (!eligibility.eligible) throw eligibilityError(eligibility);
+    return this.#challengeFor({ wallet: eligibility.wallet, discovery: context.discovery });
   }
 
   async release(request = {}) {
@@ -297,25 +472,142 @@ export class RecoveryCampaignService {
         404,
       );
     }
-    const context = await this.#eligibilityContext(wallet, discovery);
-    this.#verifyConsent({ wallet, message, issuedAt, expiresAt, signature, discovery });
-    if (context.status === "claimed") return publicRelease(context, "claimed");
-    if (!context.eligible) throw eligibilityError(publicEligibility(context));
-
-    const flightKey = wallet.toLowerCase();
-    const existingFlight = this.releaseFlights.get(flightKey);
-    if (existingFlight) return existingFlight;
-    const flight = this.#enqueueRelease(() => this.#releaseEligible(context)).finally(() => {
-      if (this.releaseFlights.get(flightKey) === flight) this.releaseFlights.delete(flightKey);
+    this.#verifyConsent({ wallet, message, issuedAt, expiresAt, signature, discovery, requireMessage: true });
+    const flightKey = this.#releaseFlightKey(wallet, discovery);
+    return this.#trackReleaseFlight(flightKey, async () => {
+      const context = await this.intakePool.run(async () => {
+        this.#verifyConsent({ wallet, message, issuedAt, expiresAt, signature, discovery, requireMessage: true });
+        return this.#eligibilityContext(wallet, discovery, { freshState: true });
+      });
+      if (context.status === "claimed") return publicRelease(context, "claimed");
+      if (!context.eligible) throw eligibilityError(publicEligibility(context));
+      return this.#enqueueRelease(() => {
+        this.#verifyConsent({ wallet, message, issuedAt, expiresAt, signature, discovery, requireMessage: true });
+        return this.#releaseEligible(context);
+      });
     });
+  }
+
+  async intakeRelease(request = {}) {
+    const normalized = normalizeIntakeReleaseRequest(request);
+    const { wallet, pairInput, issuedAt, expiresAt, signature } = normalized;
+    const signedPair = { wallet, ...pairInput };
+
+    // This is deliberately first. An invalid or pair-mutated signature must not trigger
+    // Ethereum RPC, Attestcoin proof work, or relayer work.
+    this.#verifyConsent({ wallet, issuedAt, expiresAt, signature, discovery: signedPair });
+    const flightKey = this.#releaseFlightKey(wallet, signedPair);
+    return this.#trackReleaseFlight(flightKey, async () => {
+      const context = await this.intakePool.run(async () => {
+        this.#verifyConsent({ wallet, issuedAt, expiresAt, signature, discovery: signedPair });
+        const state = await this.#campaignState({ fresh: true });
+        const alreadyClaimed = await this.pool.claimedByCampaign(this.campaignNumber, wallet);
+        if (!alreadyClaimed) {
+          if (Boolean(state.campaign.remainderRecovered) || this.now() > Number(state.campaign.deadline)) {
+            throw eligibilityError({ status: "closed", reason: "The funded recovery campaign has closed." });
+          }
+          if (Number(state.campaign.claimCount) >= Number(state.campaign.maxClaims)) {
+            throw eligibilityError({ status: "full", reason: "The funded recovery campaign has no credits remaining." });
+          }
+        }
+        return this.#openPairEligibilityContext(pairInput, { state });
+      });
+      if (context.wallet !== wallet) {
+        throw new WorkerError(
+          "RECOVERY_PAIR_WALLET_MISMATCH",
+          "The signed wallet is not the source wallet derived from this Ethereum pair.",
+          422,
+        );
+      }
+      if (context.status === "claimed") return publicRelease(context, "claimed");
+      if (!context.eligible) throw eligibilityError(publicEligibility(context));
+      return this.#enqueueRelease(() => {
+        this.#verifyConsent({ wallet, issuedAt, expiresAt, signature, discovery: context.discovery });
+        return this.#releaseEligible(context);
+      });
+    });
+  }
+
+  #challengeFor({ wallet, discovery }) {
+    const issuedAt = this.now();
+    const expiresAt = issuedAt + this.config.challengeLifetimeSeconds;
+    const message = recoveryChallengeMessage({
+      origin: this.publicOrigin,
+      poolAddress: this.poolAddress,
+      campaignNumber: this.campaignNumber,
+      wallet,
+      failedTransactionHash: discovery.failedTransactionHash,
+      successfulTransactionHash: discovery.successfulTransactionHash,
+      issuedAt,
+      expiresAt,
+    });
+    return {
+      wallet,
+      message,
+      issuedAt,
+      expiresAt,
+      campaignNumber: this.campaignNumber,
+      poolAddress: this.poolAddress,
+      pair: {
+        failedTransactionHash: discovery.failedTransactionHash,
+        successfulTransactionHash: discovery.successfulTransactionHash,
+      },
+    };
+  }
+
+  #releaseFlightKey(wallet, discovery) {
+    return [
+      this.poolAddress.toLowerCase(),
+      this.campaignNumber,
+      wallet.toLowerCase(),
+      discovery.failedTransactionHash,
+      discovery.successfulTransactionHash,
+    ].join(":");
+  }
+
+  #trackReleaseFlight(flightKey, operation) {
+    const existing = this.releaseFlights.get(flightKey);
+    if (existing) return existing;
+    let flight;
+    flight = Promise.resolve()
+      .then(operation)
+      .finally(() => {
+        if (this.releaseFlights.get(flightKey) === flight) this.releaseFlights.delete(flightKey);
+      });
     this.releaseFlights.set(flightKey, flight);
     return flight;
   }
 
+  #publicEligibility(context) {
+    const eligibility = publicEligibility(context);
+    if (
+      eligibility.status === "eligible"
+      && this.releaseFlights.has(this.#releaseFlightKey(context.wallet, context.discovery))
+    ) {
+      return {
+        ...eligibility,
+        eligible: false,
+        status: "processing",
+        reason: "A signed release for this exact pair is already being processed.",
+      };
+    }
+    return eligibility;
+  }
+
   #enqueueRelease(operation) {
+    if (this.releaseQueueDepth >= this.config.releaseQueueLimit) {
+      throw new WorkerError(
+        "RECOVERY_BUSY",
+        "Recovery release capacity is busy; retry shortly.",
+        429,
+      );
+    }
+    this.releaseQueueDepth += 1;
     const queued = this.releaseQueue.then(operation, operation);
     this.releaseQueue = queued.catch(() => undefined);
-    return queued;
+    return queued.finally(() => {
+      this.releaseQueueDepth -= 1;
+    });
   }
 
   async #authenticateInfrastructure() {
@@ -430,9 +722,33 @@ export class RecoveryCampaignService {
     }
   }
 
-  async #campaignState() {
+  async #campaignState({ fresh = false } = {}) {
     await this.#authenticateInfrastructure();
-    return this.#readCampaignState();
+    const cached = this.campaignStateCache;
+    if (!fresh && cached && cached.expiresAt > this.now()) return cached.state;
+    const generation = this.campaignStateGeneration;
+    const freshFlight = this.campaignStateFlights.fresh;
+    if (freshFlight?.generation === generation) return freshFlight.promise;
+    const kind = fresh ? "fresh" : "normal";
+    const normalFlight = this.campaignStateFlights.normal;
+    if (!fresh && normalFlight?.generation === generation) return normalFlight.promise;
+
+    const entry = { generation, promise: null };
+    entry.promise = this.#readCampaignState()
+      .then((state) => {
+        if (this.campaignStateGeneration === generation) {
+          this.campaignStateCache = {
+            state,
+            expiresAt: this.now() + this.config.campaignStateCacheTtlSeconds,
+          };
+        }
+        return state;
+      })
+      .finally(() => {
+        if (this.campaignStateFlights[kind] === entry) this.campaignStateFlights[kind] = null;
+      });
+    this.campaignStateFlights[kind] = entry;
+    return entry.promise;
   }
 
   async #readCampaignState() {
@@ -455,19 +771,41 @@ export class RecoveryCampaignService {
     }
   }
 
-  async #eligibilityContext(wallet, discovery) {
+  async #eligibilityContext(wallet, discovery, { state, freshState = false } = {}) {
+    const { campaign, rule } = state ?? await this.#campaignState({ fresh: freshState });
+    const pair = await this.#resolvePair(discovery, rule, { expectedWallet: wallet });
+    return this.#eligibilityFromResolved({ wallet, discovery, campaign, rule, pair });
+  }
+
+  async #openPairEligibilityContext(pairInput, { state, freshState = false } = {}) {
+    const { campaign, rule } = state ?? await this.#campaignState({ fresh: freshState });
+    const pair = await this.#resolvePair(pairInput, rule);
+    const wallet = requireNonzeroAddress(pair.claimant, "pair source wallet");
+    const discovery = Object.freeze({ wallet, ...pairInput });
+    return this.#eligibilityFromResolved({ wallet, discovery, campaign, rule, pair });
+  }
+
+  async #eligibilityFromResolved({ wallet, discovery, campaign, rule, pair }) {
     const base = { campaignNumber: this.campaignNumber, discovery };
-    const { campaign, rule } = await this.#campaignState();
-    const pair = await this.#resolvePair(discovery, rule);
     const claimed = await this.pool.claimedByCampaign(this.campaignNumber, wallet);
 
     if (Boolean(claimed)) {
       const releases = await this.#releaseEvents(wallet);
-      const currentRelease = releases.find(
+      const campaignReleases = releases.filter(
+        (release) => release.campaignNumber === this.campaignNumber,
+      );
+      const currentRelease = campaignReleases.find(
         (release) => release.campaignNumber === this.campaignNumber
           && release.actionId === pair.actionId,
       );
       if (!currentRelease) {
+        if (campaignReleases.length > 0) {
+          throw new WorkerError(
+            "RECOVERY_ALREADY_CLAIMED",
+            "This source wallet already used its one campaign credit with a different qualified pair.",
+            409,
+          );
+        }
         throw new WorkerError(
           "RECOVERY_STATE_INCONSISTENT",
           "The campaign claim is recorded but its release receipt is unavailable.",
@@ -543,27 +881,103 @@ export class RecoveryCampaignService {
     };
   }
 
-  async #resolvePair(discovery, rule) {
-    let summary;
-    try {
-      summary = this.pairResolver
-        ? await this.pairResolver({ discovery, rule: serializeRule(rule) })
-        : await resolvePairFromEthereum({
-            discovery,
-            rule,
-            ethereumProviders: this.ethereumProviders,
-          });
-      validateResolvedPair(summary, discovery, rule);
-      return summary;
-    } catch (error) {
-      if (error instanceof WorkerError) throw error;
+  async #resolvePair(pairInput, rule, { expectedWallet = null } = {}) {
+    const identity = Object.freeze({
+      failedTransactionHash: requireHash(pairInput.failedTransactionHash, "failed transaction hash"),
+      successfulTransactionHash: requireHash(pairInput.successfulTransactionHash, "successful transaction hash"),
+    });
+    const resolverDiscovery = pairInput.wallet
+      ? Object.freeze({ wallet: requireNonzeroAddress(pairInput.wallet, "source wallet"), ...identity })
+      : identity;
+    const cacheKey = this.#sourcePairCacheKey(identity, rule);
+    let summary = this.#readSourcePairCache(cacheKey);
+    if (!summary) {
+      let flight = this.sourcePairFlights.get(cacheKey);
+      if (!flight) {
+        flight = this.sourceLookupPool.run(async () => {
+          try {
+            const resolved = this.pairResolver
+              ? await this.pairResolver({ discovery: resolverDiscovery, rule: serializeRule(rule) })
+              : await resolvePairFromEthereum({
+                  discovery: resolverDiscovery,
+                  rule,
+                  ethereumProviders: this.ethereumProviders,
+                  maximumProviderAttempts: this.config.sourceProviderAttempts,
+                });
+            validateResolvedPair(resolved, identity, rule);
+            this.#writeSourcePairCache(cacheKey, { value: resolved }, this.config.sourcePairCacheTtlSeconds);
+            return resolved;
+          } catch (error) {
+            const handled = error instanceof WorkerError
+              ? error
+              : new WorkerError(
+                  "RECOVERY_PAIR_INVALID",
+                  "Live Ethereum facts do not qualify this source pair for the funded rule.",
+                  422,
+                  error,
+                );
+            if (handled.code === "RECOVERY_PAIR_INVALID") {
+              this.#writeSourcePairCache(
+                cacheKey,
+                { error: { code: handled.code, message: handled.message, status: handled.status } },
+                this.config.sourcePairNegativeCacheTtlSeconds,
+              );
+            }
+            throw handled;
+          }
+        }).finally(() => {
+          if (this.sourcePairFlights.get(cacheKey) === flight) this.sourcePairFlights.delete(cacheKey);
+        });
+        this.sourcePairFlights.set(cacheKey, flight);
+      }
+      summary = await flight;
+    }
+    if (expectedWallet && requireAddress(summary.claimant, "pair source wallet") !== expectedWallet) {
       throw new WorkerError(
         "RECOVERY_PAIR_INVALID",
-        "Live Ethereum facts do not qualify this discovery pair for the funded rule.",
+        "Live Ethereum facts do not bind this pair to the requested source wallet.",
         422,
-        error,
       );
     }
+    return summary;
+  }
+
+  #sourcePairCacheKey(pairInput, rule) {
+    return JSON.stringify([
+      this.poolAddress.toLowerCase(),
+      this.campaignNumber,
+      pairInput.failedTransactionHash,
+      pairInput.successfulTransactionHash,
+      requireAddress(rule.feeRecipient, "campaign fee recipient").toLowerCase(),
+      Number(rule.startBlock),
+      Number(rule.endBlock),
+      Number(rule.maxBlockGap),
+      Number(rule.maxQuantity),
+    ]);
+  }
+
+  #readSourcePairCache(key) {
+    const cached = this.sourcePairCache.get(key);
+    if (!cached) return null;
+    if (cached.expiresAt <= this.now()) {
+      this.sourcePairCache.delete(key);
+      return null;
+    }
+    this.sourcePairCache.delete(key);
+    this.sourcePairCache.set(key, cached);
+    if (cached.error) {
+      throw new WorkerError(cached.error.code, cached.error.message, cached.error.status);
+    }
+    return cached.value;
+  }
+
+  #writeSourcePairCache(key, payload, ttlSeconds) {
+    this.sourcePairCache.delete(key);
+    while (this.sourcePairCache.size >= this.config.sourcePairCacheMaxEntries) {
+      const oldest = this.sourcePairCache.keys().next().value;
+      this.sourcePairCache.delete(oldest);
+    }
+    this.sourcePairCache.set(key, { ...payload, expiresAt: this.now() + ttlSeconds });
   }
 
   async #releaseEvents(wallet) {
@@ -597,7 +1011,7 @@ export class RecoveryCampaignService {
     }
   }
 
-  #verifyConsent({ wallet, message, issuedAt, expiresAt, signature, discovery }) {
+  #verifyConsent({ wallet, message, issuedAt, expiresAt, signature, discovery, requireMessage = false }) {
     const issued = requireTimestamp(issuedAt, "issuedAt");
     const expires = requireTimestamp(expiresAt, "expiresAt");
     const now = this.now();
@@ -617,7 +1031,7 @@ export class RecoveryCampaignService {
       issuedAt: issued,
       expiresAt: expires,
     });
-    if (message !== expected) {
+    if ((requireMessage && typeof message !== "string") || (message !== undefined && message !== expected)) {
       throw new WorkerError(
         "RECOVERY_CHALLENGE_INVALID",
         "The signed recovery consent does not match this origin, campaign, pool, wallet, and pair.",
@@ -643,6 +1057,15 @@ export class RecoveryCampaignService {
   }
 
   async #releaseEligible(context) {
+    const current = await this.#eligibilityContext(
+      context.wallet,
+      context.discovery,
+      { freshState: true },
+    );
+    if (current.status === "claimed") return publicRelease(current, "claimed");
+    if (!current.eligible) throw eligibilityError(publicEligibility(current));
+    context = current;
+
     let proof;
     try {
       const result = await this.proofBuilder.getBatchProof([
@@ -681,8 +1104,13 @@ export class RecoveryCampaignService {
         this.pool.consumedPairs(this.campaignNumber, replayIds.pairId),
       ]);
       if (failureConsumed || successConsumed || pairConsumed) {
-        const raced = await this.#eligibilityContext(context.wallet, context.discovery);
+        const raced = await this.#eligibilityContext(
+          context.wallet,
+          context.discovery,
+          { freshState: true },
+        );
         if (raced.status === "claimed") return publicRelease(raced, "claimed");
+        if (!raced.eligible) throw eligibilityError(publicEligibility(raced));
         throw new WorkerError(
           "RECOVERY_REPLAYED",
           "This exact recovery proof was already consumed by this campaign.",
@@ -706,8 +1134,13 @@ export class RecoveryCampaignService {
         { from: this.relayerWallet.address, gasLimit: this.config.releaseGasLimit },
       );
     } catch (error) {
-      const raced = await this.#eligibilityContext(context.wallet, context.discovery);
+      const raced = await this.#eligibilityContext(
+        context.wallet,
+        context.discovery,
+        { freshState: true },
+      );
       if (raced.status === "claimed") return publicRelease(raced, "claimed");
+      if (!raced.eligible) throw eligibilityError(publicEligibility(raced));
       throw new WorkerError(
         "RECOVERY_SIMULATION_REJECTED",
         "The immutable campaign contract rejected this release.",
@@ -729,9 +1162,16 @@ export class RecoveryCampaignService {
       );
       receipt = await transaction.wait();
       if (!receipt || Number(receipt.status) !== 1) throw new Error("release transaction failed");
+      this.campaignStateGeneration += 1;
+      this.campaignStateCache = null;
     } catch (error) {
-      const raced = await this.#eligibilityContext(context.wallet, context.discovery);
+      const raced = await this.#eligibilityContext(
+        context.wallet,
+        context.discovery,
+        { freshState: true },
+      );
       if (raced.status === "claimed") return publicRelease(raced, "claimed");
+      if (!raced.eligible) throw eligibilityError(publicEligibility(raced));
       throw new WorkerError(
         "RECOVERY_RELEASE_FAILED",
         "The recovery release could not be finalized.",
@@ -810,6 +1250,86 @@ export function recoveryChallengeMessage({
     `Expires at: ${requireTimestamp(expiresAt, "expiresAt")}`,
     "Authorize proof and relayer submission for this exact pair. The campaign contract derives the credit recipient from Ethereum; no destination can be substituted.",
   ].join("\n");
+}
+
+function normalizeIntakePairRequest(request) {
+  requireStrictObject(request, "The open-pair intake body must be a JSON object.");
+  rejectDestinationFields(request);
+  requireExactFields(request, ["pair"], "Open-pair eligibility and challenge accept only the pair field.");
+  return normalizeIntakePair(request.pair);
+}
+
+function normalizeIntakeReleaseRequest(request) {
+  requireStrictObject(request, "The open-pair release body must be a JSON object.");
+  rejectDestinationFields(request);
+  requireExactFields(
+    request,
+    ["wallet", "pair", "issuedAt", "expiresAt", "signature"],
+    "Open-pair release accepts only the exact pair and hosted-relayer consent fields.",
+  );
+  return Object.freeze({
+    wallet: requireNonzeroAddress(request.wallet, "wallet"),
+    pairInput: normalizeIntakePair(request.pair),
+    issuedAt: request.issuedAt,
+    expiresAt: request.expiresAt,
+    signature: request.signature,
+  });
+}
+
+function normalizeIntakePair(pair) {
+  requireStrictObject(pair, "The open-pair intake requires a pair object.");
+  rejectDestinationFields(pair);
+  requireExactFields(
+    pair,
+    ["failedTransactionHash", "successfulTransactionHash"],
+    "The pair must contain only failedTransactionHash and successfulTransactionHash.",
+  );
+  let failedTransactionHash;
+  let successfulTransactionHash;
+  try {
+    failedTransactionHash = requireHash(pair.failedTransactionHash, "failed transaction hash");
+    successfulTransactionHash = requireHash(pair.successfulTransactionHash, "successful transaction hash");
+  } catch (error) {
+    throw new WorkerError(
+      "RECOVERY_REQUEST_INVALID",
+      "Both recovery transaction hashes must be exact 32-byte values.",
+      400,
+      error,
+    );
+  }
+  if (failedTransactionHash === successfulTransactionHash) {
+    throw new WorkerError(
+      "RECOVERY_PAIR_INVALID",
+      "Failure and completion must be two different Ethereum transactions.",
+      422,
+    );
+  }
+  return Object.freeze({ failedTransactionHash, successfulTransactionHash });
+}
+
+function requireStrictObject(value, message) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new WorkerError("RECOVERY_REQUEST_INVALID", message, 400);
+  }
+}
+
+function requireExactFields(value, fields, message) {
+  const allowed = new Set(fields);
+  const keys = Object.keys(value);
+  if (keys.length !== fields.length || keys.some((field) => !allowed.has(field))) {
+    throw new WorkerError("RECOVERY_REQUEST_INVALID", message, 400);
+  }
+}
+
+function rejectDestinationFields(value) {
+  const forbidden = ["destination", "recipient", "beneficiary", "payoutAddress"];
+  if (forbidden.some((field) => Object.hasOwn(value, field))) {
+    throw new WorkerError(
+      "RECOVERY_DESTINATION_FORBIDDEN",
+      "A recovery destination cannot be supplied; the contract derives it from Ethereum.",
+      400,
+    );
+  }
 }
 
 export function normalizeRecoveryBatchProof(proof, pair) {
@@ -931,7 +1451,12 @@ export function deriveRecoveryReplayIds({ pair, sourceBlocks, transactionIndexes
   };
 }
 
-async function resolvePairFromEthereum({ discovery, rule, ethereumProviders }) {
+async function resolvePairFromEthereum({
+  discovery,
+  rule,
+  ethereumProviders,
+  maximumProviderAttempts = RECOVERY_DEFAULTS.sourceProviderAttempts,
+}) {
   if (!Array.isArray(ethereumProviders) || ethereumProviders.length === 0) {
     throw new WorkerError(
       "RECOVERY_SOURCE_UNAVAILABLE",
@@ -939,8 +1464,9 @@ async function resolvePairFromEthereum({ discovery, rule, ethereumProviders }) {
       503,
     );
   }
-  let facts;
-  for (const provider of ethereumProviders) {
+  let responsiveProvider = false;
+  let semanticFailure = null;
+  for (const provider of ethereumProviders.slice(0, maximumProviderAttempts)) {
     try {
       if (provider.getNetwork) {
         const network = await provider.getNetwork();
@@ -953,48 +1479,62 @@ async function resolvePairFromEthereum({ discovery, rule, ethereumProviders }) {
           provider.getTransaction(discovery.successfulTransactionHash),
           provider.getTransactionReceipt(discovery.successfulTransactionHash),
         ]);
-      if (failedTransaction && failedReceipt && successfulTransaction && successfulReceipt) {
-        facts = { failedTransaction, failedReceipt, successfulTransaction, successfulReceipt };
-        break;
+      responsiveProvider = true;
+      if (!failedTransaction || !failedReceipt || !successfulTransaction || !successfulReceipt) continue;
+      const facts = { failedTransaction, failedReceipt, successfulTransaction, successfulReceipt };
+      try {
+        if (Number(failedTransaction.type) !== 2 || Number(successfulTransaction.type) !== 2) {
+          throw new Error("the funded predicate accepts only EIP-1559 type-2 source transactions");
+        }
+        const decoded = decodeCanonicalSeaDropMintSigned(
+          failedTransaction.data ?? failedTransaction.input,
+        );
+        const resolved = validateSeaDropRecoveryPair({
+          ...facts,
+          profile: {
+            sourceChainId: RECOVERY_DEFAULTS.sourceChainId,
+            seaDrop: SEA_DROP_MAINNET,
+            nftContract: decoded.nftContract,
+            feeRecipient: decoded.feeRecipient,
+            minterIfNotPayer: decoded.minterIfNotPayer,
+            quantity: decoded.quantity,
+            valueWei: failedTransaction.value,
+            mintParams: decoded.mintParams,
+            maxBlockGap: Number(rule.maxBlockGap),
+            requirePaid: true,
+            calldataSuffix: decoded.calldataSuffix,
+          },
+        });
+        validateResolvedPair(resolved, discovery, rule);
+        return resolved;
+      } catch (error) {
+        semanticFailure = error;
+        // A complete but stale or inconsistent RPC response is not authoritative;
+        // try another configured provider before returning a cached semantic miss.
       }
     } catch {
       // A cohort row never becomes authoritative merely because one RPC fails; try the next RPC.
     }
   }
-  if (!facts) {
+  if (responsiveProvider) {
     throw new WorkerError(
-      "RECOVERY_SOURCE_UNAVAILABLE",
-      "Live Ethereum facts for this recovery are temporarily unavailable.",
-      503,
+      "RECOVERY_PAIR_INVALID",
+      "Both exact Ethereum transactions and receipts must form the funded retry rule.",
+      422,
+      semanticFailure,
     );
   }
-  if (Number(facts.failedTransaction.type) !== 2 || Number(facts.successfulTransaction.type) !== 2) {
-    throw new Error("the funded predicate accepts only EIP-1559 type-2 source transactions");
-  }
-  const decoded = decodeCanonicalSeaDropMintSigned(
-    facts.failedTransaction.data ?? facts.failedTransaction.input,
+  throw new WorkerError(
+    "RECOVERY_SOURCE_UNAVAILABLE",
+    "Live Ethereum facts for this recovery are temporarily unavailable.",
+    503,
   );
-  return validateSeaDropRecoveryPair({
-    ...facts,
-    profile: {
-      sourceChainId: RECOVERY_DEFAULTS.sourceChainId,
-      seaDrop: SEA_DROP_MAINNET,
-      nftContract: decoded.nftContract,
-      feeRecipient: decoded.feeRecipient,
-      minterIfNotPayer: decoded.minterIfNotPayer,
-      quantity: decoded.quantity,
-      valueWei: facts.failedTransaction.value,
-      mintParams: decoded.mintParams,
-      maxBlockGap: Number(rule.maxBlockGap),
-      requirePaid: true,
-      calldataSuffix: decoded.calldataSuffix,
-    },
-  });
 }
 
 function validateResolvedPair(pair, discovery, rule) {
   if (!pair || typeof pair !== "object") throw new Error("pair validation returned no summary");
-  if (requireAddress(pair.claimant, "pair source wallet") !== discovery.wallet) {
+  const claimant = requireAddress(pair.claimant, "pair source wallet");
+  if (discovery.wallet && claimant !== requireAddress(discovery.wallet, "requested source wallet")) {
     throw new Error("live pair source wallet differs from discovery");
   }
   if (
@@ -1191,6 +1731,7 @@ function eligibilityError(eligibility) {
   const codes = {
     "not-found": ["RECOVERY_NOT_FOUND", 404],
     claimed: ["RECOVERY_ALREADY_CLAIMED", 409],
+    processing: ["RECOVERY_RELEASE_PENDING", 425],
     closed: ["RECOVERY_CLOSED", 409],
     full: ["RECOVERY_FULL", 409],
     replayed: ["RECOVERY_REPLAYED", 409],
@@ -1317,6 +1858,18 @@ function requirePositiveInteger(value, label) {
   return parsed;
 }
 
+function requireBoundedInteger(value, label, { minimum, maximum }) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new WorkerError(
+      "INVALID_RECOVERY_CONFIGURATION",
+      `${label} must be an integer from ${minimum} through ${maximum}.`,
+      500,
+    );
+  }
+  return parsed;
+}
+
 function requireSafeUint(value, label) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${label} must be a safe uint`);
@@ -1336,5 +1889,79 @@ function requireOrigin(value) {
     return new URL(value).origin;
   } catch (error) {
     throw new WorkerError("INVALID_RECOVERY_CONFIGURATION", "The public recovery origin is invalid.", 500, error);
+  }
+}
+
+class BoundedWorkPool {
+  constructor({ concurrency, queueLimit, timeoutMs, busyError, timeoutError }) {
+    this.concurrency = concurrency;
+    this.queueLimit = queueLimit;
+    this.timeoutMs = timeoutMs;
+    this.busyError = busyError;
+    this.timeoutError = timeoutError;
+    this.active = 0;
+    this.queue = [];
+  }
+
+  run(task) {
+    return new Promise((resolve, reject) => {
+      if (this.active >= this.concurrency && this.queue.length >= this.queueLimit) {
+        reject(this.busyError());
+        return;
+      }
+      const entry = {
+        task,
+        resolve,
+        reject,
+        callerSettled: false,
+        started: false,
+        timer: null,
+      };
+      entry.timer = setTimeout(() => {
+        if (entry.callerSettled) return;
+        entry.callerSettled = true;
+        if (!entry.started) {
+          const queuedIndex = this.queue.indexOf(entry);
+          if (queuedIndex >= 0) this.queue.splice(queuedIndex, 1);
+        }
+        entry.reject(this.timeoutError());
+      }, this.timeoutMs);
+      if (this.active < this.concurrency) {
+        this.#start(entry);
+        return;
+      }
+      this.queue.push(entry);
+    });
+  }
+
+  #start(entry) {
+    if (entry.callerSettled) {
+      clearTimeout(entry.timer);
+      return;
+    }
+    entry.started = true;
+    this.active += 1;
+
+    Promise.resolve()
+      .then(entry.task)
+      .then(
+        (value) => {
+          if (entry.callerSettled) return;
+          entry.callerSettled = true;
+          entry.resolve(value);
+        },
+        (error) => {
+          if (entry.callerSettled) return;
+          entry.callerSettled = true;
+          entry.reject(error);
+        },
+      )
+      .finally(() => {
+        clearTimeout(entry.timer);
+        this.active -= 1;
+        let next = this.queue.shift();
+        while (next?.callerSettled) next = this.queue.shift();
+        if (next) this.#start(next);
+      });
   }
 }

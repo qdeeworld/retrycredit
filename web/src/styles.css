@@ -32,6 +32,7 @@ a { color:inherit; text-underline-offset:4px; text-decoration-thickness:1px; }
 a:hover { text-decoration-thickness:2px; }
 ::selection { color:var(--sheet); background:var(--blue); }
 :focus-visible { outline:3px solid var(--focus); outline-offset:3px; }
+.visually-hidden { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important; }
 
 .skip-link { position:fixed; inset-block-start:8px; inset-inline-start:8px; z-index:100; min-height:44px; display:flex; align-items:center; padding:0 14px; color:var(--sheet); background:var(--blue); transform:translateY(-140%); }
 .skip-link:focus { transform:none; }
@@ -49,8 +50,11 @@ a:hover { text-decoration-thickness:2px; }
 .service-state.ready i { background:var(--green); }
 .service-state.loading i { background:var(--amber); }
 .service-state.unavailable i,.service-state.offline i { background:var(--red); }
+.service-state.campaign-closed i { background:var(--red); }
+.service-state.campaign-full i { background:var(--amber); }
 .wallet-button { min-width:158px; min-height:44px; display:flex; align-items:center; justify-content:center; gap:9px; padding:0 14px; border:1px solid var(--sheet); color:var(--ink); background:var(--sheet); cursor:pointer; font-size:13px; font-weight:650; }
 .wallet-button:hover { color:var(--sheet); background:var(--ink); }
+.wallet-button:disabled { cursor:not-allowed; color:#777a72; border-color:#596159; background:#262c27; }
 .wallet-button svg { width:17px; }
 .app-header nav { min-height:48px; display:flex; align-items:stretch; padding-inline:clamp(18px,4vw,64px); border-block-start:1px solid var(--rule); }
 .app-header nav a { position:relative; min-width:138px; min-height:48px; display:flex; align-items:center; justify-content:center; gap:8px; padding-inline:18px; color:var(--rule-soft); text-decoration:none; font-size:13px; font-weight:600; }
@@ -60,7 +64,8 @@ a:hover { text-decoration-thickness:2px; }
 .app-header nav a.active::after { content:""; position:absolute; inset:auto 14px 0; height:3px; background:var(--action); }
 .app-header nav svg { width:16px; }
 
-#main-content { min-width:0; outline:none; }
+#main-content { min-width:0; }
+#main-content:focus-visible { outline:3px solid var(--focus); outline-offset:-3px; }
 .route-page { width:min(1440px,100%); margin-inline:auto; padding:clamp(26px,4.2vw,66px) clamp(18px,4vw,64px) clamp(56px,7vw,104px); }
 
 .campaign-layout { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(380px,.8fr); align-items:start; }
@@ -78,20 +83,44 @@ a:hover { text-decoration-thickness:2px; }
 .funding-note svg { width:14px; flex:none; color:var(--blue); }
 
 .eligibility-desk { position:relative; min-width:0; min-height:446px; margin-block-start:40px; display:flex; flex-direction:column; padding:clamp(24px,3vw,40px); border:1px solid var(--ink); border-block-start:7px solid var(--blue); background:var(--sheet-2); }
-.eligibility-desk.state-eligible { border-block-start-color:var(--green); }
-.eligibility-desk.state-ineligible,.eligibility-desk.state-retryable-error,.eligibility-desk.state-service-unavailable,.eligibility-desk.state-offline { border-block-start-color:var(--red); }
-.eligibility-desk.state-authorizing,.eligibility-desk.state-proof-pending { border-block-start-color:var(--amber); }
+.eligibility-desk.state-qualifying,.eligibility-desk.state-released,.eligibility-desk.state-already-claimed { border-block-start-color:var(--green); }
+.eligibility-desk.state-malformed,.eligibility-desk.state-semantic-mismatch,.eligibility-desk.state-retryable-error,.eligibility-desk.state-service-unavailable,.eligibility-desk.state-offline,.eligibility-desk.state-campaign-closed,.eligibility-desk.state-pair-changed { border-block-start-color:var(--red); }
+.eligibility-desk.state-wrong-wallet,.eligibility-desk.state-account-changed,.eligibility-desk.state-rate-limited,.eligibility-desk.state-campaign-full,.eligibility-desk.state-wallet-connecting,.eligibility-desk.state-authorization-requested,.eligibility-desk.state-proof-queued,.eligibility-desk.state-proof-building,.eligibility-desk.state-release-relaying,.eligibility-desk.state-release-processing,.eligibility-desk.state-release-uncertain { border-block-start-color:var(--amber); }
 .desk-heading { min-width:0; display:grid; grid-template-columns:44px minmax(0,1fr); gap:15px; }
 .state-mark { width:44px; height:44px; display:grid; place-items:center; color:var(--sheet); background:var(--blue); }
 .state-mark svg { width:20px; }
-.state-eligible .state-mark,.state-released .state-mark,.state-already-claimed .state-mark { background:var(--green); }
-.state-ineligible .state-mark,.state-retryable-error .state-mark,.state-service-unavailable .state-mark,.state-offline .state-mark { background:var(--red); }
-.state-authorizing .state-mark,.state-proof-pending .state-mark { color:var(--ink); background:var(--amber); }
+.state-qualifying .state-mark,.state-released .state-mark,.state-already-claimed .state-mark { background:var(--green); }
+.state-malformed .state-mark,.state-semantic-mismatch .state-mark,.state-retryable-error .state-mark,.state-service-unavailable .state-mark,.state-offline .state-mark,.state-campaign-closed .state-mark,.state-pair-changed .state-mark { background:var(--red); }
+.state-wrong-wallet .state-mark,.state-account-changed .state-mark,.state-rate-limited .state-mark,.state-campaign-full .state-mark,.state-wallet-connecting .state-mark,.state-authorization-requested .state-mark,.state-proof-queued .state-mark,.state-proof-building .state-mark,.state-release-relaying .state-mark,.state-release-processing .state-mark,.state-release-uncertain .state-mark { color:var(--ink); background:var(--amber); }
 .desk-heading h2 { margin:0 0 7px; font-size:clamp(25px,2.5vw,36px); line-height:1; letter-spacing:-.025em; text-wrap:balance; }
 .desk-heading p { margin:0; color:var(--muted); font-size:14px; line-height:1.55; }
+.pair-intake { display:flex; flex-direction:column; margin-block-start:24px; }
+.pair-intake fieldset { min-width:0; margin:0; padding:0; border:0; }
+.pair-intake legend { width:100%; margin:0 0 12px; padding:0 0 8px; border-block-end:1px solid var(--rule); color:var(--muted); font:600 10px "IBM Plex Mono",monospace; text-transform:uppercase; letter-spacing:.06em; }
+.transaction-field { min-width:0; }
+.transaction-label { min-height:30px; display:grid; grid-template-columns:28px minmax(0,1fr) auto; align-items:center; gap:9px; }
+.transaction-label > span { width:28px; height:28px; display:grid; place-items:center; color:var(--ink); background:#e85b36; font:700 12px "IBM Plex Mono",monospace; }
+.transaction-field + .pair-order + .transaction-field .transaction-label > span { color:var(--sheet); background:var(--green); }
+.transaction-label label { font-size:13px; font-weight:700; }
+.transaction-label b { color:var(--muted); font:600 9px "IBM Plex Mono",monospace; text-transform:uppercase; letter-spacing:.04em; }
+.transaction-field input { width:100%; min-height:52px; margin-block-start:8px; padding:10px 11px; border:1px solid var(--ink); border-radius:0; color:var(--ink); background:var(--sheet); font:500 12px/1.35 "IBM Plex Mono",monospace; }
+.transaction-field input:hover { border-color:var(--blue); }
+.transaction-field input:disabled { cursor:not-allowed; color:#4f5149; border-color:var(--rule); background:#e1dccf; }
+.transaction-field.invalid input { border:2px solid var(--red); }
+.field-helper,.field-error { margin:7px 0 0; font-size:11px; line-height:1.4; }
+.field-helper { color:var(--muted); }
+.field-error { color:#9f2b12; font-weight:650; }
+.pair-order { width:28px; height:34px; display:grid; place-items:center; color:var(--blue); }
+.pair-order svg { width:16px; transform:rotate(90deg); }
+.pair-intake .primary-action { margin-block-start:20px; }
+.example-action { min-height:44px; display:flex; align-items:center; justify-content:space-between; gap:10px; margin-block-start:9px; padding:0 12px; border:1px solid var(--ink); color:var(--ink); background:transparent; cursor:pointer; font-size:13px; font-weight:650; text-align:start; }
+.example-action:hover:not(:disabled) { color:var(--sheet); background:var(--ink); }
+.example-action:disabled { cursor:not-allowed; color:#777a72; border-color:var(--rule); }
+.example-action svg { width:16px; flex:none; }
 .wallet-readout { min-width:0; display:grid; gap:6px; margin-block-start:25px; padding-block:13px; border-block:1px solid var(--rule); }
 .wallet-readout span { color:var(--muted); font-size:11px; }
 .wallet-readout code { font-size:11px; }
+.wallet-readout small { color:var(--muted); font:500 10px/1.4 "IBM Plex Mono",monospace; overflow-wrap:anywhere; }
 .inline-notice { display:grid; grid-template-columns:18px minmax(0,1fr); gap:9px; margin-block-start:12px; padding:11px; border:1px solid var(--red); color:var(--ink); background:var(--sheet); font-size:12px; line-height:1.45; }
 .inline-notice svg { width:17px; }
 .release-receipt { display:grid; grid-template-columns:auto 1fr; gap:7px 14px; margin-block-start:14px; padding:13px; border:1px solid var(--green); background:var(--sheet); }
@@ -105,6 +134,7 @@ a:hover { text-decoration-thickness:2px; }
 .primary-action:active:not(:disabled) { transform:translateY(1px); }
 .primary-action:disabled { cursor:not-allowed; color:#65675f; background:#d8d2c1; }
 .primary-action svg { width:22px; flex:none; }
+.authorization-action { margin-block-start:16px; }
 .secondary-action { min-height:44px; display:flex; align-items:center; justify-content:space-between; gap:10px; margin-block-start:9px; padding-inline:12px; border:1px solid var(--ink); text-decoration:none; font-size:13px; font-weight:650; }
 .secondary-action:hover { color:var(--sheet); background:var(--ink); }
 .secondary-action svg { width:16px; }
@@ -239,6 +269,7 @@ a:hover { text-decoration-thickness:2px; }
   .campaign-facts > div { min-height:75px; padding:11px 9px; }
   .eligibility-desk { min-height:370px; margin-block-start:0; padding:24px 20px; border-block-start-width:7px; }
   .desk-heading h2 { font-size:29px; }
+  .transaction-field input { font-size:16px; }
   .evidence-band { margin-block-start:20px; }
   .evidence-band > header { display:block; }
   .evidence-band header p { margin-block-start:8px; text-align:start; }
@@ -276,13 +307,14 @@ a:hover { text-decoration-thickness:2px; }
   .campaign-summary { margin-block-start:14px; font-size:14px; line-height:1.35; }
   .campaign-facts { margin-block-start:16px; }
   .campaign-facts > div { min-height:62px; padding:8px; }
-  .campaign-facts dd { font-size:9px; }
+  .campaign-facts dd { font-size:11px; }
   .funding-note { min-height:36px; margin-block-start:6px; font-size:9px; }
   .eligibility-desk { min-height:310px; padding:16px 14px; }
   .desk-heading { grid-template-columns:38px minmax(0,1fr); gap:11px; }
   .state-mark { width:38px; height:38px; }
   .desk-heading h2 { font-size:24px; }
   .desk-heading p { font-size:13px; line-height:1.4; }
+  .pair-intake { margin-block-start:18px; }
   .wallet-readout { margin-block-start:16px; padding-block:10px; }
   .primary-action { min-height:64px; font-size:16px; }
   .evidence-step { padding-inline:18px; }

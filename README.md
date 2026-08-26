@@ -11,9 +11,9 @@ RetryCredit is a pre-funded recovery campaign for an exact Ethereum transaction 
 
 ## The recovery path
 
-1. Connect the Ethereum wallet that appears in a known paid failure-to-completion pair.
-2. RetryCredit re-reads both mainnet transactions and receipts; a static discovery list is never payout authority.
-3. The wallet signs a five-minute, offchain consent bound to the exact pair, public origin, campaign, and pool.
+1. Paste the failed paid mint and its later successful retry as transaction hashes or canonical Etherscan URLs. No wallet connection is needed to check them.
+2. RetryCredit re-reads both mainnet transactions and receipts, validates the funded rule, and derives the source wallet from live facts; the three public examples are never eligibility authority.
+3. Only after the pair qualifies, that derived wallet signs a five-minute hosted-relayer consent bound to the exact pair, public origin, campaign, and pool.
 4. The relayer builds one pair-local Attestcoin batch and simulates the immutable campaign release.
 5. The contract derives the beneficiary from the proven source transaction and releases exactly `0.1 tCTC`. There is no destination field.
 
@@ -33,7 +33,7 @@ Remove Attestcoin and the Creditcoin campaign cannot establish inclusion, receip
 
 ## Live evidence
 
-The Recovery Campaign lifecycle completed on August 26, 2026:
+The first verified Recovery Campaign release executed on August 26, 2026:
 
 - Organic paid failure: [`0xed17…d3ff`](https://etherscan.io/tx/0xed178b60188933f758d9ab42275929be0fbed986662a1c90a1a40c829f88d3ff)
 - Same-wallet completion two blocks later: [`0x8dbb…ec3a`](https://etherscan.io/tx/0x8dbb2cae48049b6ce4f0d469c7719f4f20a444e2465886a3ed7dcab41b25ec3a)
@@ -58,10 +58,11 @@ npm ci
 npm test
 npm run build
 npm run build:web:cloudflare
+npm run verify:recovery-gate
 ```
 
 For a local journey, copy `.env.example` to `.env`, populate only testnet values, run `node --env-file=.env src/server.mjs`, and start `npm run app:dev` in a second terminal. See [the API guide](docs/WORKER_API.md) for route contracts, retry behavior, configuration, and trust boundaries.
 
 ## Truth boundary
 
-Attestcoin proves the included paid failure, later completion, and exact onchain outcome. It does **not** prove a human-readable failure reason, human identity, intent, user loss, exact gas expenditure, insurance eligibility, adoption, or demand. The three-wallet paid cohort is a closed public-chain discovery set, not three users.
+Attestcoin proves the included paid failure, later completion, and exact onchain outcome. It does **not** prove a human-readable failure reason, human identity, intent, user loss, exact gas expenditure, insurance eligibility, adoption, or demand. The three published examples are a public-chain research set, not three users and not the boundary of Open Pair Intake.
