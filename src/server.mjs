@@ -174,6 +174,27 @@ export function createAppHandler({
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/recovery/intake/eligibility") {
+      requireRecoveryService(recovery);
+      const body = await readJson(request);
+      sendJson(response, 200, await recovery.service.intakeEligibility(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/recovery/intake/challenge") {
+      requireRecoveryService(recovery);
+      const body = await readJson(request);
+      sendJson(response, 200, await recovery.service.intakeChallenge(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/recovery/intake/release") {
+      requireRecoveryService(recovery);
+      const body = await readJson(request);
+      sendJson(response, 200, await recovery.service.intakeRelease(body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/recovery/eligibility") {
       requireRecoveryService(recovery);
       const body = await readJson(request);
@@ -278,6 +299,7 @@ export function createAppHandler({
     const handled = error instanceof WorkerError
       ? error
       : new WorkerError("INTERNAL_ERROR", "The worker could not process this request", 500, error);
+    if (handled.status === 429) response.setHeader("retry-after", "5");
     sendJson(response, handled.status, { error: { code: handled.code, message: handled.message, requestId } });
   }
   };
@@ -301,6 +323,7 @@ function setHeaders(response, requestId, allowedOrigin = ALLOWED_ORIGIN) {
   response.setHeader("access-control-allow-origin", allowedOrigin);
   response.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
   response.setHeader("access-control-allow-headers", "content-type");
+  response.setHeader("access-control-expose-headers", "retry-after, x-request-id");
   response.setHeader("x-request-id", requestId);
   response.setHeader("x-content-type-options", "nosniff");
   response.setHeader("referrer-policy", "no-referrer");
@@ -310,9 +333,11 @@ function setHeaders(response, requestId, allowedOrigin = ALLOWED_ORIGIN) {
 
 async function readJson(request) {
   let body = "";
+  let bodyBytes = 0;
   for await (const chunk of request) {
+    bodyBytes += Buffer.byteLength(chunk);
+    if (bodyBytes > 16_384) throw new WorkerError("BODY_TOO_LARGE", "Request body exceeds 16 KB", 413);
     body += chunk;
-    if (body.length > 16_384) throw new WorkerError("BODY_TOO_LARGE", "Request body exceeds 16 KB", 413);
   }
   try {
     return JSON.parse(body || "{}");
@@ -354,6 +379,13 @@ function unavailableRecoveryConfig(waking, service = null) {
   return {
     enabled: Boolean(service),
     waking,
+    capabilities: {
+      selfServePairIntake: true,
+    },
+    consent: {
+      scope: "hosted-relayer",
+      protocolEnforced: false,
+    },
     source: {
       name: "Ethereum Mainnet",
       chainId: RECOVERY_DEFAULTS.sourceChainId,

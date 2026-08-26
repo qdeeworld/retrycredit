@@ -6,6 +6,9 @@ export const RELEASE_TOTAL_TIMEOUT_MS = 15 * 60_000;
 export const RELEASE_REQUEST_TIMEOUT_MS = 150_000;
 export const RELEASE_RETRY_DELAY_MS = 15_000;
 export const RECOVERY_ACTION_REQUEST_TIMEOUT_MS = 30_000;
+export const RECOVERY_INTAKE_ELIGIBILITY_PATH = "/api/recovery/intake/eligibility";
+export const RECOVERY_INTAKE_CHALLENGE_PATH = "/api/recovery/intake/challenge";
+export const RECOVERY_INTAKE_RELEASE_PATH = "/api/recovery/intake/release";
 
 const RECOVERY_RELEASE_PENDING_MESSAGE = "Attestcoin is still finalizing. Check the wallet again before signing a fresh authorization.";
 export const LEGACY_RELEASE_PENDING_MESSAGE = "The archived RetryCredit release is still finalizing. Retry the archived flow shortly.";
@@ -24,6 +27,18 @@ export class TemporaryUnavailableError extends Error {
     super(message);
     this.name = "TemporaryUnavailableError";
     this.temporaryUnavailable = true;
+  }
+}
+
+export class RateLimitedError extends Error {
+  constructor(message = "Recovery intake is busy. Wait a moment, then check the same pair again.", options = {}) {
+    super(message);
+    this.name = "RateLimitedError";
+    this.status = 429;
+    this.code = options.code ?? "RECOVERY_BUSY";
+    this.requestId = options.requestId;
+    this.retryAfter = options.retryAfter ?? null;
+    this.rateLimited = true;
   }
 }
 
@@ -55,6 +70,21 @@ export async function checkRecoveryEligibility({
   });
 }
 
+export async function checkRecoveryPairEligibility({
+  apiOrigin = "",
+  pair,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = RECOVERY_ACTION_REQUEST_TIMEOUT_MS,
+} = {}) {
+  return postRecoveryJson({
+    apiOrigin,
+    path: RECOVERY_INTAKE_ELIGIBILITY_PATH,
+    body: { pair },
+    fetchImpl,
+    timeoutMs,
+  });
+}
+
 export async function requestRecoveryChallenge({
   apiOrigin = "",
   wallet,
@@ -68,6 +98,95 @@ export async function requestRecoveryChallenge({
     fetchImpl,
     timeoutMs,
   });
+}
+
+export async function requestRecoveryIntakeChallenge({
+  apiOrigin = "",
+  pair,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = RECOVERY_ACTION_REQUEST_TIMEOUT_MS,
+} = {}) {
+  return postRecoveryJson({
+    apiOrigin,
+    path: RECOVERY_INTAKE_CHALLENGE_PATH,
+    body: { pair },
+    fetchImpl,
+    timeoutMs,
+  });
+}
+
+export async function releaseRecoveryPairWhenReady({
+  apiOrigin = "",
+  wallet,
+  pair,
+  issuedAt,
+  expiresAt,
+  authorizationStartedAtMs,
+  authorizationStartedAtWallMs,
+  signature,
+  fetchImpl = globalThis.fetch,
+  totalTimeoutMs = RELEASE_TOTAL_TIMEOUT_MS,
+  requestTimeoutMs = RELEASE_REQUEST_TIMEOUT_MS,
+  retryDelayMs = RELEASE_RETRY_DELAY_MS,
+  now = recoveryClockNow,
+  wallNow = recoveryWallClockNow,
+  sleep = delay,
+  onPending,
+  onRetrying,
+} = {}) {
+  const startedAt = now();
+  const totalDeadline = startedAt + Math.max(0, totalTimeoutMs);
+  const authorizationDeadlines = recoveryAuthorizationDeadlines({
+    authorizationStartedAtMs,
+    authorizationStartedAtWallMs,
+    issuedAt,
+    expiresAt,
+  });
+  let pendingCount = 0;
+
+  while (true) {
+    const attemptBudget = recoveryReleaseBudget({
+      authorizationDeadlines,
+      now,
+      totalDeadline,
+      wallNow,
+    });
+    const attemptTimeoutMs = Math.floor(Math.min(requestTimeoutMs, attemptBudget.remainingMs));
+    if (attemptTimeoutMs <= 0) break;
+
+    try {
+      return await postRecoveryJson({
+        apiOrigin,
+        path: RECOVERY_INTAKE_RELEASE_PATH,
+        body: { wallet, pair, issuedAt, expiresAt, signature },
+        fetchImpl,
+        timeoutMs: attemptTimeoutMs,
+      });
+    } catch (error) {
+      if (error?.status !== 425) throw error;
+      pendingCount += 1;
+      onPending?.({ attempt: pendingCount, code: error.code, requestId: error.requestId });
+    }
+
+    const waitBudget = recoveryReleaseBudget({
+      authorizationDeadlines,
+      now,
+      totalDeadline,
+      wallNow,
+    });
+    const waitMs = Math.floor(Math.min(retryDelayMs, waitBudget.remainingMs));
+    if (waitMs > 0) await sleep(waitMs);
+    onRetrying?.({ attempt: pendingCount + 1 });
+  }
+
+  const finalBudget = recoveryReleaseBudget({
+    authorizationDeadlines,
+    now,
+    totalDeadline,
+    wallNow,
+  });
+  if (finalBudget.authorizationRemainingMs <= 0) throw recoveryAuthorizationError();
+  throw new Error(RECOVERY_RELEASE_PENDING_MESSAGE);
 }
 
 export async function releaseRecoveryWhenReady({
@@ -255,7 +374,14 @@ export async function parseJsonResponse(response) {
 
   if (!response.ok) {
     const message = data?.error?.message;
-    if (response.status >= 500 || response.status === 408 || response.status === 429) {
+    if (response.status === 429) {
+      throw new RateLimitedError(message, {
+        code: data?.error?.code,
+        requestId: data?.error?.requestId,
+        retryAfter: response.headers?.get?.("retry-after"),
+      });
+    }
+    if (response.status >= 500 || response.status === 408) {
       throw new TemporaryUnavailableError();
     }
     const error = new Error(message ?? "Request failed");

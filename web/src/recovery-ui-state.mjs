@@ -41,12 +41,77 @@ export function walletsMatch(left, right) {
   return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
 }
 
+export function normalizeEthereumTransactionReference(value) {
+  const reference = typeof value === "string" ? value.trim() : "";
+  if (isHash(reference)) return normalizeHash(reference);
+  const match = reference.match(/^https:\/\/etherscan\.io\/tx\/(0x[0-9a-fA-F]{64})$/);
+  if (match) return normalizeHash(match[1]);
+
+  const error = new Error("Enter a 66-character transaction hash or a canonical etherscan.io transaction URL.");
+  error.code = "RECOVERY_PAIR_INPUT_INVALID";
+  throw error;
+}
+
+export function validateRecoveryPairDraft(draft = {}) {
+  const errors = {};
+  let failedTransactionHash = "";
+  let successfulTransactionHash = "";
+
+  try {
+    failedTransactionHash = normalizeEthereumTransactionReference(draft.failedTransactionHash);
+  } catch (error) {
+    errors.failedTransactionHash = error.message;
+  }
+  try {
+    successfulTransactionHash = normalizeEthereumTransactionReference(draft.successfulTransactionHash);
+  } catch (error) {
+    errors.successfulTransactionHash = error.message;
+  }
+  if (
+    failedTransactionHash
+    && successfulTransactionHash
+    && failedTransactionHash === successfulTransactionHash
+  ) {
+    errors.successfulTransactionHash = "The completed retry must be a different transaction from the failed attempt.";
+  }
+
+  const valid = Object.keys(errors).length === 0;
+  return Object.freeze({
+    valid,
+    errors: Object.freeze(errors),
+    pair: valid
+      ? Object.freeze({ failedTransactionHash, successfulTransactionHash })
+      : null,
+  });
+}
+
+export function recoveryPairsMatch(left, right) {
+  return Boolean(
+    isHash(left?.failedTransactionHash)
+    && isHash(left?.successfulTransactionHash)
+    && normalizeHash(left.failedTransactionHash) === normalizeHash(right?.failedTransactionHash)
+    && normalizeHash(left.successfulTransactionHash) === normalizeHash(right?.successfulTransactionHash)
+  );
+}
+
 export function isRecoveryChallengeExpired(error) {
   return error?.code === "RECOVERY_CHALLENGE_EXPIRED";
 }
 
 export function isRecoveryResponseMismatch(error) {
   return error?.code === "RECOVERY_RESPONSE_MISMATCH";
+}
+
+export function isRecoveryPairInvalid(error) {
+  return error?.status === 422 && [
+    "RECOVERY_PAIR_INVALID",
+    "RECOVERY_NOT_FOUND",
+    "RECOVERY_PAIR_INELIGIBLE",
+  ].includes(error?.code);
+}
+
+export function isRecoveryRateLimited(error) {
+  return error?.rateLimited === true || error?.status === 429 || error?.code === "RECOVERY_BUSY";
 }
 
 export function recoveryConfigsMatch(left, right) {
@@ -59,6 +124,16 @@ export function recoveryCampaignsMatch(left, right) {
   const leftIdentity = recoveryCampaignIdentity(left);
   const rightIdentity = recoveryCampaignIdentity(right);
   return Boolean(leftIdentity && leftIdentity === rightIdentity);
+}
+
+export function recoveryCampaignAvailability(config) {
+  if (!config?.enabled || !config?.campaign || !config?.capacity) return "unavailable";
+  const remaining = Number(config.capacity.remaining);
+  const deadline = Number(config.campaign.deadline);
+  const deadlinePassed = Number.isSafeInteger(deadline)
+    && Math.floor(Date.now() / 1_000) > deadline;
+  if (!deadlinePassed && config.campaign.open === true && remaining > 0) return "open";
+  return remaining === 0 ? "full" : "closed";
 }
 
 export function validateRecoveryConfigResponse(response) {
@@ -84,6 +159,24 @@ export function validateRecoveryConfigResponse(response) {
     return Object.freeze({ ...response });
   }
   const publicOrigin = normalizeOrigin(response.publicOrigin);
+  const totalCapacity = Number(response?.capacity?.total);
+  const claimedCapacity = Number(response?.capacity?.claimed);
+  const remainingCapacity = Number(response?.capacity?.remaining);
+  const campaignMaxClaims = Number(response?.campaign?.maxClaims);
+  const campaignClaimCount = Number(response?.campaign?.claimCount);
+  const campaignRemainingClaims = Number(response?.campaign?.remainingClaims);
+  const campaignDeadline = Number(response?.campaign?.deadline);
+  const ruleStartBlock = Number(response?.rule?.startBlock);
+  const ruleEndBlock = Number(response?.rule?.endBlock);
+  const ruleMaxBlockGap = Number(response?.rule?.maxBlockGap);
+  const ruleMaxQuantity = Number(response?.rule?.maxQuantity);
+  let campaignFundingMatches = false;
+  try {
+    campaignFundingMatches = BigInt(response?.campaign?.fundedAmount)
+      === BigInt(response?.campaign?.creditAmount) * BigInt(campaignMaxClaims);
+  } catch {
+    campaignFundingMatches = false;
+  }
   if (
     response.waking !== false
     || !hasExpectedNetworks
@@ -92,13 +185,81 @@ export function validateRecoveryConfigResponse(response) {
     || response.campaignNumber <= 0
     || !publicOrigin
     || publicOrigin !== response.publicOrigin
+    || !isAddress(response.verifierAddress)
+    || !isAddress(response.predicateAddress)
+    || !isAddress(response?.campaign?.sponsor)
     || typeof response?.campaign?.creditAmount !== "string"
     || !isPositiveUint(response?.campaign?.creditAmount)
+    || !isPositiveUint(response?.campaign?.fundedAmount)
+    || !isNonzeroHash(response?.campaign?.termsHash)
+    || typeof response?.campaign?.open !== "boolean"
+    || !Number.isSafeInteger(campaignMaxClaims)
+    || !Number.isSafeInteger(campaignClaimCount)
+    || !Number.isSafeInteger(campaignRemainingClaims)
+    || !Number.isSafeInteger(campaignDeadline)
+    || campaignMaxClaims <= 0
+    || campaignClaimCount < 0
+    || campaignRemainingClaims < 0
+    || campaignClaimCount + campaignRemainingClaims !== campaignMaxClaims
+    || campaignDeadline <= 0
+    || !campaignFundingMatches
+    || !isAddress(response?.rule?.feeRecipient)
+    || !Number.isSafeInteger(ruleStartBlock)
+    || !Number.isSafeInteger(ruleEndBlock)
+    || !Number.isSafeInteger(ruleMaxBlockGap)
+    || !Number.isSafeInteger(ruleMaxQuantity)
+    || ruleStartBlock < 0
+    || ruleEndBlock <= ruleStartBlock
+    || ruleMaxBlockGap <= 0
+    || ruleMaxBlockGap > 1_000
+    || ruleMaxQuantity <= 0
+    || !Number.isSafeInteger(totalCapacity)
+    || !Number.isSafeInteger(claimedCapacity)
+    || !Number.isSafeInteger(remainingCapacity)
+    || totalCapacity <= 0
+    || claimedCapacity < 0
+    || remainingCapacity < 0
+    || claimedCapacity + remainingCapacity !== totalCapacity
+    || campaignMaxClaims !== totalCapacity
+    || campaignClaimCount !== claimedCapacity
+    || campaignRemainingClaims !== remainingCapacity
+    || (remainingCapacity === 0 && response.campaign.open)
+    || response?.capabilities?.selfServePairIntake !== true
+    || response?.consent?.scope !== "hosted-relayer"
+    || response?.consent?.protocolEnforced !== false
     || !hasFeaturedIdentity
   ) {
     throw responseMismatch();
   }
   return Object.freeze({ ...response, publicOrigin });
+}
+
+export function validatePairEligibilityResponse({ response, requestedPair, config } = {}) {
+  const boundary = requireRecoveryBoundary(config);
+  if (!isAddress(response?.wallet)) throw responseMismatch();
+  requireResponseCampaign(response, boundary);
+  requireAnalyzedPair(response?.pair, requestedPair, config);
+
+  const status = response?.status;
+  if (!new Set(["eligible", "processing", "claimed", "closed", "full"]).has(status)) {
+    throw responseMismatch();
+  }
+  if (status === "eligible" && (response.eligible !== true || response.release != null)) {
+    throw responseMismatch();
+  }
+  if (status === "claimed") {
+    if (response.eligible !== false) throw responseMismatch();
+    requireRelease(response.release, response, boundary);
+  }
+  if (status === "processing" && (response.eligible !== false || response.release != null)) {
+    throw responseMismatch();
+  }
+  if (["closed", "full"].includes(status) && (response.eligible !== false || response.release != null)) {
+    throw responseMismatch();
+  }
+  if (typeof response?.reason !== "string" || response.reason.trim() === "") throw responseMismatch();
+  requireCreditAmount(response, config);
+  return bindRecoveryBoundary(response, boundary);
 }
 
 export function validateEligibilityResponse({ response, requestedWallet, config, expectedPair } = {}) {
@@ -169,6 +330,18 @@ export function validateReleaseResponse({ response, wallet, eligibility, config 
   return bindRecoveryBoundary(response, boundary);
 }
 
+export function validatePairReleaseResponse({ response, wallet, eligibility, config } = {}) {
+  const boundary = requireRecoveryBoundary(config);
+  if (!recoveryRecordMatchesConfig(eligibility, config)) throw responseMismatch();
+  requireResponseWallet(response, wallet);
+  requireResponseCampaign(response, boundary);
+  if (!["released", "claimed"].includes(response?.status)) throw responseMismatch();
+  requireAnalyzedPair(response?.pair, eligibility?.pair, config);
+  requireCreditAmount(response, config);
+  requireRelease(response?.release, response, boundary);
+  return bindRecoveryBoundary(response, boundary);
+}
+
 export function createWalletOperationGuard(initialAccount = "") {
   let account = normalizeWallet(initialAccount);
   let version = 0;
@@ -195,6 +368,29 @@ export function createWalletOperationGuard(initialAccount = "") {
       account = next;
       version += 1;
       return true;
+    },
+  });
+}
+
+export function createPairOperationGuard() {
+  let version = 0;
+
+  return Object.freeze({
+    begin(pair) {
+      version += 1;
+      return Object.freeze({ version, pair: pairIdentity(pair) });
+    },
+    invalidate() {
+      version += 1;
+      return version;
+    },
+    isCurrent(operation, pair) {
+      return Boolean(
+        operation
+        && operation.version === version
+        && operation.pair
+        && (pair === undefined || operation.pair === pairIdentity(pair))
+      );
     },
   });
 }
@@ -281,6 +477,11 @@ function hasPairIdentity(pair) {
   return Boolean(pair?.failedTransactionHash && pair?.successfulTransactionHash);
 }
 
+function pairIdentity(pair) {
+  if (!isHash(pair?.failedTransactionHash) || !isHash(pair?.successfulTransactionHash)) return "";
+  return `${normalizeHash(pair.failedTransactionHash)}:${normalizeHash(pair.successfulTransactionHash)}`;
+}
+
 export function recoveryRecordMatchesConfig(record, config) {
   if (!record) return false;
   if (!config) return true;
@@ -327,6 +528,71 @@ function requirePair(pair, expectedPair) {
   }
 }
 
+function requireAnalyzedPair(pair, expectedPair, config) {
+  requirePair(pair, expectedPair);
+  const failedBlock = Number(pair?.failed?.blockNumber);
+  const successfulBlock = Number(pair?.successful?.blockNumber);
+  const failedNonce = Number(pair?.failed?.nonce);
+  const successfulNonce = Number(pair?.successful?.nonce);
+  const quantity = Number(pair?.quantity);
+  const mintedTokenIds = pair?.successful?.mintedTokenIds;
+  const ruleStartBlock = Number(config?.rule?.startBlock);
+  const ruleEndBlock = Number(config?.rule?.endBlock);
+  const ruleMaxBlockGap = Number(config?.rule?.maxBlockGap);
+  const ruleMaxQuantity = Number(config?.rule?.maxQuantity);
+  let exactPaidValue = false;
+  try {
+    exactPaidValue = BigInt(pair?.valueWei) === BigInt(pair?.mintPriceWei) * BigInt(pair?.quantity);
+  } catch {
+    exactPaidValue = false;
+  }
+  if (
+    Number(pair?.sourceChainId) !== Number(config?.source?.chainId)
+    || Number(pair?.sourceChainKey) !== Number(config?.source?.chainKey)
+    || !isAddress(pair?.nftContract)
+    || !isPositiveUint(pair?.quantity)
+    || !Number.isSafeInteger(quantity)
+    || quantity <= 0
+    || !isPositiveUint(pair?.mintPriceWei)
+    || !isPositiveUint(pair?.valueWei)
+    || !Number.isSafeInteger(failedBlock)
+    || failedBlock < 0
+    || !Number.isSafeInteger(successfulBlock)
+    || successfulBlock <= failedBlock
+    || !Number.isSafeInteger(failedNonce)
+    || failedNonce < 0
+    || !Number.isSafeInteger(successfulNonce)
+    || successfulNonce !== failedNonce + 1
+    || failedBlock < ruleStartBlock
+    || successfulBlock > ruleEndBlock
+    || successfulBlock - failedBlock > ruleMaxBlockGap
+    || quantity > ruleMaxQuantity
+    || !exactPaidValue
+    || !Array.isArray(mintedTokenIds)
+    || mintedTokenIds.length !== quantity
+    || mintedTokenIds.some((tokenId) => !/^\d+$/.test(String(tokenId)))
+    || new Set(mintedTokenIds.map(String)).size !== mintedTokenIds.length
+  ) {
+    throw responseMismatch();
+  }
+  if (expectedPair?.failed && (
+    Number(pair.sourceChainId) !== Number(expectedPair.sourceChainId)
+    || Number(pair.sourceChainKey) !== Number(expectedPair.sourceChainKey)
+    || !walletsMatch(pair.nftContract, expectedPair.nftContract)
+    || String(pair.quantity) !== String(expectedPair.quantity)
+    || String(pair.mintPriceWei) !== String(expectedPair.mintPriceWei)
+    || String(pair.valueWei) !== String(expectedPair.valueWei)
+    || failedBlock !== Number(expectedPair.failed.blockNumber)
+    || failedNonce !== Number(expectedPair.failed.nonce)
+    || successfulBlock !== Number(expectedPair.successful?.blockNumber)
+    || successfulNonce !== Number(expectedPair.successful?.nonce)
+    || JSON.stringify(mintedTokenIds.map(String))
+      !== JSON.stringify(expectedPair.successful?.mintedTokenIds?.map(String))
+  )) {
+    throw responseMismatch();
+  }
+}
+
 function requireCreditAmount(response, config, { allowNull = false } = {}) {
   if (allowNull && response?.creditAmount == null) return;
   const expected = config?.campaign?.creditAmount;
@@ -334,11 +600,23 @@ function requireCreditAmount(response, config, { allowNull = false } = {}) {
 }
 
 function requireRelease(release, response, boundary) {
+  const blockNumber = Number(release?.blockNumber);
+  const claimCount = Number(release?.claimCount);
   if (
     !isHash(release?.transactionHash)
+    || !Number.isSafeInteger(blockNumber)
+    || blockNumber < 0
     || normalizeCampaignNumber(release?.campaignNumber) !== boundary.campaignNumber
     || !walletsMatch(release?.beneficiary, response?.wallet)
     || String(release?.creditAmount) !== String(response?.creditAmount)
+    || !isNonzeroHash(release?.actionId)
+    || !isNonzeroHash(release?.failureQueryId)
+    || !isNonzeroHash(release?.successQueryId)
+    || !isNonzeroHash(release?.pairId)
+    || normalizeHash(release.failureQueryId) === normalizeHash(release.successQueryId)
+    || !isAddress(release?.relayer)
+    || !Number.isSafeInteger(claimCount)
+    || claimCount <= 0
   ) {
     throw responseMismatch();
   }
@@ -435,6 +713,10 @@ function isHash(value) {
   return /^0x[0-9a-f]{64}$/i.test(value ?? "");
 }
 
+function isNonzeroHash(value) {
+  return isHash(value) && !/^0x0{64}$/i.test(value);
+}
+
 function isAddress(value) {
   return /^0x[0-9a-f]{40}$/i.test(value ?? "") && !/^0x0{40}$/i.test(value);
 }
@@ -448,7 +730,7 @@ function isPositiveUint(value) {
 }
 
 function responseMismatch() {
-  const error = new Error("The recovery service returned evidence for a different wallet or campaign. Refresh and check this wallet again.");
+  const error = new Error("The recovery service returned evidence for a different pair, wallet, or campaign. Refresh and check the pair again.");
   error.code = "RECOVERY_RESPONSE_MISMATCH";
   return error;
 }

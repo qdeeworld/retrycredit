@@ -3,17 +3,26 @@ import test from "node:test";
 import { getAddress } from "ethers";
 import { recoveryChallengeMessage as serverRecoveryChallengeMessage } from "../src/recovery-campaign-service.mjs";
 import {
+  createPairOperationGuard,
   createWalletOperationGuard,
   isRecoveryChallengeExpired,
+  isRecoveryPairInvalid,
+  isRecoveryRateLimited,
   isRecoveryResponseMismatch,
+  normalizeEthereumTransactionReference,
+  recoveryCampaignAvailability,
   recoveryCampaignsMatch,
   recoveryRecordMatchesConfig,
   recoveryConfigsMatch,
+  recoveryPairsMatch,
   selectFeaturedRelease,
   selectRecoveryEvidence,
   selectVisibleRelease,
   validateChallengeResponse,
   validateEligibilityResponse,
+  validatePairEligibilityResponse,
+  validatePairReleaseResponse,
+  validateRecoveryPairDraft,
   validateRecoveryConfigResponse,
   validateReleaseResponse,
 } from "../web/src/recovery-ui-state.mjs";
@@ -22,6 +31,9 @@ const WALLET_A = "0x1111111111111111111111111111111111111111";
 const WALLET_B = "0x2222222222222222222222222222222222222222";
 const POOL_A = getAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 const POOL_B = getAddress("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+const VERIFIER = getAddress("0xcccccccccccccccccccccccccccccccccccccccc");
+const PREDICATE = getAddress("0xdddddddddddddddddddddddddddddddddddddddd");
+const FEE_RECIPIENT = getAddress("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
 
 function pair(prefix) {
   return {
@@ -31,17 +43,60 @@ function pair(prefix) {
 }
 
 function config(overrides = {}) {
-  return {
+  const base = {
     enabled: true,
     waking: false,
+    capabilities: { selfServePairIntake: true },
+    consent: { scope: "hosted-relayer", protocolEnforced: false },
     publicOrigin: "https://retrycredit.example",
     poolAddress: POOL_A,
+    verifierAddress: VERIFIER,
+    predicateAddress: PREDICATE,
     campaignNumber: 7,
-    campaign: { creditAmount: "10" },
+    campaign: {
+      sponsor: WALLET_B,
+      creditAmount: "10",
+      maxClaims: 3,
+      claimCount: 0,
+      remainingClaims: 3,
+      deadline: 2_000_000_000,
+      fundedAmount: "30",
+      termsHash: `0x${"9".repeat(64)}`,
+      open: true,
+    },
+    rule: {
+      feeRecipient: FEE_RECIPIENT,
+      startBlock: 90,
+      endBlock: 110,
+      maxBlockGap: 10,
+      maxQuantity: 2,
+    },
+    capacity: { total: 3, claimed: 0, remaining: 3 },
     source: { name: "Ethereum Mainnet", chainId: 1, chainKey: 3 },
     settlement: { name: "Creditcoin Testnet", chainId: 102031 },
     featuredCase: { wallet: WALLET_A, ...pair("1") },
+    discoverySize: 3,
+  };
+  return {
+    ...base,
     ...overrides,
+    campaign: { ...base.campaign, ...overrides.campaign },
+    rule: { ...base.rule, ...overrides.rule },
+    capacity: { ...base.capacity, ...overrides.capacity },
+  };
+}
+
+function analyzedPair(prefix = "1") {
+  return {
+    ...pair(prefix),
+    sourceChainId: 1,
+    sourceChainKey: 3,
+    nftContract: "0x3333333333333333333333333333333333333333",
+    quantity: "1",
+    mintPriceWei: "1000000000000000",
+    valueWei: "1000000000000000",
+    failed: { blockNumber: 100, nonce: 9 },
+    successful: { blockNumber: 102, nonce: 10, mintedTokenIds: ["42"] },
   };
 }
 
@@ -71,9 +126,16 @@ function claimedResponse(overrides = {}) {
     pair: pair("1"),
     release: {
       transactionHash: `0x${"5".repeat(64)}`,
+      blockNumber: 123,
       campaignNumber: 7,
       beneficiary: WALLET_A,
       creditAmount: "10",
+      actionId: `0x${"6".repeat(64)}`,
+      failureQueryId: `0x${"7".repeat(64)}`,
+      successQueryId: `0x${"8".repeat(64)}`,
+      pairId: `0x${"a".repeat(64)}`,
+      relayer: WALLET_B,
+      claimCount: 1,
     },
     ...overrides,
   };
@@ -131,6 +193,75 @@ test("account changes and newer operations invalidate stale wallet completions",
   const third = guard.begin(WALLET_B);
   assert.equal(guard.isCurrent(second), false);
   assert.equal(guard.isCurrent(third), true);
+});
+
+test("pair intake accepts only hashes or canonical Ethereum-mainnet Etherscan URLs", () => {
+  const sourcePair = pair("1");
+  assert.equal(
+    normalizeEthereumTransactionReference(sourcePair.failedTransactionHash.toUpperCase().replace("0X", "0x")),
+    sourcePair.failedTransactionHash,
+  );
+  assert.equal(
+    normalizeEthereumTransactionReference(`https://etherscan.io/tx/${sourcePair.successfulTransactionHash}`),
+    sourcePair.successfulTransactionHash,
+  );
+
+  for (const invalid of [
+    "",
+    "0x1234",
+    `http://etherscan.io/tx/${sourcePair.failedTransactionHash}`,
+    `https://etherscan.io:443/tx/${sourcePair.failedTransactionHash}`,
+    `https://sepolia.etherscan.io/tx/${sourcePair.failedTransactionHash}`,
+    `https://etherscan.io/tx/${sourcePair.failedTransactionHash}?utm_source=test`,
+    `https://etherscan.io/address/${sourcePair.failedTransactionHash}`,
+  ]) {
+    assert.throws(
+      () => normalizeEthereumTransactionReference(invalid),
+      (error) => error.code === "RECOVERY_PAIR_INPUT_INVALID",
+    );
+  }
+});
+
+test("pair draft validation preserves order and rejects duplicate transactions", () => {
+  const sourcePair = pair("1");
+  const valid = validateRecoveryPairDraft({
+    failedTransactionHash: ` https://etherscan.io/tx/${sourcePair.failedTransactionHash} `,
+    successfulTransactionHash: sourcePair.successfulTransactionHash.toUpperCase().replace("0X", "0x"),
+  });
+  assert.equal(valid.valid, true);
+  assert.deepEqual(valid.pair, sourcePair);
+  assert.equal(recoveryPairsMatch(valid.pair, sourcePair), true);
+
+  const duplicate = validateRecoveryPairDraft({
+    failedTransactionHash: sourcePair.failedTransactionHash,
+    successfulTransactionHash: sourcePair.failedTransactionHash,
+  });
+  assert.equal(duplicate.valid, false);
+  assert.match(duplicate.errors.successfulTransactionHash, /different transaction/);
+});
+
+test("pair edits and newer operations invalidate stale pair completions", () => {
+  const guard = createPairOperationGuard();
+  const firstPair = pair("1");
+  const first = guard.begin(firstPair);
+  assert.equal(guard.isCurrent(first, firstPair), true);
+
+  guard.invalidate();
+  assert.equal(guard.isCurrent(first, firstPair), false);
+
+  const secondPair = pair("3");
+  const second = guard.begin(secondPair);
+  const third = guard.begin(secondPair);
+  assert.equal(guard.isCurrent(second), false);
+  assert.equal(guard.isCurrent(third, secondPair), true);
+  assert.equal(guard.isCurrent(third, firstPair), false);
+});
+
+test("intake error classes stay distinct for semantic mismatch and capacity pressure", () => {
+  assert.equal(isRecoveryPairInvalid({ status: 422, code: "RECOVERY_PAIR_INVALID" }), true);
+  assert.equal(isRecoveryPairInvalid({ status: 422, code: "RECOVERY_PAIR_WALLET_MISMATCH" }), false);
+  assert.equal(isRecoveryRateLimited({ status: 429, code: "RECOVERY_BUSY" }), true);
+  assert.equal(isRecoveryRateLimited({ status: 503, code: "RECOVERY_SOURCE_TIMEOUT" }), false);
 });
 
 test("a completed old-wallet receipt is retained but hidden from the new account", () => {
@@ -199,8 +330,26 @@ test("ready config requires a canonical origin, campaign amount, settlement, and
     config({ campaignNumber: "7" }),
     config({ campaign: { creditAmount: "0" } }),
     config({ campaign: { creditAmount: 10 } }),
+    config({ campaign: { creditAmount: "10", open: "true" } }),
+    config({ verifierAddress: "0x1234" }),
+    config({ predicateAddress: "0x1234" }),
+    config({ campaign: { sponsor: "0x1234" } }),
+    config({ campaign: { fundedAmount: "29" } }),
+    config({ campaign: { termsHash: "0x01" } }),
+    config({ campaign: { termsHash: `0x${"0".repeat(64)}` } }),
+    config({ campaign: { maxClaims: 4 } }),
+    config({ rule: { feeRecipient: "0x1234" } }),
+    config({ rule: { endBlock: 89 } }),
+    config({ rule: { endBlock: 90 } }),
+    config({ rule: { maxBlockGap: 0 } }),
+    config({ rule: { maxBlockGap: 1_001 } }),
+    config({ rule: { maxQuantity: 0 } }),
+    config({ capacity: { total: 3, claimed: 1, remaining: 3 } }),
+    config({ campaign: { creditAmount: "10", open: true }, capacity: { total: 3, claimed: 3, remaining: 0 } }),
     config({ source: { chainId: "1", chainKey: 3 } }),
     config({ settlement: { chainId: 0 } }),
+    config({ capabilities: { selfServePairIntake: false } }),
+    config({ consent: { scope: "hosted-relayer", protocolEnforced: true } }),
     config({ featuredCase: { wallet: WALLET_A, failedTransactionHash: "0x01", successfulTransactionHash: "0x02" } }),
     { ...config(), enabled: "true" },
     { ...config(), enabled: 1 },
@@ -227,6 +376,71 @@ test("ready config requires a canonical origin, campaign amount, settlement, and
     featuredCase: { wallet: WALLET_A, ...pair("1") },
   };
   assert.equal(validateRecoveryConfigResponse(disabled).enabled, false);
+});
+
+test("campaign availability fails closed from the live open flag and remaining capacity", () => {
+  assert.equal(recoveryCampaignAvailability(validateRecoveryConfigResponse(config())), "open");
+  assert.equal(recoveryCampaignAvailability(validateRecoveryConfigResponse(config({
+    campaign: { deadline: Math.floor(Date.now() / 1_000) - 1, open: true },
+  }))), "closed");
+  assert.equal(recoveryCampaignAvailability(validateRecoveryConfigResponse(config({
+    campaign: { creditAmount: "10", open: false },
+  }))), "closed");
+  assert.equal(recoveryCampaignAvailability(validateRecoveryConfigResponse(config({
+    campaign: { creditAmount: "10", claimCount: 3, remainingClaims: 0, open: false },
+    capacity: { total: 3, claimed: 3, remaining: 0 },
+  }))), "full");
+  assert.equal(recoveryCampaignAvailability(null), "unavailable");
+});
+
+test("open-pair eligibility is bound to the submitted pair and live-derived facts", () => {
+  const liveConfig = validateRecoveryConfigResponse(config());
+  const sourcePair = analyzedPair("1");
+  const response = {
+    eligible: true,
+    status: "eligible",
+    reason: "This pair qualifies.",
+    wallet: WALLET_A,
+    campaignNumber: 7,
+    creditAmount: "10",
+    pair: sourcePair,
+    release: null,
+  };
+  const validated = validatePairEligibilityResponse({
+    response,
+    requestedPair: pair("1"),
+    config: liveConfig,
+  });
+
+  assert.equal(validated.wallet, WALLET_A);
+  assert.equal(validated.pair.failed.blockNumber, 100);
+  assert.equal(recoveryRecordMatchesConfig(validated, liveConfig), true);
+
+  const processing = validatePairEligibilityResponse({
+    response: { ...response, eligible: false, status: "processing" },
+    requestedPair: pair("1"),
+    config: liveConfig,
+  });
+  assert.equal(processing.status, "processing");
+  assert.equal(processing.eligible, false);
+
+  for (const mismatch of [
+    { ...response, wallet: "0x0000000000000000000000000000000000000000" },
+    { ...response, pair: analyzedPair("3") },
+    { ...response, pair: { ...sourcePair, sourceChainKey: 4 } },
+    { ...response, pair: { ...sourcePair, successful: { ...sourcePair.successful, nonce: 11 } } },
+    { ...response, pair: { ...sourcePair, successful: { ...sourcePair.successful, mintedTokenIds: [] } } },
+    { ...response, pair: { ...sourcePair, valueWei: "999" } },
+    { ...response, pair: { ...sourcePair, quantity: "3", valueWei: "3000000000000000", successful: { ...sourcePair.successful, mintedTokenIds: ["40", "41", "42"] } } },
+    { ...response, pair: { ...sourcePair, successful: { ...sourcePair.successful, blockNumber: 111 } } },
+    { ...response, pair: { ...sourcePair, successful: { ...sourcePair.successful, mintedTokenIds: ["42", "42"] }, quantity: "2", valueWei: "2000000000000000" } },
+    { ...response, eligible: false },
+  ]) {
+    assert.throws(
+      () => validatePairEligibilityResponse({ response: mismatch, requestedPair: pair("1"), config: liveConfig }),
+      (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
+    );
+  }
 });
 
 test("eligibility rejects wallet, campaign, pair, and release identity mismatches", () => {
@@ -434,6 +648,66 @@ test("release validation binds the receipt and stale campaign evidence stays hid
     }),
     (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
   );
+});
+
+test("open-pair release keeps the full live pair facts bound to the receipt", () => {
+  const liveConfig = validateRecoveryConfigResponse(config());
+  const sourcePair = analyzedPair("1");
+  const eligibility = validatePairEligibilityResponse({
+    response: {
+      eligible: true,
+      status: "eligible",
+      reason: "This pair qualifies.",
+      wallet: WALLET_A,
+      campaignNumber: 7,
+      creditAmount: "10",
+      pair: sourcePair,
+      release: null,
+    },
+    requestedPair: pair("1"),
+    config: liveConfig,
+  });
+  const response = {
+    status: "released",
+    wallet: WALLET_A,
+    campaignNumber: 7,
+    creditAmount: "10",
+    pair: sourcePair,
+    release: claimedResponse().release,
+  };
+
+  assert.equal(validatePairReleaseResponse({
+    response,
+    wallet: WALLET_A,
+    eligibility,
+    config: liveConfig,
+  }).pair.successful.mintedTokenIds[0], "42");
+  assert.throws(
+    () => validatePairReleaseResponse({
+      response: { ...response, pair: { ...sourcePair, valueWei: "2" } },
+      wallet: WALLET_A,
+      eligibility,
+      config: liveConfig,
+    }),
+    (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
+  );
+  for (const badRelease of [
+    { ...response.release, blockNumber: -1 },
+    { ...response.release, actionId: `0x${"0".repeat(64)}` },
+    { ...response.release, successQueryId: response.release.failureQueryId },
+    { ...response.release, relayer: "0x1234" },
+    { ...response.release, claimCount: 0 },
+  ]) {
+    assert.throws(
+      () => validatePairReleaseResponse({
+        response: { ...response, release: badRelease },
+        wallet: WALLET_A,
+        eligibility,
+        config: liveConfig,
+      }),
+      (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
+    );
+  }
 });
 
 test("same-campaign featured rotation rejects stale evidence, release, and closures", () => {
