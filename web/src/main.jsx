@@ -20,17 +20,33 @@ import {
 import {
   checkRecoveryEligibility,
   releaseRecoveryWhenReady,
+  recoveryClockNow,
+  recoveryWallClockNow,
   requestRecoveryChallenge,
   TemporaryUnavailableError,
   wakeRecoveryConfig,
 } from "./api.mjs";
+import {
+  createWalletOperationGuard,
+  isRecoveryChallengeExpired,
+  isRecoveryResponseMismatch,
+  recoveryCampaignsMatch,
+  recoveryRecordMatchesConfig,
+  recoveryConfigsMatch,
+  selectFeaturedRelease,
+  selectRecoveryEvidence,
+  selectVisibleRelease,
+  validateChallengeResponse,
+  validateEligibilityResponse,
+  validateRecoveryConfigResponse,
+  validateReleaseResponse,
+} from "./recovery-ui-state.mjs";
 import "./styles.css";
 
 const ETHEREUM_EXPLORER = "https://etherscan.io";
 const CREDITCOIN_EXPLORER = "https://creditcoin-testnet.blockscout.com";
 const REPOSITORY = "https://github.com/dolepee/retrycredit";
 const API_ORIGIN = (import.meta.env.VITE_RETRYCREDIT_API_ORIGIN ?? "").replace(/\/+$/, "");
-const RELEASE_STORAGE_KEY = "retrycredit-recovery-release-v1";
 const OPEN_SEA_ATTRIBUTION_SUFFIX = "0x3d958fe2";
 const CONTROLLED_LAB = Object.freeze({
   failedTransactionHash: "0x9cb81e134e33f32b702786589510948d097ae98d0ef3ffec4c631a1288a0ee07",
@@ -48,23 +64,22 @@ function App() {
   const path = usePathname();
   const previousPath = useRef(path);
   const checkedWallet = useRef("");
+  const configRef = useRef(null);
+  const walletOperations = useRef(null);
+  if (!walletOperations.current) walletOperations.current = createWalletOperationGuard();
   const [account, setAccount] = useState("");
   const [config, setConfig] = useState(null);
   const [configState, setConfigState] = useState("loading");
   const [flow, setFlow] = useState("disconnected");
   const [eligibility, setEligibility] = useState(null);
   const [featuredEligibility, setFeaturedEligibility] = useState(null);
-  const [releaseResult, setReleaseResult] = useState(readSavedRelease);
+  const [releaseResult, setReleaseResult] = useState(null);
   const [error, setError] = useState("");
   const [online, setOnline] = useState(() => navigator.onLine);
 
   const route = normalizeRoute(path);
-  const busy = ["checking", "authorizing", "proof-pending", "relay-pending"].includes(flow);
-  const visibleRelease = releaseResult?.wallet?.toLowerCase() === account.toLowerCase()
-    ? releaseResult
-    : eligibility?.release
-      ? { ...eligibility, status: "claimed" }
-      : null;
+  const busy = ["checking", "authorizing", "proof-pending"].includes(flow);
+  const visibleRelease = selectVisibleRelease({ account, config, eligibility, releaseResult });
 
   useEffect(() => {
     let active = true;
@@ -72,8 +87,9 @@ function App() {
     wakeRecoveryConfig({ apiOrigin: API_ORIGIN })
       .then((next) => {
         if (!active) return;
-        setConfig(next);
-        setConfigState(next.enabled ? "ready" : "unavailable");
+        const validated = validateRecoveryConfigResponse(next);
+        applyRecoveryConfig(validated);
+        setConfigState(validated.enabled ? "ready" : "unavailable");
       })
       .catch(() => {
         if (active) setConfigState("unavailable");
@@ -96,47 +112,53 @@ function App() {
     if (!window.ethereum) return undefined;
     window.ethereum.request({ method: "eth_accounts" }).then((items) => {
       const next = safeAddress(items?.[0]);
-      if (next) setAccount(next);
+      if (next && !walletOperations.current.currentAccount()) {
+        updateConnectedAccount(next, { resetFlow: true });
+      }
     }).catch(() => undefined);
 
     const changed = (items) => {
       const next = safeAddress(items?.[0]);
-      setAccount(next);
-      setError("");
-      if (!next) {
-        checkedWallet.current = "";
-        setEligibility(null);
-        setFlow("disconnected");
-        return;
-      }
-      if (checkedWallet.current && checkedWallet.current.toLowerCase() !== next.toLowerCase()) {
-        checkedWallet.current = "";
-        setEligibility(null);
-        setFlow("account-changed");
-      }
+      updateConnectedAccount(next, { resetFlow: true });
     };
     window.ethereum.on?.("accountsChanged", changed);
     return () => window.ethereum.removeListener?.("accountsChanged", changed);
   }, []);
 
   useEffect(() => {
-    if (releaseResult) localStorage.setItem(RELEASE_STORAGE_KEY, JSON.stringify(releaseResult));
-  }, [releaseResult]);
-
-  useEffect(() => {
-    const wallet = config?.enabled ? config.featuredCase?.wallet : "";
+    const liveConfig = config;
+    const wallet = liveConfig?.enabled ? liveConfig.featuredCase?.wallet : "";
     if (!wallet) {
       setFeaturedEligibility(null);
       return undefined;
     }
+    setFeaturedEligibility(null);
     let active = true;
     checkRecoveryEligibility({ apiOrigin: API_ORIGIN, wallet })
       .then((result) => {
-        if (active) setFeaturedEligibility(result);
+        const validated = validateEligibilityResponse({
+          response: result,
+          requestedWallet: wallet,
+          config: liveConfig,
+          expectedPair: liveConfig.featuredCase,
+        });
+        if (active && recoveryConfigsMatch(liveConfig, configRef.current)) {
+          setFeaturedEligibility(validated);
+        }
       })
       .catch(() => undefined);
     return () => { active = false; };
-  }, [config?.enabled, config?.featuredCase?.wallet]);
+  }, [
+    config?.enabled,
+    config?.poolAddress,
+    config?.campaignNumber,
+    config?.publicOrigin,
+    config?.settlement?.chainId,
+    config?.campaign?.creditAmount,
+    config?.featuredCase?.wallet,
+    config?.featuredCase?.failedTransactionHash,
+    config?.featuredCase?.successfulTransactionHash,
+  ]);
 
   useEffect(() => {
     if (previousPath.current === path) return;
@@ -154,9 +176,10 @@ function App() {
     setError("");
     try {
       const next = await wakeRecoveryConfig({ apiOrigin: API_ORIGIN });
-      setConfig(next);
-      setConfigState(next.enabled ? "ready" : "unavailable");
-      return next;
+      const validated = validateRecoveryConfigResponse(next);
+      applyRecoveryConfig(validated);
+      setConfigState(validated.enabled ? "ready" : "unavailable");
+      return validated;
     } catch (nextError) {
       setConfigState("unavailable");
       setError(cleanError(nextError));
@@ -164,34 +187,90 @@ function App() {
     }
   }
 
+  async function refreshAfterResponseMismatch(nextError, operation) {
+    const next = await refreshConfig();
+    if (!walletOperations.current.isCurrent(operation)) return;
+    if (!next?.enabled) {
+      setFlow("service-unavailable");
+      return;
+    }
+    setError(cleanError(nextError));
+    setFlow("retryable-error");
+  }
+
+  function applyRecoveryConfig(next) {
+    const previous = configRef.current;
+    const campaignChanged = Boolean(previous && !recoveryCampaignsMatch(previous, next));
+    const featuredChanged = Boolean(previous && !recoveryConfigsMatch(previous, next));
+    configRef.current = next;
+    setConfig(next);
+    if (featuredChanged) setFeaturedEligibility(null);
+    if (!campaignChanged) return;
+
+    const connected = walletOperations.current.currentAccount();
+    walletOperations.current.begin(connected);
+    checkedWallet.current = "";
+    setEligibility(null);
+    setReleaseResult(null);
+    setError("");
+    setFlow(connected ? "campaign-changed" : "disconnected");
+  }
+
+  function updateConnectedAccount(next, { resetFlow = false } = {}) {
+    const guard = walletOperations.current;
+    const previous = guard.currentAccount();
+    const didChange = guard.setAccount(next);
+    setAccount(next);
+    if (!didChange || !resetFlow) return didChange;
+
+    checkedWallet.current = "";
+    setEligibility(null);
+    setReleaseResult(null);
+    setError("");
+    setFlow(next ? (previous ? "account-changed" : "connected") : "disconnected");
+    return didChange;
+  }
+
   async function connectWallet() {
     if (!window.ethereum) throw new Error("Install an EVM wallet to check this Ethereum address.");
     const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
     const next = safeAddress(accounts?.[0]);
     if (!next) throw new Error("The wallet did not return an Ethereum address.");
-    setAccount(next);
+    updateConnectedAccount(next, { resetFlow: true });
     return next;
   }
 
   async function checkWallet(wallet) {
     if (!online) return;
+    const operation = walletOperations.current.begin(wallet);
+    if (!walletOperations.current.isCurrent(operation)) return;
     setFlow("checking");
     setError("");
     try {
       const liveConfig = configState === "ready" ? config : await refreshConfig();
+      if (!walletOperations.current.isCurrent(operation)) return;
       if (!liveConfig?.enabled) throw new TemporaryUnavailableError();
-      const result = await checkRecoveryEligibility({ apiOrigin: API_ORIGIN, wallet });
-      checkedWallet.current = result.wallet ?? wallet;
+      const response = await checkRecoveryEligibility({ apiOrigin: API_ORIGIN, wallet });
+      if (!walletOperations.current.isCurrent(operation)) return;
+      const result = validateEligibilityResponse({ response, requestedWallet: wallet, config: liveConfig });
+      checkedWallet.current = result.wallet;
       setEligibility(result);
       if (result.status === "claimed") {
-        setReleaseResult({ ...result, status: "claimed" });
+        setReleaseResult(result);
         setFlow("already-claimed");
       } else if (result.eligible && result.status === "eligible") {
+        setReleaseResult(null);
         setFlow("eligible");
       } else {
+        setReleaseResult(null);
         setFlow("ineligible");
       }
     } catch (nextError) {
+      if (!walletOperations.current.isCurrent(operation)) return;
+      if (isRecoveryResponseMismatch(nextError)) {
+        await refreshAfterResponseMismatch(nextError, operation);
+        return;
+      }
       setFlow(nextError instanceof TemporaryUnavailableError ? "service-unavailable" : "retryable-error");
       setError(cleanError(nextError));
     }
@@ -204,30 +283,74 @@ function App() {
       setFlow("account-changed");
       return;
     }
+    const liveConfig = configRef.current;
+    const liveEligibility = eligibility;
+    if (!liveConfig?.enabled) {
+      setFlow("service-unavailable");
+      return;
+    }
+    if (!recoveryRecordMatchesConfig(liveEligibility, liveConfig)) {
+      setEligibility(null);
+      setReleaseResult(null);
+      setFlow("campaign-changed");
+      return;
+    }
+    const operation = walletOperations.current.begin(account);
+    if (!walletOperations.current.isCurrent(operation)) return;
     setError("");
     try {
       setFlow("authorizing");
-      const challenge = await requestRecoveryChallenge({ apiOrigin: API_ORIGIN, wallet: account });
+      const authorizationStartedAtMs = recoveryClockNow();
+      const authorizationStartedAtWallMs = recoveryWallClockNow();
+      const challengeResponse = await requestRecoveryChallenge({ apiOrigin: API_ORIGIN, wallet: account });
+      if (!walletOperations.current.isCurrent(operation)) return;
+      const challenge = validateChallengeResponse({
+        response: challengeResponse,
+        wallet: account,
+        eligibility: liveEligibility,
+        config: liveConfig,
+        currentOrigin: window.location.origin,
+      });
       const signature = await window.ethereum.request({
         method: "personal_sign",
         params: [hexlify(toUtf8Bytes(challenge.message)), account],
       });
+      if (!walletOperations.current.isCurrent(operation)) return;
       setFlow("proof-pending");
-      const released = await releaseRecoveryWhenReady({
+      const releaseResponse = await releaseRecoveryWhenReady({
         apiOrigin: API_ORIGIN,
+        authorizationStartedAtMs,
+        authorizationStartedAtWallMs,
         wallet: account,
         message: challenge.message,
         issuedAt: challenge.issuedAt,
         expiresAt: challenge.expiresAt,
         signature,
-        onPending: ({ code }) => setFlow(code?.includes("RELAY") ? "relay-pending" : "proof-pending"),
+        onPending: () => {
+          if (walletOperations.current.isCurrent(operation)) setFlow("proof-pending");
+        },
+      });
+      if (!walletOperations.current.isCurrent(operation)) return;
+      const released = validateReleaseResponse({
+        response: releaseResponse,
+        wallet: account,
+        eligibility: liveEligibility,
+        config: liveConfig,
       });
       setReleaseResult(released);
       setEligibility((value) => value ? { ...value, ...released, eligible: false } : released);
       setFlow(released.status === "claimed" ? "already-claimed" : "released");
       refreshConfig();
     } catch (nextError) {
-      if (nextError?.code === 4001 || nextError?.code === "ACTION_REJECTED") {
+      if (!walletOperations.current.isCurrent(operation)) return;
+      if (isRecoveryResponseMismatch(nextError)) {
+        await refreshAfterResponseMismatch(nextError, operation);
+        return;
+      } else if (isRecoveryChallengeExpired(nextError)) {
+        setError(cleanError(nextError));
+        setFlow("eligible");
+        return;
+      } else if (nextError?.code === 4001 || nextError?.code === "ACTION_REJECTED") {
         setError("The signature request was closed. Nothing was released; you can authorize again.");
       } else {
         setError(cleanError(nextError));
@@ -434,15 +557,28 @@ function ReleaseReceipt({ result }) {
 }
 
 function EvidenceBand({ config, eligibility, featuredEligibility, releaseResult }) {
-  const pair = eligibility?.pair ?? releaseResult?.pair ?? featuredEligibility?.pair ?? config?.featuredCase ?? {};
-  const release = releaseResult?.release ?? eligibility?.release ?? featuredEligibility?.release;
-  const wallet = eligibility?.wallet ?? releaseResult?.wallet ?? featuredEligibility?.wallet ?? config?.featuredCase?.wallet;
+  const evidence = selectRecoveryEvidence({
+    config,
+    eligibility,
+    releaseResult,
+    featuredEligibility,
+    featuredCase: config?.featuredCase,
+  });
+  const { pair, release, wallet } = evidence;
+  const paymentValue = formatEthValue(pair?.valueWei);
+  const mintPrice = formatEthValue(pair?.mintPriceWei);
   return <section className="evidence-band" aria-labelledby="evidence-heading">
     <header>
       <h2 id="evidence-heading">One wallet. One ordered source pair. One fixed release.</h2>
       <p>Human result first; receipts stay attached to the result they establish.</p>
     </header>
-    <div className="evidence-sequence">
+    {!pair ? <div className="evidence-empty">
+      <Radio aria-hidden="true" />
+      <div>
+        <strong>{eligibility ? "No qualifying pair is attached to this wallet result." : "No public source pair is available yet."}</strong>
+        <p>{eligibility ? "RetryCredit does not borrow another wallet’s receipts. Inspect the separate public case from the eligibility desk." : "The evidence sequence will appear when the recovery service publishes a verified pair."}</p>
+      </div>
+    </div> : <div className="evidence-sequence">
       <EvidenceStep
         kind="failed"
         number="A"
@@ -451,8 +587,9 @@ function EvidenceBand({ config, eligibility, featuredEligibility, releaseResult 
         hash={pair.failedTransactionHash}
         chain="ethereum"
         facts={[
-          pair.failed?.blockNumber && `Block ${pair.failed.blockNumber}`,
+          pair.failed?.blockNumber !== undefined && `Block ${pair.failed.blockNumber}`,
           pair.failed?.nonce !== undefined && `Nonce ${pair.failed.nonce}`,
+          paymentValue && `Payment value ${paymentValue}`,
           wallet && `Source ${short(wallet)}`,
         ]}
       />
@@ -465,9 +602,12 @@ function EvidenceBand({ config, eligibility, featuredEligibility, releaseResult 
         hash={pair.successfulTransactionHash}
         chain="ethereum"
         facts={[
-          pair.successful?.blockNumber && `Block ${pair.successful.blockNumber}`,
+          pair.successful?.blockNumber !== undefined && `Block ${pair.successful.blockNumber}`,
           pair.successful?.nonce !== undefined && `Nonce ${pair.successful.nonce}`,
-          pair.successful?.mintedTokenIds?.length && `Token ${pair.successful.mintedTokenIds.join(", ")}`,
+          pair.quantity !== undefined && `Quantity ${pair.quantity}`,
+          mintPrice && `Unit price ${mintPrice}`,
+          pair.nftContract && `Collection ${pair.nftContract}`,
+          formatMintOutcome(pair),
         ]}
       />
       <div className="sequence-link" aria-hidden="true"><ArrowRight /></div>
@@ -479,12 +619,12 @@ function EvidenceBand({ config, eligibility, featuredEligibility, releaseResult 
         hash={release?.transactionHash}
         chain="creditcoin"
         facts={[
-          formatCredit(releaseResult?.creditAmount ?? eligibility?.creditAmount ?? featuredEligibility?.creditAmount ?? config?.campaign?.creditAmount),
-          release?.blockNumber && `Block ${release.blockNumber}`,
+          formatCredit(evidence.creditAmount ?? config?.campaign?.creditAmount),
+          release?.blockNumber !== undefined && `Block ${release.blockNumber}`,
           release ? "Replay consumed" : "Eligibility required",
         ]}
       />
-    </div>
+    </div>}
   </section>;
 }
 
@@ -501,11 +641,12 @@ function EvidenceStep({ chain, facts, hash, kind, number, subtitle, title }) {
 
 function CasesPage({ config, eligibility, featuredEligibility, releaseResult }) {
   const featured = config?.featuredCase;
-  const featuredRelease = (releaseResult?.wallet && featured?.wallet && releaseResult.wallet.toLowerCase() === featured.wallet.toLowerCase())
-    ? releaseResult.release
-    : (eligibility?.wallet && featured?.wallet && eligibility.wallet.toLowerCase() === featured.wallet.toLowerCase())
-      ? eligibility.release
-      : featuredEligibility?.release;
+  const featuredRelease = selectFeaturedRelease({
+    config,
+    eligibility,
+    releaseResult,
+    featuredEligibility,
+  });
   return <div className="route-page cases-page">
     <PageHeading
       title="Cases stay separated by what they actually prove."
@@ -517,7 +658,7 @@ function CasesPage({ config, eligibility, featuredEligibility, releaseResult }) 
         <h2 id="public-case-heading">{featuredRelease ? "Public recovered case" : "Public recovery case"}</h2>
         <span className={featuredRelease ? "case-state released" : "case-state observed"}>{featuredRelease ? "Released" : "Source pair verified"}</span>
       </header>
-      {featured ? <div className="expanded-case">
+      {featured ? <div className={`expanded-case${featuredRelease ? " has-release" : ""}`}>
         <div className="case-result">
           <strong>{featuredRelease ? "The source wallet received its fixed Creditcoin release." : "This wallet has a public failed-to-completed SeaDrop pair."}</strong>
           <p>{featuredRelease ? "The release transaction is bound to the same Ethereum source address." : "Eligibility and any release remain separate service states; the source facts alone are not adoption."}</p>
@@ -645,17 +786,18 @@ function deskCopy(flow, eligibility, releaseResult) {
   const copies = {
     "loading-config": ["Opening the campaign file", "Loading funding, capacity, and claim-window terms from the recovery service."],
     disconnected: ["Check this wallet", "Connect the Ethereum wallet that made both mint attempts. Checking is read-only."],
+    connected: ["Wallet connected", "Check this Ethereum address against the live campaign. The eligibility check is read-only."],
     checking: ["Reading the source history", "RetryCredit is looking for the exact failed-to-completed pair inside the fixed campaign window."],
     ineligible: ["This wallet is outside this campaign", eligibility?.reason || "No qualifying pair was found in the bounded source window. The public case remains available to inspect."],
     eligible: ["This wallet can recover", `The source pair qualifies for ${formatCredit(eligibility?.creditAmount)}. One personal signature authorizes this fixed campaign release.`],
     authorizing: ["Authorization requested", "Confirm the bounded personal signature in your wallet. It cannot move Ethereum assets or choose another recipient."],
     "proof-pending": ["Building the native batch", "Attestcoin is proving the ordered Ethereum pair. RetryCredit will relay the fixed release when it is ready."],
-    "relay-pending": ["Relaying on Creditcoin", "The source pair is ready and the one-time Creditcoin release is being submitted."],
     released: ["Credit reached the source wallet", `${formatCredit(releaseResult?.creditAmount)} was released once on Creditcoin Testnet.`],
     "already-claimed": ["This wallet already recovered", "The campaign recognizes the prior release and will not pay the same wallet or pair again."],
     "service-unavailable": ["The recovery service is unavailable", "Your wallet has not lost eligibility. Retry the service without reconnecting or changing networks."],
     "retryable-error": ["The action did not finish", "Your connected wallet and eligibility state are preserved. Read the notice, then retry the same step."],
     "account-changed": ["The connected wallet changed", "Check the new address before authorizing. RetryCredit will never reuse another wallet’s eligibility result."],
+    "campaign-changed": ["The live campaign changed", "RetryCredit refreshed the campaign context. Check this wallet again before authorizing."],
     offline: ["You are offline", "Reconnect to the internet, then retry. No release request was sent while this browser was offline."],
   };
   const [title, body] = copies[flow] ?? copies.disconnected;
@@ -666,17 +808,18 @@ function primaryLabel(flow, configState) {
   if (configState === "loading") return "Loading live campaign";
   const labels = {
     disconnected: "Connect wallet and check",
+    connected: "Check wallet eligibility",
     checking: "Checking Ethereum history",
     ineligible: "Check this wallet again",
     eligible: "Authorize fixed recovery",
     authorizing: "Confirm in your wallet",
     "proof-pending": "Building native proof",
-    "relay-pending": "Relaying fixed credit",
     released: "Credit released",
     "already-claimed": "Already claimed",
     "service-unavailable": "Retry recovery service",
     "retryable-error": "Try the same step again",
     "account-changed": "Check this wallet",
+    "campaign-changed": "Check against new campaign",
     offline: "Offline",
   };
   return labels[flow] ?? "Check wallet eligibility";
@@ -685,8 +828,8 @@ function primaryLabel(flow, configState) {
 function stateIcon(flow) {
   if (flow === "released" || flow === "already-claimed") return <Check />;
   if (flow === "eligible") return <ShieldCheck />;
-  if (["checking", "authorizing", "proof-pending", "relay-pending", "loading-config"].includes(flow)) return <LoaderCircle className="spin" />;
-  if (["ineligible", "retryable-error", "service-unavailable", "offline"].includes(flow)) return <AlertCircle />;
+  if (["checking", "authorizing", "proof-pending", "loading-config"].includes(flow)) return <LoaderCircle className="spin" />;
+  if (["ineligible", "retryable-error", "service-unavailable", "offline", "campaign-changed"].includes(flow)) return <AlertCircle />;
   return <Wallet />;
 }
 
@@ -698,6 +841,24 @@ function formatCredit(value) {
   } catch {
     return `${value} tCTC`;
   }
+}
+
+function formatEthValue(value) {
+  if (value === undefined || value === null || value === "") return null;
+  try {
+    return `${trimDecimal(formatEther(BigInt(value)))} ETH`;
+  } catch {
+    return null;
+  }
+}
+
+function formatMintOutcome(pair) {
+  const tokenIds = pair?.successful?.mintedTokenIds;
+  if (tokenIds?.length) return `NFT outcome · ${tokenIds.length === 1 ? "token" : "tokens"} ${tokenIds.join(", ")}`;
+  if (pair?.quantity !== undefined) {
+    return `NFT outcome · ${pair.quantity} ${String(pair.quantity) === "1" ? "token" : "tokens"} minted`;
+  }
+  return "NFT outcome · mint event verified";
 }
 
 function formatCapacity(capacity) {
@@ -762,15 +923,6 @@ function short(value) {
 function safeAddress(value) {
   if (!value) return "";
   try { return getAddress(value); } catch { return ""; }
-}
-
-function readSavedRelease() {
-  try {
-    const value = JSON.parse(localStorage.getItem(RELEASE_STORAGE_KEY) ?? "null");
-    return value?.wallet && value?.release ? value : null;
-  } catch {
-    return null;
-  }
 }
 
 function normalizeRoute(path) {

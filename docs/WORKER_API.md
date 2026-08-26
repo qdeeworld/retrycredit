@@ -2,7 +2,7 @@
 
 The active API operates one pre-funded Recovery Campaign over a closed set of paid Ethereum-mainnet SeaDrop failure-to-completion pairs. It re-reads both source transactions and receipts, authenticates the deployed Creditcoin bindings, asks the source wallet for a five-minute offchain consent, builds one pair-local Attestcoin batch, simulates the immutable campaign, and relays the fixed release.
 
-The wallet does not submit a transaction, switch networks, deposit an asset, or choose a destination. The contract derives the beneficiary from the proven Ethereum sender. Earlier Sepolia/Uniswap V3 endpoints remain available for rollback and archived evidence.
+The wallet does not submit a transaction, switch networks, deposit an asset, or choose a destination. The contract derives the beneficiary from the proven Ethereum sender. Earlier Sepolia/Uniswap V3 endpoints remain available as an API-level predecessor and for archived evidence. The current Recovery Campaign interface does not fall back to those routes automatically, so their availability alone is not a product rollback.
 
 ## Run locally
 
@@ -48,7 +48,20 @@ npm run app:dev
 
 `ETHEREUM_RPC_URLS` is used by the Recovery Campaign to re-read mainnet source data and also supports archived RuleDrop compatibility endpoints. `RULEDROP_POOL_ADDRESS` and `RULEDROP_POOL_VERSION` are legacy-only. The frontend build uses `VITE_RETRYCREDIT_API_ORIGIN` to select the public API origin.
 
-The reviewed release also carries the active pool and campaign as source defaults. They are selected only when recovery is explicitly enabled with no address override, or when the existing public V3 service runs at the exact production origin with no recovery override. This keeps the isolated production service reproducible without weakening partial-configuration checks. Set `RETRYCREDIT_RECOVERY_ENABLED=false` to disable recovery immediately without disabling the legacy V3 service.
+The reviewed release also carries the active pool and campaign as source defaults. They are selected only when recovery is explicitly enabled with no address override, or when the existing public V3 service runs at the exact production origin with no recovery override. This keeps the isolated production service reproducible without weakening partial-configuration checks. Set `RETRYCREDIT_RECOVERY_ENABLED=false` to disable recovery immediately without disabling the legacy V3 API routes. The V2 interface will report that recovery is unavailable; it does not rebind itself to the V3 journey.
+
+## Hosting and rollback
+
+The production API authority is the isolated Render service `retrycredit-api` (`srv-da5n322jobas73f8tp70`) at <https://retrycredit-api.onrender.com>. The similarly named Blueprint-created service `retrycredit-api-6fs3` (`srv-da5nh93m8hqs73da7170`) is a separate, non-authoritative deployment. The checked-in `render.yaml` currently describes that duplicate rather than the stable production service and must not be treated as proof of a production deploy. Its Blueprint relationship must be reconciled in authenticated Render controls before the manifest can become deployment authority.
+
+Use two levels of rollback:
+
+1. For immediate Recovery Campaign containment, set `RETRYCREDIT_RECOVERY_ENABLED=false` on the stable API service and redeploy its current reviewed build. This preserves the V3 API routes but leaves the V2 interface truthfully unavailable.
+2. To restore a previous public product journey, roll the stable Render API back to the intended reviewed deploy and roll Cloudflare Pages back to the matching reviewed frontend deployment. The API and frontend must be treated as one release pair because the current interface calls only the V2 recovery routes.
+
+For the config-bound consent release, deploy and verify the stable Render API first, including `enabled: true`, `waking: false`, and the canonical `publicOrigin`; only then publish the matching Cloudflare frontend. The older frontend safely ignores the added config field, while the new frontend intentionally fails closed against an older API that does not provide it. Roll back in the reverse order: frontend first, API second.
+
+After either operation, verify the exact deployed source, `GET /health`, both config routes, production-origin CORS, the public app, and the intended disabled or ready Recovery Campaign state. A provider rollback, a healthy predecessor API, or a source revert is not complete until the public interface and API describe the same release.
 
 ## HTTP behavior
 
@@ -56,7 +69,9 @@ The reviewed release also carries the active pool and campaign as source default
 - Errors use `{ "error": { "code", "message", "requestId" } }`.
 - Every response includes `x-request-id` for operational correlation.
 - Browser CORS emits the one configured `ALLOWED_ORIGIN`; CORS is not authentication and does not block non-browser clients.
-- Recovery release operations are serialized in-process and replay-safe against campaign-scoped onchain state. A concurrent or repeated request returns the existing current-campaign release instead of sending a second credit.
+- Recovery release operations are serialized in-process and replay-safe against campaign-scoped onchain state.
+- Existing release receipts are searched in `10,000`-block chunks across the latest `250,000` Creditcoin blocks. Within that supported window, a concurrent or repeated request returns the existing current-campaign release instead of sending a second credit.
+- If the campaign records a wallet claim but its exact `CreditReleased` event is not discoverable inside that bounded window, the service fails closed with HTTP `503` / `RECOVERY_STATE_INCONSISTENT`. It does not reconstruct unverified evidence or send another credit.
 
 ## Routes
 
@@ -66,7 +81,7 @@ Returns process identity, Creditcoin network `102031`, legacy-service configurat
 
 ### `GET /api/recovery/config`
 
-Returns a stable disabled/waking shape until recovery is ready, then the authenticated source and settlement identities, pool/verifier/predicate addresses, campaign number, immutable terms, live capacity, featured public case, and discovery size. The service authenticates contract bytecode and all native/source bindings before entering `ready`.
+Returns a stable disabled/waking shape until recovery is ready, then the canonical public origin, authenticated source and settlement identities, pool/verifier/predicate addresses, campaign number, immutable terms, live capacity, featured public case, and discovery size. The browser uses that origin and the other returned identities to reconstruct the exact five-minute consent before opening `personal_sign`. The service authenticates contract bytecode and all native/source bindings before entering `ready`.
 
 ### `POST /api/recovery/eligibility`
 
@@ -76,7 +91,7 @@ Request:
 { "wallet": "0x..." }
 ```
 
-Returns `eligible`, a stable status (`eligible`, `claimed`, `not-found`, `closed`, `full`, or `replayed`), the exact source pair when known, fixed credit amount, and any current-campaign release. Discovery is a closed three-address index; live Ethereum transactions, receipts, rule checks, and current campaign state remain authority.
+Returns `eligible`, a stable status (`eligible`, `claimed`, `not-found`, `closed`, or `full`), the exact source pair when known, fixed credit amount, and any current-campaign release. Discovery is a closed three-address index; live Ethereum transactions, receipts, rule checks, and current campaign state remain authority.
 
 ### `POST /api/recovery/challenge`
 
@@ -105,6 +120,8 @@ Request:
 Destination fields are forbidden. After signature verification, the service requests one Attestcoin batch for the exact pair, validates block/hash/order and native transaction indexes, derives the campaign-scoped query and pair IDs, checks replay, simulates `releaseCredit`, and submits through the configured Creditcoin testnet relayer. It then verifies the exact beneficiary balance delta, event fields, campaign count/accounting, and replay markers.
 
 HTTP `425` means the recovery service is waking or the exact Attestcoin batch is not yet ready. The frontend retries only `425` with bounded backoff. Other errors are terminal for that attempt.
+
+HTTP `409` / `RECOVERY_REPLAYED` means an exact query or pair marker is already consumed in the configured campaign but no current-wallet claim resolved to an existing release. This is a release rejection, not an eligibility status. A normal repeat after a completed current-wallet release returns that existing release instead.
 
 ## Archived V3 routes
 

@@ -193,6 +193,7 @@ export class RecoveryCampaignService {
         name: "Creditcoin Testnet",
         chainId: this.config.settlementChainId,
       },
+      publicOrigin: this.publicOrigin,
       poolAddress: this.poolAddress,
       verifierAddress: infrastructure.verifierAddress,
       predicateAddress: infrastructure.predicateAddress,

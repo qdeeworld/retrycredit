@@ -7,7 +7,17 @@ export const RELEASE_REQUEST_TIMEOUT_MS = 150_000;
 export const RELEASE_RETRY_DELAY_MS = 15_000;
 export const RECOVERY_ACTION_REQUEST_TIMEOUT_MS = 30_000;
 
-const RELEASE_PENDING_MESSAGE = "Attestcoin is still finalizing. Your receipt is saved; return and retry release shortly.";
+const RECOVERY_RELEASE_PENDING_MESSAGE = "Attestcoin is still finalizing. Check the wallet again before signing a fresh authorization.";
+export const LEGACY_RELEASE_PENDING_MESSAGE = "The archived RetryCredit release is still finalizing. Retry the archived flow shortly.";
+export const RECOVERY_AUTHORIZATION_EXPIRED_MESSAGE = "The signed authorization window ended. Authorize again with a fresh signature.";
+
+export function recoveryClockNow() {
+  return globalThis.performance?.now?.() ?? Date.now();
+}
+
+export function recoveryWallClockNow() {
+  return Date.now();
+}
 
 export class TemporaryUnavailableError extends Error {
   constructor(message = TEMPORARY_UNAVAILABLE_MESSAGE) {
@@ -66,20 +76,37 @@ export async function releaseRecoveryWhenReady({
   message,
   issuedAt,
   expiresAt,
+  authorizationStartedAtMs,
+  authorizationStartedAtWallMs,
   signature,
   fetchImpl = globalThis.fetch,
   totalTimeoutMs = RELEASE_TOTAL_TIMEOUT_MS,
   requestTimeoutMs = RELEASE_REQUEST_TIMEOUT_MS,
   retryDelayMs = RELEASE_RETRY_DELAY_MS,
-  now = Date.now,
+  now = recoveryClockNow,
+  wallNow = recoveryWallClockNow,
   sleep = delay,
   onPending,
 } = {}) {
   const startedAt = now();
+  const totalDeadline = startedAt + Math.max(0, totalTimeoutMs);
+  const authorizationDeadlines = recoveryAuthorizationDeadlines({
+    authorizationStartedAtMs,
+    authorizationStartedAtWallMs,
+    issuedAt,
+    expiresAt,
+  });
   let pendingCount = 0;
 
-  while (now() - startedAt < totalTimeoutMs) {
-    const remainingMs = totalTimeoutMs - (now() - startedAt);
+  while (true) {
+    const attemptBudget = recoveryReleaseBudget({
+      authorizationDeadlines,
+      now,
+      totalDeadline,
+      wallNow,
+    });
+    const attemptTimeoutMs = Math.floor(Math.min(requestTimeoutMs, attemptBudget.remainingMs));
+    if (attemptTimeoutMs <= 0) break;
 
     try {
       return await postRecoveryJson({
@@ -87,7 +114,7 @@ export async function releaseRecoveryWhenReady({
         path: "/api/recovery/release",
         body: { wallet, message, issuedAt, expiresAt, signature },
         fetchImpl,
-        timeoutMs: Math.min(requestTimeoutMs, remainingMs),
+        timeoutMs: attemptTimeoutMs,
       });
     } catch (error) {
       if (error?.status !== 425) throw error;
@@ -95,11 +122,72 @@ export async function releaseRecoveryWhenReady({
       onPending?.({ attempt: pendingCount, code: error.code, requestId: error.requestId });
     }
 
-    const waitMs = Math.min(retryDelayMs, totalTimeoutMs - (now() - startedAt));
+    const waitBudget = recoveryReleaseBudget({
+      authorizationDeadlines,
+      now,
+      totalDeadline,
+      wallNow,
+    });
+    const waitMs = Math.floor(Math.min(retryDelayMs, waitBudget.remainingMs));
     if (waitMs > 0) await sleep(waitMs);
   }
 
-  throw new Error(RELEASE_PENDING_MESSAGE);
+  const finalBudget = recoveryReleaseBudget({
+    authorizationDeadlines,
+    now,
+    totalDeadline,
+    wallNow,
+  });
+  if (finalBudget.authorizationRemainingMs <= 0) {
+    throw recoveryAuthorizationError();
+  }
+  throw new Error(RECOVERY_RELEASE_PENDING_MESSAGE);
+}
+
+export function recoveryAuthorizationDeadlines({
+  authorizationStartedAtMs,
+  authorizationStartedAtWallMs,
+  issuedAt,
+  expiresAt,
+} = {}) {
+  const issued = Number(issuedAt);
+  const expires = Number(expiresAt);
+  const started = Number(authorizationStartedAtMs);
+  const wallStarted = Number(authorizationStartedAtWallMs);
+  if (!Number.isSafeInteger(issued) || !Number.isSafeInteger(expires) || expires <= issued) {
+    const error = new Error("The recovery challenge timestamps are invalid. Check eligibility and request a fresh authorization.");
+    error.code = "RECOVERY_CHALLENGE_INVALID";
+    throw error;
+  }
+  if (!Number.isFinite(started) || !Number.isFinite(wallStarted)) {
+    const error = new Error("The recovery authorization timing boundary is missing. Check eligibility and authorize again.");
+    error.code = "RECOVERY_CHALLENGE_INVALID";
+    throw error;
+  }
+  const lifetimeMs = (expires - issued) * 1_000;
+  return Object.freeze({
+    monotonic: started + lifetimeMs,
+    wallClock: wallStarted + lifetimeMs,
+  });
+}
+
+function recoveryReleaseBudget({ authorizationDeadlines, now, totalDeadline, wallNow }) {
+  const monotonicNow = now();
+  const wallClockNow = wallNow();
+  const authorizationRemainingMs = Math.min(
+    authorizationDeadlines.monotonic - monotonicNow,
+    authorizationDeadlines.wallClock - wallClockNow,
+  );
+  return {
+    authorizationRemainingMs,
+    remainingMs: Math.min(totalDeadline - monotonicNow, authorizationRemainingMs),
+  };
+}
+
+function recoveryAuthorizationError() {
+  const error = new Error(RECOVERY_AUTHORIZATION_EXPIRED_MESSAGE);
+  error.code = "RECOVERY_CHALLENGE_EXPIRED";
+  return error;
 }
 
 // Kept for the previous Uniswap public-lab fallback.
@@ -140,7 +228,7 @@ export async function releaseWhenReady({
     if (waitMs > 0) await sleep(waitMs);
   }
 
-  throw new Error(RELEASE_PENDING_MESSAGE);
+  throw new Error(LEGACY_RELEASE_PENDING_MESSAGE);
 }
 
 export async function requestJson({ apiOrigin = "", path, options, fetchImpl = globalThis.fetch }) {
