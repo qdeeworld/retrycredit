@@ -53,6 +53,8 @@ export const RECOVERY_DEFAULTS = Object.freeze({
   maximumClockSkewSeconds: 30,
   proofTimeoutMs: 120_000,
   releaseGasLimit: 6_000_000n,
+  releaseLogChunkBlocks: 10_000,
+  releaseLogLookbackBlocks: 250_000,
 });
 
 const DEFAULT_CREDITCOIN_RPC = "https://rpc.cc3-testnet.creditcoin.network";
@@ -142,7 +144,27 @@ export class RecoveryCampaignService {
     );
     this.pairResolver = pairResolver;
     this.now = now;
-    this.config = { ...RECOVERY_DEFAULTS, ...config };
+    const mergedConfig = { ...RECOVERY_DEFAULTS, ...config };
+    const releaseLogChunkBlocks = requirePositiveInteger(
+      mergedConfig.releaseLogChunkBlocks,
+      "release log chunk blocks",
+    );
+    const releaseLogLookbackBlocks = requirePositiveInteger(
+      mergedConfig.releaseLogLookbackBlocks,
+      "release log lookback blocks",
+    );
+    if (
+      releaseLogChunkBlocks > 50_000
+      || releaseLogLookbackBlocks < releaseLogChunkBlocks
+      || releaseLogLookbackBlocks > 1_000_000
+    ) {
+      throw new WorkerError(
+        "INVALID_RECOVERY_CONFIGURATION",
+        "Recovery release log bounds are invalid.",
+        500,
+      );
+    }
+    this.config = { ...mergedConfig, releaseLogChunkBlocks, releaseLogLookbackBlocks };
     this.infrastructurePromise = null;
     this.releaseFlights = new Map();
     this.releaseQueue = Promise.resolve();
@@ -546,8 +568,23 @@ export class RecoveryCampaignService {
   async #releaseEvents(wallet) {
     try {
       const filter = this.pool.filters.CreditReleased(this.campaignNumber, wallet);
-      const events = await this.pool.queryFilter(filter, 0, "latest");
-      return events.map((event) => serializeReleaseEvent(event, this.poolAddress));
+      const latestBlock = requireSafeUint(
+        await this.ccProvider.getBlockNumber(),
+        "latest Creditcoin block number",
+      );
+      const floor = Math.max(0, latestBlock - this.config.releaseLogLookbackBlocks + 1);
+      let toBlock = latestBlock;
+
+      while (toBlock >= floor) {
+        const fromBlock = Math.max(floor, toBlock - this.config.releaseLogChunkBlocks + 1);
+        const events = await this.pool.queryFilter(filter, fromBlock, toBlock);
+        if (events.length > 0) {
+          return events.map((event) => serializeReleaseEvent(event, this.poolAddress));
+        }
+        if (fromBlock === floor) break;
+        toBlock = fromBlock - 1;
+      }
+      return [];
     } catch (error) {
       if (error instanceof WorkerError) throw error;
       throw new WorkerError(
