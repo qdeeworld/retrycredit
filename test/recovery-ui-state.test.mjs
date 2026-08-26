@@ -433,6 +433,22 @@ test("ready config requires a canonical origin, campaign amount, settlement, and
   assert.equal(validateRecoveryConfigResponse(disabled).enabled, false);
 });
 
+test("a fully claimed campaign remains a valid closed state after its deadline", () => {
+  const closed = validateRecoveryConfigResponse(config({
+    campaign: {
+      claimCount: 3,
+      remainingClaims: 0,
+      deadline: Math.floor(Date.now() / 1_000) - 1,
+      releaseState: "closed",
+      open: false,
+    },
+    capacity: { total: 3, claimed: 3, remaining: 0 },
+  }));
+
+  assert.equal(closed.campaign.releaseState, "closed");
+  assert.equal(recoveryCampaignAvailability(closed), "closed");
+});
+
 test("campaign availability fails closed from the live open flag and remaining capacity", () => {
   assert.equal(recoveryCampaignAvailability(validateRecoveryConfigResponse(config())), "open");
   assert.equal(recoveryCampaignAvailability(validateRecoveryConfigResponse(config({

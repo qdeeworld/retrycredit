@@ -132,8 +132,8 @@ export function recoveryCampaignAvailability(config) {
   const deadline = Number(config.campaign.deadline);
   const deadlinePassed = Number.isSafeInteger(deadline)
     && Math.floor(Date.now() / 1_000) > deadline;
-  if (remaining === 0) return "full";
-  if (deadlinePassed) return "closed";
+  if (config.campaign.releaseState === "closed" || deadlinePassed) return "closed";
+  if (config.campaign.releaseState === "full" || remaining === 0) return "full";
   if (config.contractVersion === "v2" && config?.lineage?.releasesUnlocked === false) {
     return "continuation-waiting";
   }
@@ -233,7 +233,8 @@ export function validateRecoveryConfigResponse(response) {
     || campaignClaimCount !== claimedCapacity
     || campaignRemainingClaims !== remainingCapacity
     || (remainingCapacity === 0 && response.campaign.open)
-    || (campaignReleaseState === "full") !== (remainingCapacity === 0)
+    || (campaignReleaseState === "full" && remainingCapacity !== 0)
+    || (remainingCapacity === 0 && !["full", "closed"].includes(campaignReleaseState))
     || (campaignReleaseState === "release-unlocked") !== response.campaign.open
     || (campaignReleaseState === "continuation-waiting" && (
       contractVersion !== "v2"
