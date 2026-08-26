@@ -89,6 +89,7 @@ test("configuration authenticates every binding and serializes campaign capacity
   assert.equal(config.poolAddress, poolAddress);
   assert.equal(config.verifierAddress, verifierAddress);
   assert.equal(config.predicateAddress, predicateAddress);
+  assert.equal(config.publicOrigin, "https://retrycredit.example");
   assert.equal(config.campaignNumber, 7);
   assert.equal(config.campaign.creditAmount, parseEther("0.01").toString());
   assert.deepEqual(config.capacity, { total: 3, claimed: 0, remaining: 3 });

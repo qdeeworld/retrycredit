@@ -11,6 +11,14 @@ This page records the active Recovery Campaign contracts and exact public-chain 
 
 This is a founder-funded testnet recovery pilot. Ethereum source receipts are real historical mainnet transactions; the released asset is Creditcoin testnet CTC. The deployment is not insurance, compensation, exact gas reimbursement, wallet-owner consent, or independent adoption.
 
+## Hosting authority and rollback boundary
+
+The production API authority is the isolated Render service `retrycredit-api` (`srv-da5n322jobas73f8tp70`) at <https://retrycredit-api.onrender.com>. The Blueprint-created `retrycredit-api-6fs3` service (`srv-da5nh93m8hqs73da7170`) is a separate duplicate whose observed `main` deployments fail; it is not the production API. The checked-in `render.yaml` currently describes that duplicate and is therefore not deployment authority. Reconcile the duplicate and Blueprint ownership through authenticated Render controls before using the manifest as release evidence.
+
+The public V2 interface calls only the Recovery Campaign routes. Setting `RETRYCREDIT_RECOVERY_ENABLED=false` on the stable API is a safe containment switch and leaves the archived V3 API routes running, but it does not restore the previous V3 interface. A full product rollback requires a reviewed Render API deploy and its matching reviewed Cloudflare Pages frontend deployment. Verify the exact source, API health and config, production-origin CORS, public app, and Recovery Campaign state after rollback; do not declare parity from either provider in isolation.
+
+Release order is API first, frontend second: verify the stable Render config exposes the canonical `publicOrigin` before publishing the config-bound frontend. Rollback order is frontend first, API second. This preserves compatibility because the prior frontend ignores the new field, while the hardened frontend deliberately rejects a prior config that cannot anchor the exact consent text.
+
 ## Active contracts
 
 | Contract | Address | Deployment transaction |

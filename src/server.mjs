@@ -363,6 +363,7 @@ function unavailableRecoveryConfig(waking, service = null) {
       name: "Creditcoin Testnet",
       chainId: RECOVERY_DEFAULTS.settlementChainId,
     },
+    publicOrigin: service?.publicOrigin ?? null,
     poolAddress: service?.poolAddress ?? null,
     verifierAddress: null,
     predicateAddress: null,

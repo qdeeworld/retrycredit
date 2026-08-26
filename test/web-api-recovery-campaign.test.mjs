@@ -95,6 +95,7 @@ test("disabled recovery config is shape-stable and CORS applies to GET and prefl
     const body = await response.json();
     assert.equal(body.enabled, false);
     assert.equal(body.waking, false);
+    assert.equal(body.publicOrigin, null);
     assert.equal(body.poolAddress, null);
     assert.equal(body.campaign, null);
     assert.equal(body.rule, null);
@@ -133,7 +134,7 @@ test("ready API routes preserve the fixed recovery response contract", async () 
   const service = {
     async configuration() {
       calls.push(["configuration"]);
-      return { enabled: true, waking: false, campaignNumber: 7 };
+      return { enabled: true, waking: false, publicOrigin: origin, campaignNumber: 7 };
     },
     async eligibility(input) {
       calls.push(["eligibility", input]);
@@ -152,7 +153,9 @@ test("ready API routes preserve the fixed recovery response contract", async () 
   await withServer({ state: "ready", service, error: null }, async (base) => {
     const config = await fetch(`${base}/api/recovery/config`);
     assert.equal(config.status, 200);
-    assert.equal((await config.json()).campaignNumber, 7);
+    const configBody = await config.json();
+    assert.equal(configBody.campaignNumber, 7);
+    assert.equal(configBody.publicOrigin, origin);
 
     const eligibility = await post(base, "/api/recovery/eligibility", { wallet });
     assert.equal(eligibility.status, 200);

@@ -3,11 +3,12 @@ import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
 const root = new URL("../", import.meta.url);
-const [html, app, styles, api, gitignore, redirects] = await Promise.all([
+const [html, app, styles, api, uiState, gitignore, redirects] = await Promise.all([
   readFile(new URL("web/index.html", root), "utf8"),
   readFile(new URL("web/src/main.jsx", root), "utf8"),
   readFile(new URL("web/src/styles.css", root), "utf8"),
   readFile(new URL("web/src/api.mjs", root), "utf8"),
+  readFile(new URL("web/src/recovery-ui-state.mjs", root), "utf8"),
   readFile(new URL(".gitignore", root), "utf8"),
   readFile(new URL("web/public/_redirects", root), "utf8"),
 ]);
@@ -51,30 +52,55 @@ test("Recovery leads with campaign truth and one source-wallet action", () => {
   assert.match(app, /NFT mint completed/);
   assert.match(app, /Fixed credit released/);
   assert.match(app, /config\?\.featuredCase/);
-  assert.match(app, /eligibility\?\.pair/);
+  assert.match(app, /selectRecoveryEvidence\(\{/);
+  assert.match(app, /pair\?\.valueWei/);
+  assert.match(app, /pair\?\.mintPriceWei/);
+  assert.match(app, /pair\.quantity/);
+  assert.match(app, /pair\.nftContract/);
+  assert.match(app, /formatMintOutcome\(pair\)/);
+  assert.match(uiState, /if \(currentEligibility !== null && currentEligibility !== undefined\)/);
+  assert.match(uiState, /if \(!hasPairIdentity\(record\?\.pair\)\) return emptyEvidence\(source\)/);
 });
 
 test("the wallet desk includes every required resilient state", () => {
   for (const state of [
     "loading-config",
     "disconnected",
+    "connected",
     "checking",
     "ineligible",
     "eligible",
     "authorizing",
     "proof-pending",
-    "relay-pending",
     "released",
     "already-claimed",
     "service-unavailable",
     "retryable-error",
     "account-changed",
+    "campaign-changed",
     "offline",
   ]) assert.match(app, new RegExp(`"${state}"`));
 
   assert.match(app, /role="status" aria-live="polite" aria-atomic="true"/);
   assert.match(app, /role="alert"/);
   assert.match(app, /checkedWallet\.current\.toLowerCase\(\) !== account\.toLowerCase\(\)/);
+  assert.match(app, /updateConnectedAccount\(next, \{ resetFlow: true \}\)/);
+  assert.match(app, /walletOperations\.current\.isCurrent\(operation\)/);
+  assert.match(app, /validateEligibilityResponse\(\{/);
+  assert.match(app, /validateChallengeResponse\(\{/);
+  assert.match(app, /validateReleaseResponse\(\{/);
+  assert.match(app, /validateRecoveryConfigResponse\(next\)/);
+  assert.match(app, /currentOrigin: window\.location\.origin/);
+  assert.match(app, /selectFeaturedRelease\(\{/);
+  assert.match(app, /recoveryCampaignsMatch\(previous, next\)/);
+  assert.match(app, /recoveryConfigsMatch\(liveConfig, configRef\.current\)/);
+  assert.doesNotMatch(app, /RELEASE_STORAGE_KEY|readSavedRelease|localStorage\.setItem/);
+  assert.match(app, /const authorizationStartedAtMs = recoveryClockNow\(\);/);
+  assert.match(app, /const authorizationStartedAtWallMs = recoveryWallClockNow\(\);/);
+  assert.match(app, /authorizationStartedAtMs,\s+authorizationStartedAtWallMs,\s+wallet: account,/s);
+  assert.match(app, /if \(isRecoveryChallengeExpired\(nextError\)\) \{\s+setError\(cleanError\(nextError\)\);\s+setFlow\("eligible"\);/s);
+  assert.match(app, /if \(isRecoveryResponseMismatch\(nextError\)\) \{\s+await refreshAfterResponseMismatch\(nextError, operation\);/s);
+  assert.match(app, /setFlow\(connected \? "campaign-changed" : "disconnected"\)/);
   assert.match(app, /disabled=\{disabled\} aria-busy=\{busy\}/);
   assert.match(app, /Inspect the public case/);
   assert.match(app, /Your connected wallet and eligibility state are preserved/);
@@ -128,10 +154,16 @@ test("the interface keeps the public accessibility and responsive floor", () => 
   assert.match(styles, /\.wallet-button \{[^}]*min-height:44px/s);
   assert.match(styles, /\.secondary-action \{[^}]*min-height:44px/s);
   assert.match(styles, /@media\(max-width:420px\)/);
+  assert.match(styles, /\.service-state \{ grid-row:2; grid-column:2;/);
+  assert.doesNotMatch(styles, /\.service-state \{ display:none;/);
+  assert.match(styles, /\.step-status > span \{[^}]*font:700 19px/s);
+  assert.match(styles, /\.expanded-case\.has-release/);
   assert.match(styles, /@media\(prefers-reduced-motion:reduce\)/);
   assert.match(styles, /@media\(forced-colors:active\)/);
   assert.match(styles, /overflow-wrap:anywhere/);
   assert.match(styles, /min-width:320px/);
+  assert.doesNotMatch(app, /"relay-pending"/);
+  assert.doesNotMatch(styles, /state-relay-pending/);
 });
 
 test("private demo and submission preparation stays out of the repository", async () => {
