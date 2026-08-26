@@ -12,6 +12,7 @@ import {
   RECOVERY_DISCOVERY_INDEX,
   RecoveryCampaignService,
 } from "./recovery-campaign-service.mjs";
+import { createRecoveryV2DeploymentSupervisor } from "./recovery-v2-deployment-supervisor.mjs";
 
 const POOL_ADDRESS = process.env.RULEDROP_POOL_ADDRESS ?? "0x6f8dE7e1599A0c8D38eB25996cB841a4920ed999";
 const CREDITCOIN_RPC = process.env.CREDITCOIN_RPC ?? "https://rpc.cc3-testnet.creditcoin.network";
@@ -35,6 +36,10 @@ export const RECOVERY_RELEASE_DEFAULTS = Object.freeze({
 });
 const recoveryBootstrap = resolveRecoveryBootstrap(process.env);
 const staticRoot = fileURLToPath(new URL("../dist", import.meta.url));
+const recoveryV2Deployment = createRecoveryV2DeploymentSupervisor({
+  env: process.env,
+  controllerOptions: { privateKey: process.env.RETRYCREDIT_DEMO_PRIVATE_KEY },
+});
 
 const worker = new RuleDropWorker({
   poolAddress: POOL_ADDRESS,
@@ -151,6 +156,7 @@ export function createAppHandler({
   allowedOrigin = ALLOWED_ORIGIN,
   legacyWritesEnabled = LEGACY_WRITES_ENABLED,
   deploymentRevision = DEPLOYMENT_REVISION,
+  recoveryV2 = recoveryV2Deployment,
 } = {}) {
   return async (request, response) => {
   const requestId = crypto.randomUUID();
@@ -164,12 +170,25 @@ export function createAppHandler({
 
     const url = new URL(request.url, "http://localhost");
     if (request.method === "GET" && url.pathname === "/health") {
+      const recoveryV2Health = recoveryV2HealthSnapshot(recoveryV2);
       sendJson(response, 200, {
         ok: true,
         service: "retrycredit",
         network: 102031,
         publicDemoConfigured: Boolean(legacyRetryCreditService),
         recoveryState: recovery.state,
+        recoveryV2: recoveryV2Health.publicState,
+        revision: deploymentRevision,
+      });
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/health/recovery-v2") {
+      const recoveryV2Health = recoveryV2HealthSnapshot(recoveryV2);
+      sendJson(response, recoveryV2Health.statusCode, {
+        ok: recoveryV2Health.statusCode === 200,
+        service: "retrycredit",
+        network: 102031,
+        recoveryV2: recoveryV2Health.publicState,
         revision: deploymentRevision,
       });
       return;
@@ -325,9 +344,16 @@ export function createAppHandler({
 }
 
 export function startServer(options = {}) {
-  const server = createServer(createAppHandler(options));
+  const recoveryV2 = options.recoveryV2 ?? recoveryV2Deployment;
+  const server = createServer(createAppHandler({ ...options, recoveryV2 }));
   server.listen(PORT, HOST, () => {
     console.log(`RetryCredit service listening on http://${HOST}:${PORT}`);
+    if (typeof recoveryV2?.start === "function") {
+      Promise.resolve(recoveryV2.start()).catch(() => {});
+    }
+  });
+  server.once("close", () => {
+    if (typeof recoveryV2?.stop === "function") recoveryV2.stop();
   });
   return server;
 }
@@ -368,6 +394,74 @@ async function readJson(request) {
 function sendJson(response, status, body) {
   response.writeHead(status);
   response.end(JSON.stringify(body));
+}
+
+export function recoveryV2HealthSnapshot(supervisor) {
+  let value;
+  try {
+    value = supervisor?.readiness?.();
+  } catch {
+    value = null;
+  }
+  const mode = ["disabled", "prepare", "armed"].includes(value?.mode)
+    ? value.mode
+    : "armed";
+  const deploymentState = typeof value?.deploymentState === "string"
+    && /^[a-z][a-z-]{0,31}$/.test(value.deploymentState)
+    ? value.deploymentState
+    : "blocked";
+  const reason = typeof value?.reason === "string"
+    && /^[A-Z][A-Z0-9_]{0,63}$/.test(value.reason)
+    ? value.reason
+    : null;
+  const exactArmedFinality = mode === "armed"
+    && value?.ready === true
+    && value?.statusCode === 200
+    && deploymentState === "finalized"
+    && reason === "FINALIZED_PLUS_TWO_VERIFIED"
+    && value?.publicProfile === "v1";
+  const prepared = sanitizeRecoveryV2Prepared(value?.prepared);
+  const inactiveReady = mode === "disabled"
+    && value?.ready === true
+    && value?.statusCode === 200
+    && deploymentState === "disabled"
+    && value?.publicProfile === "v1";
+  const exactPrepared = mode === "prepare"
+    && value?.ready === true
+    && value?.statusCode === 200
+    && deploymentState === "prepared"
+    && value?.publicProfile === "v1"
+    && prepared !== null;
+  const statusCode = exactArmedFinality || inactiveReady || exactPrepared ? 200 : 503;
+  const publicState = {
+    mode,
+    state: deploymentState,
+    publicProfile: "v1",
+  };
+  if (reason) publicState.reason = reason;
+  if (mode === "prepare" && deploymentState === "prepared" && prepared) {
+    publicState.prepared = prepared;
+  }
+  return Object.freeze({
+    statusCode,
+    publicState: Object.freeze(publicState),
+  });
+}
+
+function sanitizeRecoveryV2Prepared(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const expectedKeys = ["contractAddress", "initCodeHash", "runtimeCodeHash", "transactionHash"];
+  const keys = Object.keys(value).sort();
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
+    return null;
+  }
+  if (typeof value.contractAddress !== "string" || !/^0x[0-9A-Fa-f]{40}$/.test(value.contractAddress)) {
+    return null;
+  }
+  for (const key of ["initCodeHash", "runtimeCodeHash", "transactionHash"]) {
+    if (typeof value[key] !== "string" || !/^0x[0-9a-f]{64}$/.test(value[key])) return null;
+  }
+  return Object.freeze(Object.fromEntries(expectedKeys.map((key) => [key, value[key]])));
 }
 
 function requireRetryCreditService(service) {
