@@ -49,6 +49,7 @@ a:hover { text-decoration-thickness:2px; }
 .service-state i { width:8px; height:8px; flex:none; background:var(--rule); }
 .service-state.ready i { background:var(--green); }
 .service-state.loading i { background:var(--amber); }
+.service-state.continuation-waiting i { background:var(--amber); }
 .service-state.unavailable i,.service-state.offline i { background:var(--red); }
 .service-state.campaign-closed i { background:var(--red); }
 .service-state.campaign-full i { background:var(--amber); }
@@ -68,11 +69,11 @@ a:hover { text-decoration-thickness:2px; }
 #main-content:focus-visible { outline:3px solid var(--focus); outline-offset:-3px; }
 .route-page { width:min(1440px,100%); margin-inline:auto; padding:clamp(26px,4.2vw,66px) clamp(18px,4vw,64px) clamp(56px,7vw,104px); }
 
-.campaign-layout { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(380px,.8fr); align-items:start; }
-.campaign-file { position:relative; min-width:0; min-height:486px; display:flex; flex-direction:column; padding:clamp(28px,4.2vw,64px); border-block:4px solid var(--ink); border-inline-start:1px solid var(--ink); background:var(--sheet); }
+.campaign-layout { display:grid; grid-template-areas:"campaign desk"; grid-template-columns:minmax(0,1.45fr) minmax(380px,.8fr); align-items:start; }
+.campaign-file { grid-area:campaign; position:relative; min-width:0; min-height:486px; display:flex; flex-direction:column; padding:clamp(28px,4.2vw,64px); border-block:4px solid var(--ink); border-inline-start:1px solid var(--ink); background:var(--sheet); }
 .file-registration { position:absolute; inset-block-start:-13px; inset-inline-start:24px; display:flex; gap:6px; padding-inline:8px; background:var(--sheet); }
 .file-registration span { width:7px; height:18px; border:1px solid var(--ink); background:var(--sheet-2); }
-.campaign-file h1 { max-width:15ch; margin:0; font-size:clamp(42px,5.7vw,76px); line-height:.94; letter-spacing:-.035em; text-wrap:balance; }
+.campaign-file h2 { max-width:15ch; margin:0; font-size:clamp(42px,5.7vw,76px); line-height:.94; letter-spacing:-.035em; text-wrap:balance; }
 .campaign-summary { max-width:67ch; margin:28px 0 0; color:var(--muted); font-size:clamp(16px,1.45vw,20px); line-height:1.55; }
 .campaign-facts { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); margin:auto 0 0; border-block:1px solid var(--ink); }
 .campaign-facts > div { min-width:0; min-height:86px; display:flex; flex-direction:column; justify-content:space-between; gap:9px; padding:14px 13px; }
@@ -82,17 +83,19 @@ a:hover { text-decoration-thickness:2px; }
 .funding-note { min-height:44px; display:flex; align-items:center; gap:9px; margin:14px 0 0; color:var(--muted); font:500 10px/1.5 "IBM Plex Mono",monospace; }
 .funding-note svg { width:14px; flex:none; color:var(--blue); }
 
-.eligibility-desk { position:relative; min-width:0; min-height:446px; margin-block-start:40px; display:flex; flex-direction:column; padding:clamp(24px,3vw,40px); border:1px solid var(--ink); border-block-start:7px solid var(--blue); background:var(--sheet-2); }
+.eligibility-desk { grid-area:desk; position:relative; min-width:0; min-height:446px; margin-block-start:40px; display:flex; flex-direction:column; padding:clamp(24px,3vw,40px); border:1px solid var(--ink); border-block-start:7px solid var(--blue); background:var(--sheet-2); }
 .eligibility-desk.state-qualifying,.eligibility-desk.state-released,.eligibility-desk.state-already-claimed { border-block-start-color:var(--green); }
 .eligibility-desk.state-malformed,.eligibility-desk.state-semantic-mismatch,.eligibility-desk.state-retryable-error,.eligibility-desk.state-service-unavailable,.eligibility-desk.state-offline,.eligibility-desk.state-campaign-closed,.eligibility-desk.state-pair-changed { border-block-start-color:var(--red); }
 .eligibility-desk.state-wrong-wallet,.eligibility-desk.state-account-changed,.eligibility-desk.state-rate-limited,.eligibility-desk.state-campaign-full,.eligibility-desk.state-wallet-connecting,.eligibility-desk.state-authorization-requested,.eligibility-desk.state-proof-queued,.eligibility-desk.state-proof-building,.eligibility-desk.state-release-relaying,.eligibility-desk.state-release-processing,.eligibility-desk.state-release-uncertain { border-block-start-color:var(--amber); }
+.eligibility-desk.state-continuation-waiting { border-block-start-color:var(--amber); }
 .desk-heading { min-width:0; display:grid; grid-template-columns:44px minmax(0,1fr); gap:15px; }
 .state-mark { width:44px; height:44px; display:grid; place-items:center; color:var(--sheet); background:var(--blue); }
 .state-mark svg { width:20px; }
 .state-qualifying .state-mark,.state-released .state-mark,.state-already-claimed .state-mark { background:var(--green); }
 .state-malformed .state-mark,.state-semantic-mismatch .state-mark,.state-retryable-error .state-mark,.state-service-unavailable .state-mark,.state-offline .state-mark,.state-campaign-closed .state-mark,.state-pair-changed .state-mark { background:var(--red); }
 .state-wrong-wallet .state-mark,.state-account-changed .state-mark,.state-rate-limited .state-mark,.state-campaign-full .state-mark,.state-wallet-connecting .state-mark,.state-authorization-requested .state-mark,.state-proof-queued .state-mark,.state-proof-building .state-mark,.state-release-relaying .state-mark,.state-release-processing .state-mark,.state-release-uncertain .state-mark { color:var(--ink); background:var(--amber); }
-.desk-heading h2 { margin:0 0 7px; font-size:clamp(25px,2.5vw,36px); line-height:1; letter-spacing:-.025em; text-wrap:balance; }
+.state-continuation-waiting .state-mark { color:var(--ink); background:var(--amber); }
+.desk-heading h1 { margin:0 0 7px; font-size:clamp(25px,2.5vw,36px); line-height:1; letter-spacing:-.025em; text-wrap:balance; }
 .desk-heading p { margin:0; color:var(--muted); font-size:14px; line-height:1.55; }
 .pair-intake { display:flex; flex-direction:column; margin-block-start:24px; }
 .pair-intake fieldset { min-width:0; margin:0; padding:0; border:0; }
@@ -141,6 +144,34 @@ a:hover { text-decoration-thickness:2px; }
 .destination-note { display:grid; grid-template-columns:15px minmax(0,1fr); gap:8px; margin:13px 0 0; color:var(--muted); font:500 10px/1.5 "IBM Plex Mono",monospace; }
 .destination-note svg { width:14px; }
 
+.campaign-terms { margin-block-start:12px; border-block:1px solid var(--rule); }
+.campaign-terms summary,.transaction-help summary { min-height:44px; display:flex; align-items:center; justify-content:space-between; gap:12px; cursor:pointer; list-style:none; font-size:12px; font-weight:700; }
+.campaign-terms summary::-webkit-details-marker,.transaction-help summary::-webkit-details-marker { display:none; }
+.campaign-terms summary svg,.transaction-help summary svg { width:16px; flex:none; transition:transform .16s ease; }
+.campaign-terms[open] summary svg,.transaction-help[open] summary svg { transform:rotate(90deg); }
+.campaign-terms dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); margin:0; border-block-start:1px solid var(--rule-soft); }
+.campaign-terms dl > div { min-width:0; display:grid; gap:5px; padding:11px 10px; }
+.campaign-terms dl > div:nth-child(even) { border-inline-start:1px solid var(--rule-soft); }
+.campaign-terms dl > div:nth-child(n+3) { border-block-start:1px solid var(--rule-soft); }
+.campaign-terms dt { color:var(--muted); font-size:10px; }
+.campaign-terms dd { min-width:0; margin:0; font:500 10px/1.45 "IBM Plex Mono",monospace; overflow-wrap:anywhere; }
+
+.transaction-help { margin-block-start:10px; border-block-start:1px solid var(--rule); }
+.transaction-help summary { padding-inline:1px; color:var(--muted); }
+.transaction-help[open] summary { color:var(--ink); }
+.transaction-help ol { display:grid; gap:8px; margin:0; padding:12px 0 2px 22px; color:var(--muted); font-size:12px; line-height:1.45; }
+.lineage-assurance { margin-block-start:16px; padding:13px; border:1px solid var(--ink); background:var(--sheet); }
+.lineage-assurance > div { display:grid; grid-template-columns:36px minmax(0,1fr); align-items:center; gap:11px; }
+.lineage-assurance > div > svg { width:36px; height:36px; padding:8px; color:var(--sheet); background:var(--green); }
+.lineage-assurance > div > span { display:grid; gap:2px; }
+.lineage-assurance small { color:var(--muted); font:600 9px "IBM Plex Mono",monospace; text-transform:uppercase; letter-spacing:.05em; }
+.lineage-assurance strong { font-size:15px; line-height:1.2; }
+.lineage-assurance p { margin:11px 0 0; color:var(--muted); font-size:12px; line-height:1.45; }
+.lineage-assurance ul { display:grid; gap:6px; margin:11px 0 0; padding:10px 0 0; border-block-start:1px solid var(--rule-soft); list-style:none; color:var(--muted); font:500 9px/1.4 "IBM Plex Mono",monospace; }
+.lineage-assurance li::before { content:"✓"; margin-inline-end:7px; color:var(--green); font-weight:700; }
+.lineage-claimed-current,.lineage-claimed-predecessor,.lineage-claimed-sponsor { border-color:var(--amber); }
+.lineage-claimed-current > div > svg,.lineage-claimed-predecessor > div > svg,.lineage-claimed-sponsor > div > svg { color:var(--ink); background:var(--amber); }
+
 .evidence-band { margin-block-start:34px; border:1px solid var(--ink); }
 .evidence-band > header { display:flex; align-items:flex-end; justify-content:space-between; gap:26px; padding:19px 22px; border-block-end:1px solid var(--ink); }
 .evidence-band h2 { max-width:680px; margin:0; font-size:clamp(22px,2.4vw,33px); line-height:1.08; letter-spacing:-.025em; }
@@ -153,21 +184,23 @@ a:hover { text-decoration-thickness:2px; }
 .evidence-step { min-width:0; min-height:258px; display:flex; flex-direction:column; padding:24px 22px; }
 .evidence-step.failed { background:var(--sheet-2); }
 .evidence-step.completed { background:var(--sheet); }
-.evidence-step.funded,.evidence-step.released { color:var(--sheet); background:var(--rail); }
+.evidence-step.funded,.evidence-step.waiting,.evidence-step.released { color:var(--sheet); background:var(--rail); }
+.evidence-step.waiting { border-block-start:7px solid var(--amber); padding-block-start:17px; }
 .step-status { display:grid; grid-template-columns:38px minmax(0,1fr); align-items:center; gap:12px; }
 .step-status > span { width:38px; height:38px; display:grid; place-items:center; color:var(--sheet); background:var(--red); font:700 19px "IBM Plex Mono",monospace; }
 .completed .step-status > span { background:var(--green); }
 .funded .step-status > span { color:var(--ink); background:var(--action); }
+.waiting .step-status > span { color:var(--ink); background:var(--amber); }
 .released .step-status > span { background:var(--green); }
 .step-status b { font-size:19px; line-height:1.1; }
 .evidence-step > p { margin:15px 0 12px; color:var(--muted); font:500 10px/1.45 "IBM Plex Mono",monospace; text-transform:uppercase; letter-spacing:.04em; }
-.funded > p,.released > p { color:var(--rule-soft); }
+.funded > p,.waiting > p,.released > p { color:var(--rule-soft); }
 .evidence-step ul { display:grid; gap:7px; margin:0 0 18px; padding:0; list-style:none; font:500 10px/1.35 "IBM Plex Mono",monospace; }
 .evidence-step li { overflow-wrap:anywhere; }
 .evidence-step a,.receipt-pending { min-height:44px; display:flex; align-items:center; justify-content:space-between; gap:9px; margin-block-start:auto; border-block-start:1px solid currentColor; font-size:11px; text-decoration:none; }
 .evidence-step a svg { width:14px; }
 .receipt-pending { color:var(--muted); }
-.funded .receipt-pending { color:var(--rule-soft); }
+.funded .receipt-pending,.waiting .receipt-pending { color:var(--rule-soft); }
 .sequence-link { display:grid; place-items:center; color:var(--blue); background:var(--sheet); border-inline:1px solid var(--rule); }
 .sequence-link svg { width:22px; }
 
@@ -261,15 +294,16 @@ a:hover { text-decoration-thickness:2px; }
   .app-header nav { padding-inline:0; }
   .app-header nav a { min-width:0; flex:1; padding-inline:8px; }
   .route-page { padding:26px 14px 66px; }
-  .campaign-layout { grid-template-columns:1fr; }
+  .campaign-layout { grid-template-areas:"desk" "campaign"; grid-template-columns:1fr; }
   .campaign-file { min-height:0; padding:30px 20px 20px; border-inline-end:1px solid var(--ink); }
-  .campaign-file h1 { max-width:13ch; font-size:clamp(38px,10vw,54px); }
+  .campaign-file h2 { max-width:13ch; font-size:clamp(38px,10vw,54px); }
   .campaign-summary { margin-block-start:20px; font-size:16px; }
   .campaign-facts { margin-block-start:24px; }
   .campaign-facts > div { min-height:75px; padding:11px 9px; }
   .eligibility-desk { min-height:370px; margin-block-start:0; padding:24px 20px; border-block-start-width:7px; }
-  .desk-heading h2 { font-size:29px; }
+  .desk-heading h1 { font-size:29px; }
   .transaction-field input { font-size:16px; }
+  .campaign-terms summary,.transaction-help summary { min-height:48px; }
   .evidence-band { margin-block-start:20px; }
   .evidence-band > header { display:block; }
   .evidence-band header p { margin-block-start:8px; text-align:start; }
@@ -303,16 +337,19 @@ a:hover { text-decoration-thickness:2px; }
   .network-path { min-height:28px; gap:6px; white-space:nowrap; }
   .route-page { padding-block-start:12px; }
   .campaign-file { padding:20px 14px 12px; }
-  .campaign-file h1 { font-size:34px; }
+  .campaign-file h2 { font-size:34px; }
   .campaign-summary { margin-block-start:14px; font-size:14px; line-height:1.35; }
   .campaign-facts { margin-block-start:16px; }
   .campaign-facts > div { min-height:62px; padding:8px; }
   .campaign-facts dd { font-size:11px; }
+  .campaign-terms dl { grid-template-columns:1fr; }
+  .campaign-terms dl > div:nth-child(even) { border-inline-start:0; }
+  .campaign-terms dl > div + div { border-block-start:1px solid var(--rule-soft); }
   .funding-note { min-height:36px; margin-block-start:6px; font-size:9px; }
   .eligibility-desk { min-height:310px; padding:16px 14px; }
   .desk-heading { grid-template-columns:38px minmax(0,1fr); gap:11px; }
   .state-mark { width:38px; height:38px; }
-  .desk-heading h2 { font-size:24px; }
+  .desk-heading h1 { font-size:24px; }
   .desk-heading p { font-size:13px; line-height:1.4; }
   .pair-intake { margin-block-start:18px; }
   .wallet-readout { margin-block-start:16px; padding-block:10px; }

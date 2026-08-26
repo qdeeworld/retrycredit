@@ -29,6 +29,7 @@ const RETRY_CREDIT_VERIFIER_ADDRESS = process.env.RETRYCREDIT_VERIFIER_ADDRESS ?
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com";
 const ethereumRpcUrls = (process.env.ETHEREUM_RPC_URLS ?? "").split(",").map((value) => value.trim());
 const DEPLOYMENT_REVISION = normalizeDeploymentRevision(process.env.RENDER_GIT_COMMIT);
+const RECOVERY_CONTRACT_VERSION = resolveRecoveryContractVersion(process.env);
 export const RECOVERY_RELEASE_DEFAULTS = Object.freeze({
   publicOrigin: "https://retrycredit.dolepee.com",
   poolAddress: "0x646c5c766Ce3B6058B44F41e89fE716f54E3dF66",
@@ -94,6 +95,7 @@ if (recoveryBootstrap.enabled) {
           ? { ethereumRpcUrls: ethereumRpcUrls.filter(Boolean) }
           : {}),
         publicOrigin: PUBLIC_ORIGIN,
+        config: { contractVersion: RECOVERY_CONTRACT_VERSION },
       });
       recoveryLifecycle = { state: "waking", service, error: null };
       service.readiness().then(
@@ -141,6 +143,13 @@ export function normalizeDeploymentRevision(value) {
 
 export function resolveLegacyWritesEnabled(env = {}) {
   return env.RETRYCREDIT_LEGACY_WRITES_ENABLED === "true";
+}
+
+export function resolveRecoveryContractVersion(env = {}) {
+  const raw = env.RETRYCREDIT_RECOVERY_CONTRACT_VERSION;
+  const version = typeof raw === "string" && raw.trim() === "" ? "v1" : raw ?? "v1";
+  if (["v1", "v2"].includes(version)) return version;
+  throw new Error("RETRYCREDIT_RECOVERY_CONTRACT_VERSION must be exactly v1 or v2");
 }
 
 function optionalEnvironmentValue(value) {

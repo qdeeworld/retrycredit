@@ -132,8 +132,13 @@ export function recoveryCampaignAvailability(config) {
   const deadline = Number(config.campaign.deadline);
   const deadlinePassed = Number.isSafeInteger(deadline)
     && Math.floor(Date.now() / 1_000) > deadline;
+  if (config.campaign.releaseState === "closed" || deadlinePassed) return "closed";
+  if (config.campaign.releaseState === "full" || remaining === 0) return "full";
+  if (config.contractVersion === "v2" && config?.lineage?.releasesUnlocked === false) {
+    return "continuation-waiting";
+  }
   if (!deadlinePassed && config.campaign.open === true && remaining > 0) return "open";
-  return remaining === 0 ? "full" : "closed";
+  return "closed";
 }
 
 export function validateRecoveryConfigResponse(response) {
@@ -166,10 +171,12 @@ export function validateRecoveryConfigResponse(response) {
   const campaignClaimCount = Number(response?.campaign?.claimCount);
   const campaignRemainingClaims = Number(response?.campaign?.remainingClaims);
   const campaignDeadline = Number(response?.campaign?.deadline);
+  const campaignReleaseState = response?.campaign?.releaseState;
   const ruleStartBlock = Number(response?.rule?.startBlock);
   const ruleEndBlock = Number(response?.rule?.endBlock);
   const ruleMaxBlockGap = Number(response?.rule?.maxBlockGap);
   const ruleMaxQuantity = Number(response?.rule?.maxQuantity);
+  const contractVersion = response?.contractVersion;
   let campaignFundingMatches = false;
   try {
     campaignFundingMatches = BigInt(response?.campaign?.fundedAmount)
@@ -193,6 +200,8 @@ export function validateRecoveryConfigResponse(response) {
     || !isPositiveUint(response?.campaign?.fundedAmount)
     || !isNonzeroHash(response?.campaign?.termsHash)
     || typeof response?.campaign?.open !== "boolean"
+    || !["continuation-waiting", "release-unlocked", "closed", "full"].includes(campaignReleaseState)
+    || !validRecoveryLineageConfig(response)
     || !Number.isSafeInteger(campaignMaxClaims)
     || !Number.isSafeInteger(campaignClaimCount)
     || !Number.isSafeInteger(campaignRemainingClaims)
@@ -224,6 +233,15 @@ export function validateRecoveryConfigResponse(response) {
     || campaignClaimCount !== claimedCapacity
     || campaignRemainingClaims !== remainingCapacity
     || (remainingCapacity === 0 && response.campaign.open)
+    || (campaignReleaseState === "full" && remainingCapacity !== 0)
+    || (remainingCapacity === 0 && !["full", "closed"].includes(campaignReleaseState))
+    || (campaignReleaseState === "release-unlocked") !== response.campaign.open
+    || (campaignReleaseState === "continuation-waiting" && (
+      contractVersion !== "v2"
+      || response.lineage.releasesUnlocked
+      || remainingCapacity === 0
+    ))
+    || (contractVersion === "v2" && !response.lineage.releasesUnlocked && response.campaign.open)
     || response?.capabilities?.selfServePairIntake !== true
     || response?.consent?.scope !== "hosted-relayer"
     || response?.consent?.protocolEnforced !== false
@@ -241,20 +259,26 @@ export function validatePairEligibilityResponse({ response, requestedPair, confi
   requireAnalyzedPair(response?.pair, requestedPair, config);
 
   const status = response?.status;
-  if (!new Set(["eligible", "processing", "claimed", "closed", "full"]).has(status)) {
+  if (!new Set(["eligible", "processing", "claimed", "continuation-waiting", "closed", "full"]).has(status)) {
     throw responseMismatch();
   }
+  const lineageStatus = requireEligibilityLineage(response, config, status);
   if (status === "eligible" && (response.eligible !== true || response.release != null)) {
     throw responseMismatch();
   }
   if (status === "claimed") {
     if (response.eligible !== false) throw responseMismatch();
-    requireRelease(response.release, response, boundary);
+    if (lineageStatus === "claimed-current") {
+      requireRelease(response.release, response, boundary);
+    } else if (response.release != null) {
+      throw responseMismatch();
+    }
   }
   if (status === "processing" && (response.eligible !== false || response.release != null)) {
     throw responseMismatch();
   }
-  if (["closed", "full"].includes(status) && (response.eligible !== false || response.release != null)) {
+  if (["continuation-waiting", "closed", "full"].includes(status)
+    && (response.eligible !== false || response.release != null)) {
     throw responseMismatch();
   }
   if (typeof response?.reason !== "string" || response.reason.trim() === "") throw responseMismatch();
@@ -268,22 +292,28 @@ export function validateEligibilityResponse({ response, requestedWallet, config,
   requireResponseCampaign(response, boundary);
 
   const status = response?.status;
-  const validStatuses = new Set(["eligible", "claimed", "not-found", "closed", "full"]);
+  const validStatuses = new Set(["eligible", "claimed", "not-found", "continuation-waiting", "closed", "full"]);
   if (!validStatuses.has(status)) throw responseMismatch();
   if (status === "not-found") {
-    if (response.eligible !== false || response.pair != null || response.release != null) {
+    if (response.eligible !== false || response.pair != null || response.release != null || response.lineage != null) {
       throw responseMismatch();
     }
   } else {
+    const lineageStatus = requireEligibilityLineage(response, config, status);
     requirePair(response.pair, expectedPair);
     if (status === "eligible" && (response.eligible !== true || response.release != null)) {
       throw responseMismatch();
     }
     if (status === "claimed") {
       if (response.eligible !== false) throw responseMismatch();
-      requireRelease(response.release, response, boundary);
+      if (lineageStatus === "claimed-current") {
+        requireRelease(response.release, response, boundary);
+      } else if (response.release != null) {
+        throw responseMismatch();
+      }
     }
-    if (["closed", "full"].includes(status) && (response.eligible !== false || response.release != null)) {
+    if (["continuation-waiting", "closed", "full"].includes(status)
+      && (response.eligible !== false || response.release != null)) {
       throw responseMismatch();
     }
   }
@@ -324,6 +354,9 @@ export function validateReleaseResponse({ response, wallet, eligibility, config 
   requireResponseWallet(response, wallet);
   requireResponseCampaign(response, boundary);
   if (!["released", "claimed"].includes(response?.status)) throw responseMismatch();
+  if (requireEligibilityLineage(response, config, "claimed") !== "claimed-current") {
+    throw responseMismatch();
+  }
   requirePair(response?.pair, eligibility?.pair);
   requireCreditAmount(response, config);
   requireRelease(response?.release, response, boundary);
@@ -336,6 +369,9 @@ export function validatePairReleaseResponse({ response, wallet, eligibility, con
   requireResponseWallet(response, wallet);
   requireResponseCampaign(response, boundary);
   if (!["released", "claimed"].includes(response?.status)) throw responseMismatch();
+  if (requireEligibilityLineage(response, config, "claimed") !== "claimed-current") {
+    throw responseMismatch();
+  }
   requireAnalyzedPair(response?.pair, eligibility?.pair, config);
   requireCreditAmount(response, config);
   requireRelease(response?.release, response, boundary);
@@ -674,6 +710,8 @@ function recoveryCampaignIdentity(config) {
   const sourceChainKey = Number(config?.source?.chainKey);
   const settlementChainId = Number(config?.settlement?.chainId);
   const creditAmount = config?.campaign?.creditAmount;
+  const contractVersion = config?.contractVersion;
+  const lineage = config?.lineage;
   if (
     !publicOrigin
     || !Number.isSafeInteger(sourceChainId)
@@ -683,7 +721,10 @@ function recoveryCampaignIdentity(config) {
     || !Number.isSafeInteger(settlementChainId)
     || settlementChainId <= 0
     || !isPositiveUint(creditAmount)
+    || !["v1", "v2"].includes(contractVersion)
+    || !lineage
   ) return "";
+  const predecessor = lineage.predecessor;
   return JSON.stringify([
     boundary.poolAddress,
     boundary.campaignNumber,
@@ -692,7 +733,72 @@ function recoveryCampaignIdentity(config) {
     sourceChainKey,
     settlementChainId,
     String(creditAmount),
+    contractVersion,
+    lineage.scope,
+    lineage.releasesUnlocked,
+    predecessor
+      ? [
+          normalizeWallet(predecessor.poolAddress),
+          normalizeCampaignNumber(predecessor.campaignNumber),
+          normalizeWallet(predecessor.sponsor),
+          normalizeHash(predecessor.termsHash),
+          Number(predecessor.deadline),
+          Number(predecessor.startBlock),
+          Number(predecessor.endBlock),
+        ]
+      : null,
   ]);
+}
+
+function validRecoveryLineageConfig(response) {
+  const version = response?.contractVersion;
+  const lineage = response?.lineage;
+  if (!["v1", "v2"].includes(version) || !lineage || typeof lineage !== "object") return false;
+  if (typeof lineage.releasesUnlocked !== "boolean") return false;
+  if (version === "v1") {
+    return lineage.scope === "campaign"
+      && lineage.releasesUnlocked === true
+      && lineage.predecessor === null;
+  }
+  const predecessor = lineage.predecessor;
+  const predecessorCampaign = normalizeCampaignNumber(predecessor?.campaignNumber);
+  const predecessorDeadline = Number(predecessor?.deadline);
+  const predecessorStart = Number(predecessor?.startBlock);
+  const predecessorEnd = Number(predecessor?.endBlock);
+  const campaignDeadline = Number(response?.campaign?.deadline);
+  const currentStart = Number(response?.rule?.startBlock);
+  const currentEnd = Number(response?.rule?.endBlock);
+  return lineage.scope === "sponsor"
+    && predecessor !== null
+    && typeof predecessor === "object"
+    && isAddress(predecessor.poolAddress)
+    && normalizeWallet(predecessor.poolAddress) !== normalizeWallet(response?.poolAddress)
+    && predecessorCampaign !== null
+    && isAddress(predecessor.sponsor)
+    && walletsMatch(predecessor.sponsor, response?.campaign?.sponsor)
+    && isNonzeroHash(predecessor.termsHash)
+    && Number.isSafeInteger(predecessorDeadline)
+    && predecessorDeadline > 0
+    && predecessorDeadline < campaignDeadline
+    && Number.isSafeInteger(predecessorStart)
+    && predecessorStart >= 0
+    && Number.isSafeInteger(predecessorEnd)
+    && predecessorEnd > predecessorStart
+    && predecessorStart >= currentStart
+    && predecessorEnd <= currentEnd;
+}
+
+function requireEligibilityLineage(response, config, status) {
+  const lineage = response?.lineage;
+  const expectedScope = config?.lineage?.scope;
+  if (!lineage || lineage.scope !== expectedScope) throw responseMismatch();
+  const allowedStatuses = config?.contractVersion === "v2"
+    ? new Set(["unused", "claimed-current", "claimed-predecessor", "claimed-sponsor"])
+    : new Set(["unused", "claimed-current"]);
+  if (!allowedStatuses.has(lineage.status)) throw responseMismatch();
+  const claimed = status === "claimed";
+  if (claimed !== lineage.status.startsWith("claimed-")) throw responseMismatch();
+  return lineage.status;
 }
 
 function recoveryConfigIdentityFromBoundary(boundary) {

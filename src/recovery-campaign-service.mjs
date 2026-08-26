@@ -16,9 +16,11 @@ import { proofProvider } from "@gluwa/usc-sdk";
 
 import {
   recoveryCampaignAbi,
+  recoveryCampaignAbiV1,
   recoveryVerifierAbi,
   nativeQueryVerifierAbi,
   seaDropPaidRetryPredicateAbi,
+  selectRecoveryCampaignAbi,
 } from "./pool-abi.mjs";
 import { WorkerError, decodeAttestedTransaction } from "./proof-worker.mjs";
 import {
@@ -30,6 +32,11 @@ import {
 import { PUBLIC_CC3_RELAYER_ROLE, deriveRoleKey } from "./role-key.mjs";
 
 export const RECOVERY_RELAYER_ROLE = PUBLIC_CC3_RELAYER_ROLE;
+
+export const RECOVERY_RUNTIME_CODE_HASHES = Object.freeze({
+  v1: "0x53e65e853223190fd50695af221a8d5510aa8420621f23ed08d03016cbafdf9f",
+  v2: "0xd0770affc097e8922811def99af7cda6ac7f863f2eaae09eea684e2af737ce07",
+});
 
 export const RECOVERY_DISCOVERY_INDEX = Object.freeze([
   Object.freeze({
@@ -81,6 +88,7 @@ const DEFAULT_ETHEREUM_RPCS = Object.freeze([
 const CHAIN_INFO = getAddress("0x0000000000000000000000000000000000000fd3");
 const NATIVE_VERIFIER = getAddress("0x0000000000000000000000000000000000000fd2");
 const ZERO_BYTES32 = `0x${"00".repeat(32)}`;
+const RECOVERY_CONTRACT_VERSIONS = Object.freeze(new Set(["v1", "v2"]));
 
 export class RecoveryCampaignService {
   static fromPrivateKey({
@@ -131,7 +139,12 @@ export class RecoveryCampaignService {
       return new JsonRpcProvider(request, RECOVERY_DEFAULTS.sourceChainId, { staticNetwork: true });
     });
     const normalizedPool = requireNonzeroAddress(poolAddress, "recovery pool");
-    const poolContract = new Contract(normalizedPool, recoveryCampaignAbi, relayerWallet);
+    const contractVersion = requireRecoveryContractVersion(config.contractVersion);
+    const poolContract = new Contract(
+      normalizedPool,
+      selectRecoveryCampaignAbi(contractVersion),
+      relayerWallet,
+    );
     return new RecoveryCampaignService({
       poolAddress: normalizedPool,
       campaignNumber,
@@ -163,6 +176,7 @@ export class RecoveryCampaignService {
     verifierContract,
     predicateContract,
     nativeVerifierContract,
+    predecessorPoolContract,
     contractFactory = (address, abi) => new Contract(address, abi, ccProvider),
     discoveryIndex = RECOVERY_DISCOVERY_INDEX,
     pairResolver,
@@ -171,15 +185,21 @@ export class RecoveryCampaignService {
   }) {
     this.poolAddress = requireNonzeroAddress(poolAddress, "recovery pool");
     this.campaignNumber = requirePositiveInteger(campaignNumber, "recovery campaign number");
+    this.contractVersion = requireRecoveryContractVersion(config.contractVersion);
     this.ccProvider = ccProvider;
     this.relayerWallet = relayerWallet;
     this.ethereumProviders = ethereumProviders;
     this.proofBuilder = proofBuilder;
     this.publicOrigin = requireOrigin(publicOrigin);
-    this.pool = poolContract ?? new Contract(this.poolAddress, recoveryCampaignAbi, relayerWallet);
+    this.pool = poolContract ?? new Contract(
+      this.poolAddress,
+      selectRecoveryCampaignAbi(this.contractVersion),
+      relayerWallet,
+    );
     this.verifier = verifierContract ?? null;
     this.predicate = predicateContract ?? null;
     this.nativeVerifier = nativeVerifierContract ?? null;
+    this.predecessorPool = predecessorPoolContract ?? null;
     this.contractFactory = contractFactory;
     this.discoveryIndex = normalizeDiscoveryIndex(discoveryIndex);
     this.discoveryByWallet = new Map(
@@ -188,6 +208,16 @@ export class RecoveryCampaignService {
     this.pairResolver = pairResolver;
     this.now = now;
     const mergedConfig = { ...RECOVERY_DEFAULTS, ...config };
+    this.expectedRuntimeCodeHash = requireHash(
+      mergedConfig.expectedRuntimeCodeHash ?? RECOVERY_RUNTIME_CODE_HASHES[this.contractVersion],
+      "recovery pool runtime code hash",
+    );
+    this.expectedPredecessorRuntimeCodeHash = this.contractVersion === "v2"
+      ? requireHash(
+          mergedConfig.expectedPredecessorRuntimeCodeHash ?? RECOVERY_RUNTIME_CODE_HASHES.v1,
+          "predecessor recovery pool runtime code hash",
+        )
+      : null;
     const releaseLogChunkBlocks = requirePositiveInteger(
       mergedConfig.releaseLogChunkBlocks,
       "release log chunk blocks",
@@ -259,6 +289,7 @@ export class RecoveryCampaignService {
     );
     this.config = {
       ...mergedConfig,
+      contractVersion: this.contractVersion,
       releaseLogChunkBlocks,
       releaseLogLookbackBlocks,
       sourceLookupConcurrency,
@@ -346,10 +377,12 @@ export class RecoveryCampaignService {
       publicOrigin: this.publicOrigin,
       relayerAddress: this.relayerWallet.address,
       poolAddress: this.poolAddress,
+      contractVersion: this.contractVersion,
       verifierAddress: infrastructure.verifierAddress,
       predicateAddress: infrastructure.predicateAddress,
       campaignNumber: this.campaignNumber,
-      campaign: serializeCampaign(state.campaign, this.now()),
+      lineage: serializeConfigurationLineage(infrastructure.lineage, state.releasesUnlocked),
+      campaign: serializeCampaign(state.campaign, this.now(), state.releasesUnlocked),
       rule: serializeRule(state.rule),
       capacity: serializeCapacity(state.campaign),
       featuredCase: {
@@ -374,6 +407,7 @@ export class RecoveryCampaignService {
         creditAmount: null,
         pair: null,
         release: null,
+        lineage: null,
       };
     }
 
@@ -511,8 +545,22 @@ export class RecoveryCampaignService {
       const context = await this.intakePool.run(async () => {
         this.#verifyConsent({ wallet, issuedAt, expiresAt, signature, discovery: signedPair });
         const state = await this.#campaignState({ fresh: true });
-        const alreadyClaimed = await this.pool.claimedByCampaign(this.campaignNumber, wallet);
-        if (!alreadyClaimed) {
+        const lineage = await this.#walletLineage(wallet, { campaign: state.campaign });
+        if (["claimed-predecessor", "claimed-sponsor"].includes(lineage.status)) {
+          throw eligibilityError({
+            status: "replayed",
+            reason: lineage.status === "claimed-predecessor"
+              ? "This source wallet already received a credit from the bound predecessor campaign."
+              : "This source wallet already received a credit in this sponsor lineage.",
+          });
+        }
+        if (lineage.status !== "claimed-current") {
+          if (!state.releasesUnlocked) {
+            throw eligibilityError({
+              status: "continuation-waiting",
+              reason: "This funded continuation waits for its bound predecessor to close or fill.",
+            });
+          }
           if (Boolean(state.campaign.remainderRecovered) || this.now() > Number(state.campaign.deadline)) {
             throw eligibilityError({ status: "closed", reason: "The funded recovery campaign has closed." });
           }
@@ -637,9 +685,16 @@ export class RecoveryCampaignService {
           throw new Error(`unexpected Creditcoin chain ${network.chainId}`);
         }
       }
-      if (this.ccProvider?.getCode) {
-        const poolCode = await this.ccProvider.getCode(this.poolAddress);
-        if (!poolCode || poolCode === "0x") throw new Error("recovery pool has no deployed code");
+      if (!this.ccProvider || typeof this.ccProvider.getCode !== "function") {
+        throw new Error("recovery provider cannot authenticate runtime code");
+      }
+      const poolCode = await this.ccProvider.getCode(this.poolAddress);
+      if (
+        typeof poolCode !== "string"
+        || poolCode === "0x"
+        || keccak256(poolCode) !== this.expectedRuntimeCodeHash
+      ) {
+        throw new Error("recovery pool runtime code does not match the configured contract version");
       }
       if (requireContractAddress(this.pool) !== this.poolAddress) {
         throw new Error("recovery pool runner is bound to a different address");
@@ -720,9 +775,10 @@ export class RecoveryCampaignService {
         throw new Error("recovery predicate has an unexpected maximum batch gap");
       }
 
-      return Object.freeze({ verifierAddress, predicateAddress });
+      const lineage = await this.#authenticateLineage();
+      return Object.freeze({ verifierAddress, predicateAddress, lineage });
     } catch (error) {
-      if (error instanceof WorkerError) throw error;
+      if (error instanceof WorkerError && error.code === "RECOVERY_MISCONFIGURED") throw error;
       throw new WorkerError(
         "RECOVERY_MISCONFIGURED",
         "The recovery campaign bindings could not be authenticated.",
@@ -730,6 +786,76 @@ export class RecoveryCampaignService {
         error,
       );
     }
+  }
+
+  async #authenticateLineage() {
+    if (this.contractVersion === "v1") {
+      return Object.freeze({ scope: "campaign", predecessor: null });
+    }
+
+    const [
+      poolValue,
+      campaignNumberValue,
+      sponsorValue,
+      termsHashValue,
+      bindingHashValue,
+      startBlockValue,
+      endBlockValue,
+      deadlineValue,
+    ] = await Promise.all([
+      this.pool.legacyPool(),
+      this.pool.LEGACY_CAMPAIGN_NUMBER(),
+      this.pool.legacySponsor(),
+      this.pool.legacyTermsHash(),
+      this.pool.legacyBindingHash(),
+      this.pool.legacyStartBlock(),
+      this.pool.legacyEndBlock(),
+      this.pool.legacyDeadline(),
+    ]);
+    const poolAddress = requireNonzeroAddress(poolValue, "predecessor recovery pool");
+    const campaignNumber = requirePositiveInteger(
+      campaignNumberValue,
+      "predecessor recovery campaign number",
+    );
+    const sponsor = requireNonzeroAddress(sponsorValue, "predecessor recovery sponsor");
+    const termsHash = requireNonzeroHash(termsHashValue, "predecessor recovery terms hash");
+    requireNonzeroHash(bindingHashValue, "predecessor recovery binding hash");
+    const startBlock = requireSafeUint(startBlockValue, "predecessor start block");
+    const endBlock = requireSafeUint(endBlockValue, "predecessor end block");
+    const deadline = requireSafeUint(deadlineValue, "predecessor deadline");
+    if (
+      campaignNumber !== 1
+      || poolAddress === this.poolAddress
+      || startBlock >= endBlock
+      || deadline === 0
+    ) {
+      throw new Error("recovery V2 predecessor lineage is invalid");
+    }
+    const predecessorCode = await this.ccProvider.getCode(poolAddress);
+    if (
+      typeof predecessorCode !== "string"
+      || predecessorCode === "0x"
+      || keccak256(predecessorCode) !== this.expectedPredecessorRuntimeCodeHash
+    ) {
+      throw new Error("predecessor recovery pool runtime code is not the authenticated V1 release");
+    }
+
+    this.predecessorPool ??= this.contractFactory(poolAddress, recoveryCampaignAbiV1);
+    if (requireContractAddress(this.predecessorPool) !== poolAddress) {
+      throw new Error("predecessor recovery runner is bound to a different address");
+    }
+    return Object.freeze({
+      scope: "sponsor",
+      predecessor: Object.freeze({
+        poolAddress,
+        campaignNumber,
+        sponsor,
+        termsHash,
+        deadline,
+        startBlock,
+        endBlock,
+      }),
+    });
   }
 
   async #campaignState({ fresh = false } = {}) {
@@ -763,13 +889,22 @@ export class RecoveryCampaignService {
 
   async #readCampaignState() {
     try {
-      const [campaign, rule] = await Promise.all([
+      const [campaign, rule, releasesUnlockedValue] = await Promise.all([
         this.pool.getCampaign(this.campaignNumber),
         this.pool.getRule(this.campaignNumber),
+        this.contractVersion === "v2" ? this.pool.releasesUnlocked() : true,
       ]);
       validateCampaign(campaign);
       validateRule(rule);
-      return { campaign, rule };
+      validateConfiguredLineage(
+        (await this.#authenticateInfrastructure()).lineage,
+        campaign,
+        rule,
+      );
+      if (typeof releasesUnlockedValue !== "boolean") {
+        throw new Error("recovery release gate did not return a boolean");
+      }
+      return { campaign, rule, releasesUnlocked: releasesUnlockedValue };
     } catch (error) {
       if (error instanceof WorkerError) throw error;
       throw new WorkerError(
@@ -782,22 +917,72 @@ export class RecoveryCampaignService {
   }
 
   async #eligibilityContext(wallet, discovery, { state, freshState = false } = {}) {
-    const { campaign, rule } = state ?? await this.#campaignState({ fresh: freshState });
+    const { campaign, rule, releasesUnlocked } = state
+      ?? await this.#campaignState({ fresh: freshState });
     const pair = await this.#resolvePair(discovery, rule, { expectedWallet: wallet });
-    return this.#eligibilityFromResolved({ wallet, discovery, campaign, rule, pair });
+    const lineage = await this.#walletLineage(wallet, { campaign });
+    const blocked = lineageBlockedContext({
+      campaignNumber: this.campaignNumber,
+      discovery,
+      wallet,
+      campaign,
+      rule,
+      pair,
+      releasesUnlocked,
+      lineage,
+    });
+    if (blocked) return blocked;
+    return this.#eligibilityFromResolved({
+      wallet,
+      discovery,
+      campaign,
+      rule,
+      pair,
+      releasesUnlocked,
+      lineage,
+    });
   }
 
   async #openPairEligibilityContext(pairInput, { state, freshState = false } = {}) {
-    const { campaign, rule } = state ?? await this.#campaignState({ fresh: freshState });
+    const { campaign, rule, releasesUnlocked } = state
+      ?? await this.#campaignState({ fresh: freshState });
     const pair = await this.#resolvePair(pairInput, rule);
     const wallet = requireNonzeroAddress(pair.claimant, "pair source wallet");
     const discovery = Object.freeze({ wallet, ...pairInput });
-    return this.#eligibilityFromResolved({ wallet, discovery, campaign, rule, pair });
+    const lineage = await this.#walletLineage(wallet, { campaign });
+    const blocked = lineageBlockedContext({
+      campaignNumber: this.campaignNumber,
+      discovery,
+      wallet,
+      campaign,
+      rule,
+      pair,
+      releasesUnlocked,
+      lineage,
+    });
+    if (blocked) return blocked;
+    return this.#eligibilityFromResolved({
+      wallet,
+      discovery,
+      campaign,
+      rule,
+      pair,
+      releasesUnlocked,
+      lineage,
+    });
   }
 
-  async #eligibilityFromResolved({ wallet, discovery, campaign, rule, pair }) {
-    const base = { campaignNumber: this.campaignNumber, discovery };
-    const claimed = await this.pool.claimedByCampaign(this.campaignNumber, wallet);
+  async #eligibilityFromResolved({
+    wallet,
+    discovery,
+    campaign,
+    rule,
+    pair,
+    releasesUnlocked,
+    lineage,
+  }) {
+    const base = { campaignNumber: this.campaignNumber, discovery, lineage };
+    const claimed = lineage.status === "claimed-current";
 
     if (Boolean(claimed)) {
       const releases = await this.#releaseEvents(wallet);
@@ -827,12 +1012,21 @@ export class RecoveryCampaignService {
         this.pool.consumedQueries(this.campaignNumber, currentRelease.successQueryId),
         this.pool.consumedPairs(this.campaignNumber, currentRelease.pairId),
       ]);
+      const sponsorReplayState = this.contractVersion === "v2"
+        ? await Promise.all([
+            this.pool.claimedBySponsor(campaign.sponsor, wallet),
+            this.pool.consumedQueriesBySponsor(campaign.sponsor, currentRelease.failureQueryId),
+            this.pool.consumedQueriesBySponsor(campaign.sponsor, currentRelease.successQueryId),
+            this.pool.consumedPairsBySponsor(campaign.sponsor, currentRelease.pairId),
+          ])
+        : [true, true, true, true];
       if (
         currentRelease.beneficiary !== wallet
         || currentRelease.creditAmount !== campaign.creditAmount.toString()
         || !failureConsumed
         || !successConsumed
         || !pairConsumed
+        || sponsorReplayState.some((value) => value !== true)
       ) {
         throw new WorkerError(
           "RECOVERY_STATE_INCONSISTENT",
@@ -889,6 +1083,44 @@ export class RecoveryCampaignService {
       pair,
       release: null,
     };
+  }
+
+  async #walletLineage(wallet, { campaign: campaignValue } = {}) {
+    try {
+      const infrastructure = await this.#authenticateInfrastructure();
+      const campaign = campaignValue ?? (await this.#campaignState()).campaign;
+      const currentClaimed = requireBooleanState(
+        await this.pool.claimedByCampaign(this.campaignNumber, wallet),
+        "current campaign claim",
+      );
+      if (currentClaimed) {
+        return Object.freeze({ scope: infrastructure.lineage.scope, status: "claimed-current" });
+      }
+      if (this.contractVersion === "v1") {
+        return Object.freeze({ scope: "campaign", status: "unused" });
+      }
+
+      const predecessor = infrastructure.lineage.predecessor;
+      const [predecessorClaimedValue, sponsorClaimedValue] = await Promise.all([
+        this.predecessorPool.claimedByCampaign(predecessor.campaignNumber, wallet),
+        this.pool.claimedBySponsor(campaign.sponsor, wallet),
+      ]);
+      if (requireBooleanState(predecessorClaimedValue, "predecessor campaign claim")) {
+        return Object.freeze({ scope: "sponsor", status: "claimed-predecessor" });
+      }
+      if (requireBooleanState(sponsorClaimedValue, "sponsor lineage claim")) {
+        return Object.freeze({ scope: "sponsor", status: "claimed-sponsor" });
+      }
+      return Object.freeze({ scope: "sponsor", status: "unused" });
+    } catch (error) {
+      if (error instanceof WorkerError) throw error;
+      throw new WorkerError(
+        "RECOVERY_STATE_UNAVAILABLE",
+        "Recovery lineage state is temporarily unavailable.",
+        503,
+        error,
+      );
+    }
   }
 
   async #resolvePair(pairInput, rule, { expectedWallet = null } = {}) {
@@ -1113,7 +1345,24 @@ export class RecoveryCampaignService {
         this.pool.consumedQueries(this.campaignNumber, replayIds.successQueryId),
         this.pool.consumedPairs(this.campaignNumber, replayIds.pairId),
       ]);
-      if (failureConsumed || successConsumed || pairConsumed) {
+      let lineageReplayConsumed = false;
+      if (this.contractVersion === "v2") {
+        const infrastructure = await this.#authenticateInfrastructure();
+        const predecessor = infrastructure.lineage.predecessor;
+        const lineageReplayState = await Promise.all([
+          this.predecessorPool.consumedQueries(predecessor.campaignNumber, replayIds.failureQueryId),
+          this.predecessorPool.consumedQueries(predecessor.campaignNumber, replayIds.successQueryId),
+          this.predecessorPool.consumedPairs(predecessor.campaignNumber, replayIds.pairId),
+          this.pool.consumedQueriesBySponsor(context.campaign.sponsor, replayIds.failureQueryId),
+          this.pool.consumedQueriesBySponsor(context.campaign.sponsor, replayIds.successQueryId),
+          this.pool.consumedPairsBySponsor(context.campaign.sponsor, replayIds.pairId),
+        ]);
+        lineageReplayConsumed = lineageReplayState.some((value) => value === true);
+        if (lineageReplayState.some((value) => typeof value !== "boolean")) {
+          throw new Error("recovery lineage replay state did not return booleans");
+        }
+      }
+      if (failureConsumed || successConsumed || pairConsumed || lineageReplayConsumed) {
         const raced = await this.#eligibilityContext(
           context.wallet,
           context.discovery,
@@ -1123,7 +1372,9 @@ export class RecoveryCampaignService {
         if (!raced.eligible) throw eligibilityError(publicEligibility(raced));
         throw new WorkerError(
           "RECOVERY_REPLAYED",
-          "This exact recovery proof was already consumed by this campaign.",
+          this.contractVersion === "v2"
+            ? "This exact recovery proof was already consumed in the bound predecessor or sponsor lineage."
+            : "This exact recovery proof was already consumed by this campaign.",
           409,
         );
       }
@@ -1211,6 +1462,14 @@ export class RecoveryCampaignService {
         this.pool.consumedQueries(this.campaignNumber, release.successQueryId),
         this.pool.consumedPairs(this.campaignNumber, release.pairId),
       ]);
+    const sponsorReplayFinalized = this.contractVersion === "v2"
+      ? await Promise.all([
+          this.pool.claimedBySponsor(context.campaign.sponsor, context.wallet),
+          this.pool.consumedQueriesBySponsor(context.campaign.sponsor, release.failureQueryId),
+          this.pool.consumedQueriesBySponsor(context.campaign.sponsor, release.successQueryId),
+          this.pool.consumedPairsBySponsor(context.campaign.sponsor, release.pairId),
+        ])
+      : [true, true, true, true];
     const expectedCredit = BigInt(context.campaign.creditAmount);
     if (BigInt(afterBalance) - BigInt(beforeBalance) !== expectedCredit) {
       throw new WorkerError(
@@ -1224,6 +1483,7 @@ export class RecoveryCampaignService {
       || !failureConsumed
       || !successConsumed
       || !pairConsumed
+      || sponsorReplayFinalized.some((value) => value !== true)
       || Number(afterCampaign.claimCount) !== Number(beforeCampaign.claimCount) + 1
       || Number(release.claimCount) !== Number(afterCampaign.claimCount)
     ) {
@@ -1583,6 +1843,7 @@ function publicEligibility(context) {
     creditAmount: context.campaign?.creditAmount?.toString() ?? context.creditAmount ?? null,
     pair: context.pair ? serializePair(context.pair) : null,
     release: context.release ?? null,
+    lineage: serializeEligibilityLineage(context.lineage),
   };
 }
 
@@ -1594,6 +1855,10 @@ function publicRelease(context, status) {
     creditAmount: context.campaign.creditAmount.toString(),
     pair: serializePair(context.pair),
     release: context.release,
+    lineage: serializeEligibilityLineage({
+      scope: context.lineage.scope,
+      status: "claimed-current",
+    }),
   };
 }
 
@@ -1619,10 +1884,17 @@ function serializePair(pair) {
   };
 }
 
-function serializeCampaign(campaign, now) {
+function serializeCampaign(campaign, now, releasesUnlocked = true) {
   const deadline = Number(campaign.deadline);
   const maxClaims = Number(campaign.maxClaims);
   const claimCount = Number(campaign.claimCount);
+  const releaseState = Boolean(campaign.remainderRecovered) || now > deadline
+    ? "closed"
+    : claimCount >= maxClaims
+      ? "full"
+      : releasesUnlocked
+        ? "release-unlocked"
+        : "continuation-waiting";
   return {
     sponsor: getAddress(campaign.sponsor),
     creditAmount: campaign.creditAmount.toString(),
@@ -1632,8 +1904,80 @@ function serializeCampaign(campaign, now) {
     deadline,
     fundedAmount: campaign.fundedAmount.toString(),
     termsHash: String(campaign.termsHash).toLowerCase(),
-    open: !campaign.remainderRecovered && now <= deadline && claimCount < maxClaims,
+    releaseState,
+    open: releaseState === "release-unlocked",
   };
+}
+
+function serializeConfigurationLineage(lineage, releasesUnlocked) {
+  return {
+    scope: lineage.scope,
+    releasesUnlocked,
+    predecessor: lineage.predecessor ? { ...lineage.predecessor } : null,
+  };
+}
+
+function serializeEligibilityLineage(lineage) {
+  if (
+    !lineage
+    || !["campaign", "sponsor"].includes(lineage.scope)
+    || !["unused", "claimed-current", "claimed-predecessor", "claimed-sponsor"]
+      .includes(lineage.status)
+  ) {
+    throw new WorkerError(
+      "RECOVERY_STATE_INCONSISTENT",
+      "Recovery eligibility lineage is unavailable.",
+      503,
+    );
+  }
+  return { scope: lineage.scope, status: lineage.status };
+}
+
+function lineageBlockedContext({
+  campaignNumber,
+  discovery,
+  wallet,
+  campaign,
+  rule,
+  pair = null,
+  releasesUnlocked,
+  lineage,
+}) {
+  const base = {
+    campaignNumber,
+    discovery,
+    wallet,
+    campaign,
+    rule,
+    pair,
+    release: null,
+    lineage,
+  };
+  if (lineage.status === "claimed-predecessor") {
+    return {
+      ...base,
+      eligible: false,
+      status: "claimed",
+      reason: "This source wallet already received a credit from the bound predecessor campaign.",
+    };
+  }
+  if (lineage.status === "claimed-sponsor") {
+    return {
+      ...base,
+      eligible: false,
+      status: "claimed",
+      reason: "This source wallet already received a credit in this sponsor lineage.",
+    };
+  }
+  if (!releasesUnlocked && lineage.status !== "claimed-current") {
+    return {
+      ...base,
+      eligible: false,
+      status: "continuation-waiting",
+      reason: "This funded continuation waits for its bound predecessor to close or fill.",
+    };
+  }
+  return null;
 }
 
 function serializeRule(rule) {
@@ -1742,12 +2086,31 @@ function eligibilityError(eligibility) {
     "not-found": ["RECOVERY_NOT_FOUND", 404],
     claimed: ["RECOVERY_ALREADY_CLAIMED", 409],
     processing: ["RECOVERY_RELEASE_PENDING", 425],
+    "continuation-waiting": ["RECOVERY_CONTINUATION_WAITING", 425],
     closed: ["RECOVERY_CLOSED", 409],
     full: ["RECOVERY_FULL", 409],
     replayed: ["RECOVERY_REPLAYED", 409],
   };
   const [code, status] = codes[eligibility.status] ?? ["RECOVERY_NOT_ELIGIBLE", 422];
   return new WorkerError(code, eligibility.reason, status);
+}
+
+function validateConfiguredLineage(lineage, campaign, rule) {
+  if (lineage.scope === "campaign") {
+    if (lineage.predecessor !== null) throw new Error("V1 recovery cannot expose a predecessor");
+    return;
+  }
+  const predecessor = lineage.predecessor;
+  if (
+    lineage.scope !== "sponsor"
+    || !predecessor
+    || predecessor.sponsor !== getAddress(campaign.sponsor)
+    || predecessor.deadline >= Number(campaign.deadline)
+    || predecessor.startBlock < Number(rule.startBlock)
+    || predecessor.endBlock > Number(rule.endBlock)
+  ) {
+    throw new Error("configured campaign does not match its V2 predecessor lineage");
+  }
 }
 
 function validateCampaign(campaign) {
@@ -1858,6 +2221,28 @@ function requireHash(value, label) {
     throw new Error(`${label} must be 32 bytes`);
   }
   return value.toLowerCase();
+}
+
+function requireNonzeroHash(value, label) {
+  const hash = requireHash(value, label);
+  if (hash === ZERO_BYTES32) throw new Error(`${label} must be nonzero`);
+  return hash;
+}
+
+function requireBooleanState(value, label) {
+  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
+  return value;
+}
+
+function requireRecoveryContractVersion(value = "v1") {
+  if (typeof value !== "string" || !RECOVERY_CONTRACT_VERSIONS.has(value)) {
+    throw new WorkerError(
+      "INVALID_RECOVERY_CONFIGURATION",
+      "Recovery contractVersion must be exactly v1 or v2.",
+      500,
+    );
+  }
+  return value;
 }
 
 function requirePositiveInteger(value, label) {

@@ -1,7 +1,7 @@
 ---
 version: alpha
 name: RetryCredit Recovery Dispatch
-description: A warm, ruled incident-recovery desk that leads with an exact failed-and-completed transaction pair, derives the qualifying wallet from live source facts, and makes recovery legible without turning proof into the product.
+description: A warm, ruled incident-recovery desk that leads with an exact failed-and-completed transaction pair, derives the qualifying wallet from live source facts, and makes campaign continuity legible without turning proof into the product.
 colors:
   sheet: "#f4f0e4"
   sheet-2: "#ebe6d8"
@@ -109,7 +109,7 @@ omitted:
 
 **Creative North Star: “The Recovery Dispatch”**
 
-RetryCredit is an operational desk for one result: let a visitor submit an exact paid failure and completed retry, derive the source wallet from live Ethereum facts, then let that matching wallet authorize a fixed Creditcoin release. It is not a promotional landing page, a proof explorer, or a generic claims dashboard.
+RetryCredit is an operational desk for one result: let a visitor submit an exact paid failure and completed retry, derive the source wallet from live Ethereum facts, then let that matching wallet authorize a fixed Creditcoin release. When a lineage-aware campaign is configured, the same desk also explains whether its predecessor still controls release timing and whether the wallet or pair was already recovered in sponsor-bound history. It is not a promotional landing page, a proof explorer, or a generic claims dashboard.
 
 The existing warm signal-sheet world remains the product identity. Recovery is the live pair-intake, eligibility, and release surface; Cases records actual campaign outcomes and curated examples; Protocol explains the paired-receipt boundary. These remain separate routes with shared chrome.
 
@@ -159,6 +159,10 @@ Client-side route changes update the document title and move programmatic focus 
 
 Lead with the bounded campaign in plain language: who can recover, which source window is recognized, the fixed credit, remaining capacity, and the claim deadline. State clearly when RetryCredit funds the pilot itself. Do not imply SeaDrop, OpenSea, or an NFT collection sponsors or endorses the campaign.
 
+For a lineage-aware continuation, distinguish funding from availability. A fully funded campaign may still be waiting for its immutable predecessor to close or fill. Lead that state with the outcome—no release can be authorized yet—then show the exact predecessor pool, campaign, deadline, terms, and source-window binding inside progressive disclosure. Never collapse this state into a generic closed campaign or suggest that the funds are missing.
+
+Lineage language follows the contract's actual scope. Sponsor-bound history may say that a recovery remains used across campaigns funded by that sponsor and that an unrelated pool cannot poison the record. Campaign-scoped deployments must not inherit that copy.
+
 Refresh campaign configuration silently while a visible tab remains open and when connectivity or visibility returns. Re-evaluate the deadline locally between server responses. A stale open/capacity snapshot must never keep authorization enabled; read-only pair inspection remains available after closure or fullness.
 
 ### Pair intake and eligibility desk
@@ -167,7 +171,9 @@ The desk owns two required transaction fields and one primary action. It accepts
 
 Checking a pair happens before wallet connection. A qualifying result then asks only the derived source wallet to connect and authorize the exact origin, pool, campaign, pair, and five-minute window before the application requests proof work. The browser and API never accept a payout destination or a caller-supplied source wallet as authority. Application consent gates the hosted relayer; do not imply the permissionless campaign contract enforces owner consent onchain.
 
-The desk owns empty, editing, malformed, checking, semantic mismatch, qualifying, wrong-wallet, wallet connecting, authorization requested, proof queued, proof building, release relaying, release processing, release uncertain, released, already claimed, campaign closed, campaign full, pair changed, account changed, service unavailable, rate-limited, and retryable-error states. Preserve the submitted pair across recoverable failures, invalidate every derived result when either hash changes, prevent duplicate submission, and describe the current operation in busy copy. After any uncertain post-sign result, lock the pair and check its public processing/claim state before offering another authorization.
+The desk owns empty, editing, malformed, checking, semantic mismatch, qualifying, continuation waiting, wrong-wallet, wallet connecting, authorization requested, proof queued, proof building, release relaying, release processing, release uncertain, released, already claimed in the current campaign, already claimed in predecessor or sponsor history, campaign closed, campaign full, pair changed, account changed, service unavailable, rate-limited, and retryable-error states. Preserve the submitted pair across recoverable failures, invalidate every derived result when either hash changes, prevent duplicate submission, and describe the current operation in busy copy. After any uncertain post-sign result, lock the pair and check its public processing/claim state before offering another authorization.
+
+After a signature has been submitted, a same-tab reload may restore only the exact public pool, campaign, wallet, pair, operation status, timestamps, and resulting transaction identifier. Keep that record in session storage with a short expiry, bind it to the current campaign and exact pair, and reconcile it through a fresh public eligibility check before showing a terminal result. Never persist a signature, challenge message, proof, raw transaction, destination, private key, or authorization payload. A restored state never triggers signing or broadcast by itself.
 
 A non-qualifying result is a complete product state, not a dead end. Explain that the exact funded rule did not match without inventing a more specific private rule failure or human-readable revert reason, and offer the public recovered example without pretending the visitor qualified.
 
@@ -187,7 +193,7 @@ A published featured pair is not labeled verified until its live intake check su
 
 ### Protocol manual
 
-Explain the dedicated SeaDrop `mintSigned` predicate, exact stable-field match, ordered status transition, mint outcome, source-derived payout, fixed campaign capacity, and campaign-scoped replay boundary. State that Attestcoin does not prove the human-readable revert reason or market demand.
+Explain the dedicated SeaDrop `mintSigned` predicate, exact stable-field match, ordered status transition, mint outcome, source-derived payout, fixed campaign capacity, and the replay boundary of the configured contract version. For a lineage-aware campaign, explain predecessor binding and sponsor-scoped replay protection without implying that an unrelated sponsor or pool can consume the record. State that Attestcoin does not prove the human-readable revert reason or market demand.
 
 ### Notices
 
@@ -202,6 +208,8 @@ Labels, helper text, and validation messages stay attached to their transaction 
 - **Do** keep campaign funding, window, capacity, deadline, and source-derived destination visible.
 - **Do** derive wallet, receipt, order, value, collection, and outcome facts from the submitted transactions rather than asking the visitor to supply them.
 - **Do** make empty, malformed, non-qualifying, loading, rate-limited, service-error, already-claimed, relaying, released, offline, wrong-wallet, pair-changed, and campaign-closed states useful.
+- **Do** distinguish a funded continuation that is waiting on its predecessor from a closed, full, or unfunded campaign.
+- **Do** reconcile a safely resumed submitted pair from public state before offering any new authorization.
 - **Do** provide keyboard navigation, visible focus, reduced-motion support, semantic live status, safe identifier wrapping, high-zoom operation, and 44px touch targets.
 - **Do** keep the previous Uniswap public lifecycle as contextual expansion evidence, not the V2 protagonist.
 
@@ -214,5 +222,6 @@ Labels, helper text, and validation messages stay attached to their transaction 
 - **Don’t** keep the three observed wallets as eligibility authority; they are examples and public evidence only.
 - **Don’t** require wallet connection before a visitor can obtain a live pair verdict.
 - **Don’t** request Attestcoin proof work before the derived source wallet signs the exact bounded authorization.
+- **Don’t** persist signatures, challenges, proof material, or raw transactions to resume a flow.
 - **Don’t** let receipts outrank the wallet’s eligibility or result.
 - **Don’t** imply insurance, exact gas reimbursement, platform sponsorship, eight independent users, user adoption, or market validation.

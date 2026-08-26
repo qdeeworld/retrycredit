@@ -8,6 +8,7 @@ import {
   createAppHandler,
   normalizeDeploymentRevision,
   recoveryV2HealthSnapshot,
+  resolveRecoveryContractVersion,
   resolveLegacyWritesEnabled,
   resolveRecoveryBootstrap,
 } from "../src/server.mjs";
@@ -18,6 +19,19 @@ const pair = {
   failedTransactionHash: `0x${"11".repeat(32)}`,
   successfulTransactionHash: `0x${"22".repeat(32)}`,
 };
+
+test("recovery contract selection is explicit and defaults safely to V1", () => {
+  assert.equal(resolveRecoveryContractVersion({}), "v1");
+  assert.equal(resolveRecoveryContractVersion({ RETRYCREDIT_RECOVERY_CONTRACT_VERSION: "" }), "v1");
+  assert.equal(resolveRecoveryContractVersion({ RETRYCREDIT_RECOVERY_CONTRACT_VERSION: "v1" }), "v1");
+  assert.equal(resolveRecoveryContractVersion({ RETRYCREDIT_RECOVERY_CONTRACT_VERSION: "v2" }), "v2");
+  for (const value of ["2", "V2", " v2 ", "v3"]) {
+    assert.throws(
+      () => resolveRecoveryContractVersion({ RETRYCREDIT_RECOVERY_CONTRACT_VERSION: value }),
+      /must be exactly v1 or v2/,
+    );
+  }
+});
 
 test("production public mode selects the reviewed recovery release without dashboard drift", () => {
   assert.deepEqual(

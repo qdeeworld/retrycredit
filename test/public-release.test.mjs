@@ -3,12 +3,13 @@ import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
 const root = new URL("../", import.meta.url);
-const [html, app, styles, api, uiState, gitignore, redirects, headers, license, readme] = await Promise.all([
+const [html, app, styles, api, uiState, resumeState, gitignore, redirects, headers, license, readme] = await Promise.all([
   readFile(new URL("web/index.html", root), "utf8"),
   readFile(new URL("web/src/main.jsx", root), "utf8"),
   readFile(new URL("web/src/styles.css", root), "utf8"),
   readFile(new URL("web/src/api.mjs", root), "utf8"),
   readFile(new URL("web/src/recovery-ui-state.mjs", root), "utf8"),
+  readFile(new URL("web/src/recovery-resume-state.mjs", root), "utf8"),
   readFile(new URL(".gitignore", root), "utf8"),
   readFile(new URL("web/public/_redirects", root), "utf8"),
   readFile(new URL("web/public/_headers", root), "utf8"),
@@ -60,6 +61,11 @@ test("Recovery leads with campaign truth and pair-first self-serve intake", () =
   assert.match(app, /Mint did not complete/);
   assert.match(app, /NFT mint completed/);
   assert.match(app, /Fixed credit released/);
+  assert.match(app, /Continuation funded — releases begin after the predecessor campaign fills or passes its deadline/);
+  assert.match(app, /Unused across RetryCredit-sponsored history/);
+  assert.match(app, /Already recovered in an earlier RetryCredit campaign/);
+  assert.match(app, /Recovery remains recorded across future campaigns from this sponsor/);
+  assert.match(app, /An unrelated pool cannot mark this retry as used/);
   assert.match(app, /config\?\.featuredCase/);
   assert.match(app, /selectRecoveryEvidence\(\{/);
   assert.match(app, /pair\?\.valueWei/);
@@ -81,6 +87,7 @@ test("the pair desk includes every required resilient state", () => {
     "checking",
     "semantic-mismatch",
     "qualifying",
+    "continuation-waiting",
     "wrong-wallet",
     "wallet-connecting",
     "authorization-requested",
@@ -132,6 +139,18 @@ test("the pair desk includes every required resilient state", () => {
   assert.match(app, /The submitted pair and any still-valid live verdict are preserved/);
   assert.match(app, /const campaignAvailability = recoveryCampaignAvailability\(config\)/);
   assert.match(app, /campaignAvailability !== "open"/);
+});
+
+test("submitted recovery resumes through public read-only reconciliation only", () => {
+  assert.match(app, /loadRecoveryResumeCandidate\(\{/);
+  assert.match(app, /loadRecoveryResumeState\(\{/);
+  assert.match(app, /checkRecoveryPairEligibility\(\{ apiOrigin: API_ORIGIN, pair \}\)/);
+  assert.match(app, /No signature or release is being replayed/);
+  assert.match(app, /persistSubmittedRecovery\("proof-queued", liveEligibility\)/);
+  assert.match(app, /clearSubmittedRecovery\(\);\s+const next = \{ \.\.\.pairDraftRef\.current/s);
+  assert.match(resumeState, /RECOVERY_RESUME_TTL_MS = 15 \* 60 \* 1_000/);
+  assert.match(resumeState, /globalThis\.sessionStorage/);
+  assert.doesNotMatch(resumeState, /localStorage|indexedDB|state\?\.(?:signature|rawTransaction|privateKey)|record\.(?:signature|rawTransaction|privateKey)/);
 });
 
 test("Cases keeps recovered, observed, and controlled evidence distinct", () => {
