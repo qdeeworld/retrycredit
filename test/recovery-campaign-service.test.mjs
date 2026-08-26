@@ -104,6 +104,20 @@ test("configuration authenticates every binding and serializes campaign capacity
   assert.equal(config.settlement.chainId, 102031);
 });
 
+test("release receipt scans reject unsafe provider ranges", () => {
+  for (const configOverride of [
+    { releaseLogChunkBlocks: 0 },
+    { releaseLogChunkBlocks: 50_001 },
+    { releaseLogChunkBlocks: 500, releaseLogLookbackBlocks: 499 },
+    { releaseLogLookbackBlocks: 1_000_001 },
+  ]) {
+    assert.throws(
+      () => serviceFixture({ configOverride }),
+      (error) => error instanceof WorkerError && error.code === "INVALID_RECOVERY_CONFIGURATION",
+    );
+  }
+});
+
 test("a discovery miss never invokes live-pair authority", async () => {
   const fixture = serviceFixture();
   const result = await fixture.service.eligibility(outsider.address);
@@ -202,6 +216,7 @@ test("one authorized pair-local proof releases the exact credit and a retry is i
   assert.equal(again.release.transactionHash, released.release.transactionHash);
   assert.equal(fixture.proofCalls, 1);
   assert.equal(fixture.releaseCalls, 1);
+  assert.deepEqual(fixture.logQueries, [[601, 700], [501, 600], [451, 500]]);
 });
 
 test("Attestcoin builder lag is retryable HTTP-425 domain state", async () => {
@@ -276,6 +291,7 @@ function serviceFixture({
   proofResult,
   replayConsumed = false,
   verifierPredicate = predicateAddress,
+  configOverride = {},
 } = {}) {
   let currentNow = now;
   let pairCalls = 0;
@@ -284,6 +300,7 @@ function serviceFixture({
   let releaseCalls = 0;
   let sourceBalance = 0n;
   let claimed = false;
+  const logQueries = [];
   const consumedQueries = new Set();
   const consumedPairs = new Set();
   if (replayConsumed) consumedPairs.add(contractPairId);
@@ -348,7 +365,12 @@ function serviceFixture({
     async getCampaign() { return { ...campaign }; },
     async getRule() { return { ...rule }; },
     async claimedByCampaign() { return claimed; },
-    async queryFilter() { return releases.slice(); },
+    async queryFilter(_filter, fromBlock, toBlock) {
+      logQueries.push([fromBlock, toBlock]);
+      return releases.filter(
+        (release) => release.blockNumber >= fromBlock && release.blockNumber <= toBlock,
+      );
+    },
     async consumedQueries(campaignNumber, queryId) {
       assert.equal(Number(campaignNumber), 7);
       return consumedQueries.has(String(queryId).toLowerCase());
@@ -383,6 +405,7 @@ function serviceFixture({
     async getNetwork() { return { chainId: 102031n }; },
     async getCode() { return "0x6000"; },
     async getBalance() { return sourceBalance; },
+    async getBlockNumber() { return 700; },
   };
   const resolved = pairSummary(pairOverride);
   const builderResult = proofResult ?? { success: true, data: batchProofFixture(resolved) };
@@ -410,6 +433,11 @@ function serviceFixture({
       return resolved;
     },
     now: () => currentNow,
+    config: {
+      releaseLogChunkBlocks: 100,
+      releaseLogLookbackBlocks: 250,
+      ...configOverride,
+    },
   });
   return {
     service,
@@ -419,6 +447,7 @@ function serviceFixture({
     get proofCalls() { return proofCalls; },
     get staticCalls() { return staticCalls; },
     get releaseCalls() { return releaseCalls; },
+    get logQueries() { return logQueries.slice(); },
   };
 }
 
