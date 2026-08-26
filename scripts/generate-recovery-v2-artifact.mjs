@@ -82,6 +82,7 @@ export function buildEmbeddedRecoveryV2Artifact(forgeArtifact) {
     deployedBytecode,
     immutableReferences: normalizeImmutableReferences(
       forgeArtifact.deployedBytecode?.immutableReferences,
+      runtimeTemplateBytes,
     ),
     creationBytecodeHash: keccak256(creationBytecode),
     deployedBytecodeTemplateHash: keccak256(deployedBytecode),
@@ -154,31 +155,51 @@ function requireNoLinks(value, label) {
   }
 }
 
-function normalizeImmutableReferences(value) {
+function normalizeImmutableReferences(value, runtimeTemplateBytes) {
   const references = requireObject(value ?? {}, "immutable references");
-  return Object.fromEntries(
-    Object.entries(references)
-      .sort(([left], [right]) => Number(left) - Number(right))
-      .map(([identifier, positions]) => {
-        if (!Array.isArray(positions)) {
-          throw new Error(`immutable ${identifier} positions must be an array`);
-        }
-        return [
-          identifier,
-          positions.map((position) => {
-            if (
-              !Number.isSafeInteger(position?.start)
-              || position.start < 0
-              || !Number.isSafeInteger(position?.length)
-              || position.length <= 0
-            ) {
-              throw new Error(`immutable ${identifier} position is invalid`);
-            }
-            return { start: position.start, length: position.length };
-          }),
-        ];
-      }),
-  );
+  const groups = Object.values(references)
+    .map((positions) => {
+      if (!Array.isArray(positions) || positions.length === 0) {
+        throw new Error("immutable positions must be a nonempty array");
+      }
+      return positions
+        .map((position) => {
+          if (
+            !Number.isSafeInteger(position?.start)
+            || position.start < 0
+            || !Number.isSafeInteger(position?.length)
+            || position.length <= 0
+            || position.start + position.length > runtimeTemplateBytes
+          ) {
+            throw new Error("immutable position is invalid");
+          }
+          return { start: position.start, length: position.length };
+        })
+        .sort(compareImmutablePositions);
+    })
+    .sort(compareImmutableGroups);
+
+  const ranges = groups.flat().sort(compareImmutablePositions);
+  for (let index = 1; index < ranges.length; index += 1) {
+    const previousEnd = ranges[index - 1].start + ranges[index - 1].length;
+    if (ranges[index].start < previousEnd) {
+      throw new Error("immutable positions must not overlap");
+    }
+  }
+  return groups;
+}
+
+function compareImmutablePositions(left, right) {
+  return left.start - right.start || left.length - right.length;
+}
+
+function compareImmutableGroups(left, right) {
+  const commonLength = Math.min(left.length, right.length);
+  for (let index = 0; index < commonLength; index += 1) {
+    const comparison = compareImmutablePositions(left[index], right[index]);
+    if (comparison !== 0) return comparison;
+  }
+  return left.length - right.length;
 }
 
 function sha256Hex(value) {

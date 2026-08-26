@@ -73,7 +73,7 @@ export const RECOVERY_V2_FROZEN_DEPLOYMENT = deepFreeze({
     abiHash: "0x0f25b60489c7934cb5a37d33ff6acb121b725bbbe48f4a56787aa68454253461",
     creationBytecodeHash: "0xff6b22c298edf702eb46b04d7be96bf6d80251cfa4962ba3fe697e759d527589",
     deployedBytecodeTemplateHash: "0x86eddd668acafe424be74cc0074075c76723dde9a71f14842ef6d662f088e018",
-    payloadSha256: "0xf0a09d98d71825ea53b6961043eb1627acfa145f5e88182243e38c70dda7a18d",
+    payloadSha256: "0x5bf9739153d08a6ef588fb17536abab66f3efc8c9d03fff4cf96cdb486089d8f",
     initCodeBytes: 15_517,
     runtimeTemplateBytes: 9_139,
   },

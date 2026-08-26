@@ -55,3 +55,31 @@ test("artifact projection rejects compiler drift and linked bytecode", async () 
     /must not require library linking/,
   );
 });
+
+test("artifact projection ignores unstable compiler AST ids but retains immutable ranges", async () => {
+  const forgeArtifact = JSON.parse(await readFile(forgeArtifactUrl, "utf8"));
+  const baseline = buildEmbeddedRecoveryV2Artifact(forgeArtifact);
+  const renumbered = structuredClone(forgeArtifact);
+  renumbered.deployedBytecode.immutableReferences = Object.fromEntries(
+    Object.values(renumbered.deployedBytecode.immutableReferences)
+      .reverse()
+      .map((positions, index) => [String(90_000 + index), positions]),
+  );
+
+  assert.deepEqual(buildEmbeddedRecoveryV2Artifact(renumbered), baseline);
+
+  const rangeDrift = structuredClone(renumbered);
+  const firstReference = Object.values(rangeDrift.deployedBytecode.immutableReferences)[0][0];
+  firstReference.start += 1;
+  const changed = buildEmbeddedRecoveryV2Artifact(rangeDrift);
+  assert.notDeepEqual(changed.immutableReferences, baseline.immutableReferences);
+  assert.notEqual(changed.payloadSha256, baseline.payloadSha256);
+
+  const overlapping = structuredClone(forgeArtifact);
+  const overlappingGroups = Object.values(overlapping.deployedBytecode.immutableReferences);
+  overlappingGroups[1][0].start = overlappingGroups[0][0].start;
+  assert.throws(
+    () => buildEmbeddedRecoveryV2Artifact(overlapping),
+    /must not overlap/,
+  );
+});
