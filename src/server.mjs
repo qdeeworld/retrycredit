@@ -26,9 +26,12 @@ const RETRY_CREDIT_POOL_ADDRESS = process.env.RETRYCREDIT_POOL_ADDRESS ?? "0x81b
 const RETRY_CREDIT_VERIFIER_ADDRESS = process.env.RETRYCREDIT_VERIFIER_ADDRESS ?? "0x97Fa88CfCaeE1a5D4Ae749b9b5698F2147b986fC";
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com";
 const ethereumRpcUrls = (process.env.ETHEREUM_RPC_URLS ?? "").split(",").map((value) => value.trim());
-const RECOVERY_POOL_ADDRESS = process.env.RETRYCREDIT_RECOVERY_POOL_ADDRESS ?? null;
-const RECOVERY_CAMPAIGN_NUMBER = process.env.RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER ?? null;
-const RECOVERY_EXPLICITLY_DISABLED = process.env.RETRYCREDIT_RECOVERY_ENABLED === "false";
+export const RECOVERY_RELEASE_DEFAULTS = Object.freeze({
+  publicOrigin: "https://retrycredit.dolepee.com",
+  poolAddress: "0x646c5c766Ce3B6058B44F41e89fE716f54E3dF66",
+  campaignNumber: "1",
+});
+const recoveryBootstrap = resolveRecoveryBootstrap(process.env);
 const staticRoot = fileURLToPath(new URL("../dist", import.meta.url));
 
 const worker = new RuleDropWorker({
@@ -60,9 +63,9 @@ if (RETRY_CREDIT_ENABLED) {
 }
 
 let recoveryLifecycle = { state: "disabled", service: null, error: null };
-if (!RECOVERY_EXPLICITLY_DISABLED && (RECOVERY_POOL_ADDRESS || RECOVERY_CAMPAIGN_NUMBER)) {
+if (recoveryBootstrap.enabled) {
   const privateKey = process.env.RETRYCREDIT_DEMO_PRIVATE_KEY;
-  if (!privateKey || !RECOVERY_POOL_ADDRESS || !RECOVERY_CAMPAIGN_NUMBER) {
+  if (!privateKey || !recoveryBootstrap.poolAddress || !recoveryBootstrap.campaignNumber) {
     recoveryLifecycle = {
       state: "error",
       service: null,
@@ -76,8 +79,8 @@ if (!RECOVERY_EXPLICITLY_DISABLED && (RECOVERY_POOL_ADDRESS || RECOVERY_CAMPAIGN
     try {
       const service = RecoveryCampaignService.fromPrivateKey({
         privateKey,
-        poolAddress: RECOVERY_POOL_ADDRESS,
-        campaignNumber: RECOVERY_CAMPAIGN_NUMBER,
+        poolAddress: recoveryBootstrap.poolAddress,
+        campaignNumber: recoveryBootstrap.campaignNumber,
         creditcoinRpc: CREDITCOIN_RPC,
         proofBuilderUrl: PROOF_BUILDER_URL,
         ...(ethereumRpcUrls.filter(Boolean).length > 0
@@ -100,6 +103,27 @@ if (!RECOVERY_EXPLICITLY_DISABLED && (RECOVERY_POOL_ADDRESS || RECOVERY_CAMPAIGN
       };
     }
   }
+}
+
+export function resolveRecoveryBootstrap(env = {}) {
+  const mode = env.RETRYCREDIT_RECOVERY_ENABLED;
+  const publicOrigin = env.PUBLIC_ORIGIN ?? env.ALLOWED_ORIGIN ?? "http://localhost:3000";
+  const hasConfiguredAddress = Boolean(
+    env.RETRYCREDIT_RECOVERY_POOL_ADDRESS || env.RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER,
+  );
+  const productionDefault = mode === undefined
+    && env.RETRYCREDIT_PUBLIC_ENABLED === "true"
+    && publicOrigin === RECOVERY_RELEASE_DEFAULTS.publicOrigin
+    && !hasConfiguredAddress;
+  const releaseDefaultsRequested = (mode === "true" && !hasConfiguredAddress) || productionDefault;
+  const poolAddress = env.RETRYCREDIT_RECOVERY_POOL_ADDRESS
+    ?? (releaseDefaultsRequested ? RECOVERY_RELEASE_DEFAULTS.poolAddress : null);
+  const campaignNumber = env.RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER
+    ?? (releaseDefaultsRequested ? RECOVERY_RELEASE_DEFAULTS.campaignNumber : null);
+  const enabled = mode !== "false"
+    && (mode === "true" || Boolean(poolAddress) || Boolean(campaignNumber));
+
+  return Object.freeze({ enabled, poolAddress, campaignNumber, productionDefault });
 }
 
 export function createAppHandler({

@@ -3,10 +3,56 @@ import { createServer } from "node:http";
 import test from "node:test";
 
 import { WorkerError } from "../src/proof-worker.mjs";
-import { createAppHandler } from "../src/server.mjs";
+import {
+  RECOVERY_RELEASE_DEFAULTS,
+  createAppHandler,
+  resolveRecoveryBootstrap,
+} from "../src/server.mjs";
 
 const origin = "https://retrycredit.example";
 const wallet = "0x1111111111111111111111111111111111111111";
+
+test("production public mode selects the reviewed recovery release without dashboard drift", () => {
+  assert.deepEqual(
+    resolveRecoveryBootstrap({
+      RETRYCREDIT_PUBLIC_ENABLED: "true",
+      PUBLIC_ORIGIN: RECOVERY_RELEASE_DEFAULTS.publicOrigin,
+    }),
+    {
+      enabled: true,
+      poolAddress: RECOVERY_RELEASE_DEFAULTS.poolAddress,
+      campaignNumber: RECOVERY_RELEASE_DEFAULTS.campaignNumber,
+      productionDefault: true,
+    },
+  );
+
+  assert.deepEqual(
+    resolveRecoveryBootstrap({
+      RETRYCREDIT_PUBLIC_ENABLED: "true",
+      PUBLIC_ORIGIN: RECOVERY_RELEASE_DEFAULTS.publicOrigin,
+      RETRYCREDIT_RECOVERY_ENABLED: "false",
+    }),
+    { enabled: false, poolAddress: null, campaignNumber: null, productionDefault: false },
+  );
+
+  assert.deepEqual(
+    resolveRecoveryBootstrap({ RETRYCREDIT_RECOVERY_ENABLED: "true" }),
+    {
+      enabled: true,
+      poolAddress: RECOVERY_RELEASE_DEFAULTS.poolAddress,
+      campaignNumber: RECOVERY_RELEASE_DEFAULTS.campaignNumber,
+      productionDefault: false,
+    },
+  );
+
+  assert.deepEqual(
+    resolveRecoveryBootstrap({
+      RETRYCREDIT_RECOVERY_ENABLED: "true",
+      RETRYCREDIT_RECOVERY_POOL_ADDRESS: wallet,
+    }),
+    { enabled: true, poolAddress: wallet, campaignNumber: null, productionDefault: false },
+  );
+});
 
 test("disabled recovery config is shape-stable and CORS applies to GET and preflight", async () => {
   await withServer({ state: "disabled", service: null, error: null }, async (base) => {
