@@ -133,7 +133,7 @@ test("armed reconciliation serializes every retryable state until exact finality
     lifecycle("broadcast", "IDENTICAL_RAW_ACCEPTED"),
     lifecycle("broadcast-uncertain", "IDENTICAL_RAW_BROADCAST_UNCERTAIN"),
     lifecycle("pending", "EXPECTED_TRANSACTION_PENDING"),
-    lifecycle("mined", "AWAITING_FINALIZED_PLUS_TWO"),
+    lifecycle("mined", "MINED_TRANSACTION_PROPAGATING"),
     lifecycle("finalized", "FINALIZED_PLUS_TWO_VERIFIED"),
   ]);
   const supervisor = createRecoveryV2DeploymentSupervisor({

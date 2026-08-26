@@ -567,6 +567,37 @@ test("a later duplicate observes the exact pending transaction and does not rebr
   assert.equal(provider.broadcasts.length, 1);
 });
 
+test("a successful receipt waits for transaction propagation and later finalizes without signing", async () => {
+  const fixture = await deploymentFixture();
+  const wallet = trackingWallet(fixture.wallet);
+  const provider = minedProvider(fixture, {
+    receiptBlock: 100,
+    latestBlock: 102,
+    finalizedBlock: 102,
+  });
+  provider.transaction = null;
+
+  const propagating = await run(fixture, provider, {
+    wallet,
+    verification: truthChecks(),
+  });
+  assert.equal(propagating.status, "mined");
+  assert.equal(propagating.reason, "MINED_TRANSACTION_PROPAGATING");
+  assert.equal(propagating.receiptBlockNumber, 100);
+  assert.equal(wallet.signCalls, 0);
+  assert.equal(provider.broadcasts.length, 0);
+
+  provider.transaction = Transaction.from(fixture.rawTransaction);
+  const finalized = await run(fixture, provider, {
+    wallet,
+    verification: truthChecks(),
+  });
+  assert.equal(finalized.status, "finalized");
+  assert.equal(finalized.reason, "FINALIZED_PLUS_TWO_VERIFIED");
+  assert.equal(wallet.signCalls, 0);
+  assert.equal(provider.broadcasts.length, 0);
+});
+
 test("a successful receipt becomes finalized only after finality, two later blocks, and both checks", async () => {
   const fixture = await deploymentFixture();
   const provider = minedProvider(fixture, { receiptBlock: 100, latestBlock: 102, finalizedBlock: 102 });

@@ -831,7 +831,9 @@ async function reconcileDeployment({ provider, manifest, artifact, verification,
       return safeResult(RECOVERY_V2_DEPLOYMENT_STATUS.CONFLICT, "RECEIPT_STATUS_INVALID", manifest, state);
     }
     if (!state.transaction) {
-      return safeResult(RECOVERY_V2_DEPLOYMENT_STATUS.CONFLICT, "MINED_TRANSACTION_UNAVAILABLE", manifest, state);
+      return safeResult(RECOVERY_V2_DEPLOYMENT_STATUS.MINED, "MINED_TRANSACTION_PROPAGATING", manifest, state, {
+        receiptBlockNumber: normalizeBlockNumber(state.receipt.blockNumber),
+      });
     }
     if (state.latestNonce > 56 || state.pendingNonce > 56) {
       return safeResult(RECOVERY_V2_DEPLOYMENT_STATUS.CONFLICT, "SIGNER_NONCE_ADVANCED", manifest, state, {
