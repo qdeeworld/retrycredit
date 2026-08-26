@@ -4,21 +4,29 @@ import {
   AbiCoder,
   Interface,
   Wallet,
+  ZeroAddress,
   getAddress,
   id,
+  keccak256,
   parseEther,
 } from "ethers";
 
 import {
   RECOVERY_DISCOVERY_INDEX,
   RECOVERY_RELAYER_ROLE,
+  RECOVERY_RUNTIME_CODE_HASHES,
   RecoveryCampaignService,
   deriveRecoveryReplayIds,
   normalizeRecoveryBatchProof,
   recoveryChallengeMessage,
 } from "../src/recovery-campaign-service.mjs";
 import { deriveRoleKey } from "../src/role-key.mjs";
-import { recoveryCampaignAbi } from "../src/pool-abi.mjs";
+import {
+  recoveryCampaignAbi,
+  recoveryCampaignAbiV1,
+  recoveryCampaignAbiV2,
+  selectRecoveryCampaignAbi,
+} from "../src/pool-abi.mjs";
 import { MINT_SIGNED_SELECTOR, SEA_DROP_MAINNET } from "../src/seadrop-recovery.mjs";
 import { WorkerError } from "../src/proof-worker.mjs";
 
@@ -30,6 +38,7 @@ const relayer = new Wallet(`0x${"b1".repeat(32)}`);
 const poolAddress = getAddress("0x1111111111111111111111111111111111111111");
 const verifierAddress = getAddress("0x2222222222222222222222222222222222222222");
 const predicateAddress = getAddress("0x3333333333333333333333333333333333333333");
+const predecessorPoolAddress = getAddress("0x5555555555555555555555555555555555555555");
 const feeRecipient = getAddress("0x0000a26b00c1F0DF003000390027140000fAa719");
 const failedHash = `0x${"41".repeat(32)}`;
 const successHash = `0x${"42".repeat(32)}`;
@@ -41,6 +50,8 @@ const replayIds = deriveRecoveryReplayIds({
 });
 const { failureQueryId, successQueryId, pairId: contractPairId } = replayIds;
 const now = 2_000_000_000;
+const predecessorTermsHash = id("predecessor-campaign-terms");
+const predecessorBindingHash = id("predecessor-binding");
 const interface_ = new Interface(recoveryCampaignAbi);
 
 const discoveryIndex = Object.freeze([
@@ -97,7 +108,14 @@ test("configuration authenticates every binding and serializes campaign capacity
   assert.equal(config.publicOrigin, "https://retrycredit.example");
   assert.equal(config.relayerAddress, relayer.address);
   assert.equal(config.campaignNumber, 7);
+  assert.equal(config.contractVersion, "v1");
+  assert.deepEqual(config.lineage, {
+    scope: "campaign",
+    releasesUnlocked: true,
+    predecessor: null,
+  });
   assert.equal(config.campaign.creditAmount, parseEther("0.01").toString());
+  assert.equal(config.campaign.releaseState, "release-unlocked");
   assert.deepEqual(config.capacity, { total: 3, claimed: 0, remaining: 3 });
   assert.deepEqual(config.rule, {
     feeRecipient,
@@ -109,6 +127,188 @@ test("configuration authenticates every binding and serializes campaign capacity
   assert.equal(config.source.chainKey, 3);
   assert.equal(config.source.chainId, 1);
   assert.equal(config.settlement.chainId, 102031);
+});
+
+test("recovery ABI selection is explicit and defaults existing callers to V1", () => {
+  assert.equal(selectRecoveryCampaignAbi(), recoveryCampaignAbiV1);
+  assert.equal(selectRecoveryCampaignAbi("v1"), recoveryCampaignAbiV1);
+  assert.equal(selectRecoveryCampaignAbi("v2"), recoveryCampaignAbiV2);
+  assert.equal(new Interface(recoveryCampaignAbiV1).hasFunction("legacyPool"), false);
+  assert.equal(new Interface(recoveryCampaignAbiV2).hasFunction("legacyPool"), true);
+  assert.throws(
+    () => selectRecoveryCampaignAbi("2"),
+    /Unsupported recovery contract version/,
+  );
+  assert.throws(
+    () => serviceFixture({ configOverride: { contractVersion: "2" } }),
+    (error) => error instanceof WorkerError
+      && error.code === "INVALID_RECOVERY_CONFIGURATION",
+  );
+});
+
+test("contract versions are pinned to distinct exact runtime bytecode", async () => {
+  assert.match(RECOVERY_RUNTIME_CODE_HASHES.v1, /^0x[0-9a-f]{64}$/);
+  assert.match(RECOVERY_RUNTIME_CODE_HASHES.v2, /^0x[0-9a-f]{64}$/);
+  assert.notEqual(RECOVERY_RUNTIME_CODE_HASHES.v1, RECOVERY_RUNTIME_CODE_HASHES.v2);
+
+  const fixture = serviceFixture({
+    configOverride: {
+      contractVersion: "v2",
+      expectedRuntimeCodeHash: keccak256("0x6001"),
+    },
+  });
+  await assert.rejects(
+    fixture.service.readiness(),
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_MISCONFIGURED",
+  );
+});
+
+test("V2 fails closed on malformed predecessor identity and release-gate state", async (t) => {
+  const ZERO_HASH = `0x${"00".repeat(32)}`;
+  const scenarios = [
+    ["legacy campaign", { campaignNumber: 2n }, "RECOVERY_MISCONFIGURED"],
+    ["self predecessor", { poolAddress }, "RECOVERY_MISCONFIGURED"],
+    ["zero sponsor", { sponsor: ZeroAddress }, "RECOVERY_MISCONFIGURED"],
+    ["zero terms", { termsHash: ZERO_HASH }, "RECOVERY_MISCONFIGURED"],
+    ["zero binding", { bindingHash: ZERO_HASH }, "RECOVERY_MISCONFIGURED"],
+    ["empty source window", { startBlock: 105n, endBlock: 105n }, "RECOVERY_MISCONFIGURED"],
+    ["zero deadline", { deadline: 0n }, "RECOVERY_MISCONFIGURED"],
+    ["missing predecessor code", { predecessorCode: "0x" }, "RECOVERY_MISCONFIGURED"],
+    ["wrong predecessor runtime", { predecessorCode: "0x6001" }, "RECOVERY_MISCONFIGURED"],
+    ["wrong predecessor runner", { runnerAddress: outsider.address }, "RECOVERY_MISCONFIGURED"],
+    ["non-boolean release gate", { releasesUnlocked: "true" }, "RECOVERY_STATE_UNAVAILABLE"],
+  ];
+
+  for (const [name, lineageOverride, code] of scenarios) {
+    await t.test(name, async () => {
+      const fixture = serviceFixture({
+        configOverride: { contractVersion: "v2" },
+        lineageOverride,
+      });
+      await assert.rejects(
+        fixture.service.readiness(),
+        (error) => error instanceof WorkerError && error.code === code,
+      );
+    });
+  }
+});
+
+test("configured V2 exposes exact predecessor lineage while pair checks remain available", async () => {
+  const fixture = serviceFixture({
+    configOverride: { contractVersion: "v2" },
+    releasesUnlocked: false,
+  });
+  const config = await fixture.service.configuration();
+
+  assert.equal(config.contractVersion, "v2");
+  assert.deepEqual(config.lineage, {
+    scope: "sponsor",
+    releasesUnlocked: false,
+    predecessor: {
+      poolAddress: predecessorPoolAddress,
+      campaignNumber: 1,
+      sponsor: relayer.address,
+      termsHash: predecessorTermsHash.toLowerCase(),
+      deadline: now + 1_800,
+      startBlock: 95,
+      endBlock: 105,
+    },
+  });
+  assert.equal(config.campaign.releaseState, "continuation-waiting");
+  assert.equal(config.campaign.open, false);
+
+  const eligibility = await fixture.service.eligibility(source.address);
+  assert.equal(eligibility.status, "continuation-waiting");
+  assert.equal(eligibility.eligible, false);
+  assert.equal(eligibility.pair.failedTransactionHash, failedHash);
+  assert.deepEqual(eligibility.lineage, { scope: "sponsor", status: "unused" });
+  assert.equal(fixture.pairCalls, 1);
+  await assert.rejects(
+    fixture.service.challenge(source.address),
+    (error) => error instanceof WorkerError
+      && error.code === "RECOVERY_CONTINUATION_WAITING"
+      && error.status === 425,
+  );
+  assert.equal(fixture.pairCalls, 1);
+});
+
+test("configured V2 unlock and exact predecessor/sponsor claims are explicit", async (t) => {
+  await t.test("release-unlocked", async () => {
+    const fixture = serviceFixture({
+      configOverride: { contractVersion: "v2" },
+      releasesUnlocked: true,
+    });
+    const config = await fixture.service.configuration();
+    assert.equal(config.lineage.releasesUnlocked, true);
+    assert.equal(config.campaign.releaseState, "release-unlocked");
+    const eligibility = await fixture.service.eligibility(source.address);
+    assert.equal(eligibility.status, "eligible");
+    assert.deepEqual(eligibility.lineage, { scope: "sponsor", status: "unused" });
+    assert.equal(fixture.pairCalls, 1);
+  });
+
+  for (const scenario of [
+    { name: "claimed-predecessor", predecessorClaimed: true },
+    { name: "claimed-sponsor", sponsorClaimed: true },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const fixture = serviceFixture({
+        configOverride: { contractVersion: "v2" },
+        releasesUnlocked: true,
+        predecessorClaimed: scenario.predecessorClaimed,
+        sponsorClaimed: scenario.sponsorClaimed,
+      });
+      const eligibility = await fixture.service.eligibility(source.address);
+      assert.equal(eligibility.status, "claimed");
+      assert.equal(eligibility.eligible, false);
+      assert.deepEqual(eligibility.lineage, {
+        scope: "sponsor",
+        status: scenario.name,
+      });
+      assert.equal(fixture.pairCalls, 1);
+    });
+  }
+});
+
+test("a V2 release finalizes both campaign and sponsor-lineage replay state", async () => {
+  const fixture = serviceFixture({
+    configOverride: { contractVersion: "v2" },
+    releasesUnlocked: true,
+  });
+  const challenge = await fixture.service.challenge(source.address);
+  const result = await fixture.service.release(await signedRequest(challenge, source));
+  assert.equal(result.status, "released");
+  assert.deepEqual(result.lineage, { scope: "sponsor", status: "claimed-current" });
+  assert.equal(fixture.releaseCalls, 1);
+
+  const claimed = await fixture.service.eligibility(source.address);
+  assert.equal(claimed.status, "claimed");
+  assert.deepEqual(claimed.lineage, { scope: "sponsor", status: "claimed-current" });
+  assert.equal(claimed.release.transactionHash, result.release.transactionHash);
+});
+
+test("V2 predecessor and sponsor replay markers stop release before simulation", async (t) => {
+  for (const scenario of [
+    { name: "predecessor replay", predecessorReplayConsumed: true },
+    { name: "sponsor replay", sponsorReplayConsumed: true },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const fixture = serviceFixture({
+        configOverride: { contractVersion: "v2" },
+        releasesUnlocked: true,
+        ...scenario,
+      });
+      const challenge = await fixture.service.challenge(source.address);
+      await assert.rejects(
+        fixture.service.release(await signedRequest(challenge, source)),
+        (error) => error instanceof WorkerError
+          && error.code === "RECOVERY_REPLAYED"
+          && /predecessor or sponsor lineage/.test(error.message),
+      );
+      assert.equal(fixture.staticCalls, 0);
+      assert.equal(fixture.releaseCalls, 0);
+    });
+  }
 });
 
 test("release receipt scans reject unsafe provider ranges", () => {
@@ -165,6 +365,7 @@ test("a discovery miss never invokes live-pair authority", async () => {
   const result = await fixture.service.eligibility(outsider.address);
   assert.equal(result.status, "not-found");
   assert.equal(result.eligible, false);
+  assert.equal(result.lineage, null);
   assert.equal(fixture.pairCalls, 0);
 });
 
@@ -189,6 +390,7 @@ test("eligibility exposes one exact pair and never accepts a payout destination"
   assert.equal(eligibility.pair.failedTransactionHash, failedHash);
   assert.equal(eligibility.pair.successfulTransactionHash, successHash);
   assert.equal(eligibility.pair.valueWei, "5000000000000000");
+  assert.deepEqual(eligibility.lineage, { scope: "campaign", status: "unused" });
   assert.equal("destination" in eligibility, false);
 
   await assert.rejects(
@@ -550,7 +752,9 @@ test("a signed release is publicly reconcilable as processing until it settles",
 
   proofGate.resolve();
   assert.equal((await release).status, "released");
-  assert.equal((await fixture.service.intakeEligibility({ pair: pairIdentity() })).status, "claimed");
+  const claimed = await fixture.service.intakeEligibility({ pair: pairIdentity() });
+  assert.equal(claimed.status, "claimed");
+  assert.deepEqual(claimed.lineage, { scope: "campaign", status: "claimed-current" });
 });
 
 test("a claimed wallet's different pair is rejected without attaching the prior receipt", async () => {
@@ -849,10 +1053,16 @@ function serviceFixture({
   ethereumProviders = [],
   useEthereumResolver = false,
   replayConsumed = false,
+  predecessorReplayConsumed = false,
+  sponsorReplayConsumed = false,
   verifierPredicate = predicateAddress,
   campaignReaderOverride,
   ruleReaderOverride,
   claimedReaderOverride,
+  releasesUnlocked = true,
+  predecessorClaimed = false,
+  sponsorClaimed = false,
+  lineageOverride = {},
   configOverride = {},
 } = {}) {
   let currentNow = now;
@@ -927,6 +1137,15 @@ function serviceFixture({
     async chainInfo() { return "0x0000000000000000000000000000000000000fd3"; },
     async SOURCE_CHAIN_KEY() { return 3n; },
     async SOURCE_CHAIN_ID() { return 1n; },
+    async LEGACY_CAMPAIGN_NUMBER() { return lineageOverride.campaignNumber ?? 1n; },
+    async legacyPool() { return lineageOverride.poolAddress ?? predecessorPoolAddress; },
+    async legacySponsor() { return lineageOverride.sponsor ?? relayer.address; },
+    async legacyTermsHash() { return lineageOverride.termsHash ?? predecessorTermsHash; },
+    async legacyBindingHash() { return lineageOverride.bindingHash ?? predecessorBindingHash; },
+    async legacyStartBlock() { return lineageOverride.startBlock ?? 95n; },
+    async legacyEndBlock() { return lineageOverride.endBlock ?? 105n; },
+    async legacyDeadline() { return lineageOverride.deadline ?? BigInt(now + 1_800); },
+    async releasesUnlocked() { return lineageOverride.releasesUnlocked ?? releasesUnlocked; },
     async getCampaign() {
       campaignReads += 1;
       if (campaignReaderOverride) return campaignReaderOverride({ campaign, rule });
@@ -941,6 +1160,19 @@ function serviceFixture({
       claimedReads += 1;
       if (claimedReaderOverride) return claimedReaderOverride({ wallet, claimedWallets });
       return claimedWallets.has(getAddress(wallet).toLowerCase());
+    },
+    async claimedBySponsor(sponsor, wallet) {
+      assert.equal(getAddress(sponsor), getAddress(campaign.sponsor));
+      return (sponsorClaimed || claimedWallets.has(getAddress(wallet).toLowerCase()))
+        && getAddress(wallet) === source.address;
+    },
+    async consumedQueriesBySponsor(sponsor, queryId) {
+      assert.equal(getAddress(sponsor), getAddress(campaign.sponsor));
+      return sponsorReplayConsumed || consumedQueries.has(String(queryId).toLowerCase());
+    },
+    async consumedPairsBySponsor(sponsor, pairId) {
+      assert.equal(getAddress(sponsor), getAddress(campaign.sponsor));
+      return sponsorReplayConsumed || consumedPairs.has(String(pairId).toLowerCase());
     },
     async queryFilter(_filter, fromBlock, toBlock) {
       logQueries.push([fromBlock, toBlock]);
@@ -978,9 +1210,28 @@ function serviceFixture({
       return merkleProof.root === `0x${"83".repeat(32)}` ? 3n : 5n;
     },
   };
+  const predecessorPool = {
+    target: lineageOverride.runnerAddress ?? predecessorPoolAddress,
+    async claimedByCampaign(campaignNumber, wallet) {
+      assert.equal(Number(campaignNumber), 1);
+      return predecessorClaimed && getAddress(wallet) === source.address;
+    },
+    async consumedQueries(campaignNumber) {
+      assert.equal(Number(campaignNumber), 1);
+      return predecessorReplayConsumed;
+    },
+    async consumedPairs(campaignNumber) {
+      assert.equal(Number(campaignNumber), 1);
+      return predecessorReplayConsumed;
+    },
+  };
   const ccProvider = {
     async getNetwork() { return { chainId: 102031n }; },
-    async getCode() { return "0x6000"; },
+    async getCode(address) {
+      return getAddress(address) === poolAddress
+        ? "0x6000"
+        : lineageOverride.predecessorCode ?? "0x6000";
+    },
     async getBalance() { return sourceBalance; },
     async getBlockNumber() { return 700; },
   };
@@ -1004,6 +1255,7 @@ function serviceFixture({
     verifierContract: verifier,
     predicateContract: predicate,
     nativeVerifierContract: nativeVerifier,
+    predecessorPoolContract: predecessorPool,
     discoveryIndex,
     ethereumProviders,
     ...(!useEthereumResolver ? {
@@ -1016,6 +1268,8 @@ function serviceFixture({
     } : {}),
     now: () => currentNow,
     config: {
+      expectedRuntimeCodeHash: keccak256("0x6000"),
+      expectedPredecessorRuntimeCodeHash: keccak256("0x6000"),
       releaseLogChunkBlocks: 100,
       releaseLogLookbackBlocks: 250,
       ...configOverride,

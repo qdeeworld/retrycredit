@@ -46,6 +46,12 @@ import {
   validateRecoveryConfigResponse,
   walletsMatch,
 } from "./recovery-ui-state.mjs";
+import {
+  clearRecoveryResumeState,
+  loadRecoveryResumeCandidate,
+  loadRecoveryResumeState,
+  saveRecoveryResumeState,
+} from "./recovery-resume-state.mjs";
 import "./styles.css";
 
 const ETHEREUM_EXPLORER = "https://etherscan.io";
@@ -67,7 +73,7 @@ const ROUTES = Object.freeze([
     label: "Recovery",
     icon: Radio,
     documentTitle: "RetryCredit | Check a paid retry for recovery",
-    headingId: "campaign-heading",
+    headingId: "eligibility-heading",
   },
   {
     path: "/cases",
@@ -96,6 +102,8 @@ function App() {
   const pairOperations = useRef(null);
   const walletOperations = useRef(null);
   const authorizationInFlight = useRef(false);
+  const resumeReconciliation = useRef("");
+  const submittedRecoveryStartedAt = useRef(null);
   const previousDeskFlow = useRef("empty");
   if (!pairOperations.current) pairOperations.current = createPairOperationGuard();
   if (!walletOperations.current) walletOperations.current = createWalletOperationGuard();
@@ -130,6 +138,31 @@ function App() {
   function updateEligibility(next) {
     eligibilityRef.current = next;
     setEligibility(next);
+  }
+
+  function persistSubmittedRecovery(status, record = eligibilityRef.current) {
+    const liveConfig = configRef.current;
+    const release = record?.release;
+    if (!liveConfig?.enabled || !record?.wallet || !record?.pair) return null;
+    return saveRecoveryResumeState({
+      status,
+      createdAt: submittedRecoveryStartedAt.current ?? undefined,
+      poolAddress: liveConfig.poolAddress,
+      campaignNumber: liveConfig.campaignNumber,
+      wallet: record.wallet,
+      failedTransactionHash: record.pair.failedTransactionHash,
+      successfulTransactionHash: record.pair.successfulTransactionHash,
+      failureQueryId: release?.failureQueryId ?? null,
+      successQueryId: release?.successQueryId ?? null,
+      pairId: release?.pairId ?? null,
+      releaseTransactionHash: release?.transactionHash ?? null,
+    });
+  }
+
+  function clearSubmittedRecovery() {
+    resumeReconciliation.current = "";
+    submittedRecoveryStartedAt.current = null;
+    clearRecoveryResumeState();
   }
 
   function fetchRecoveryConfig() {
@@ -198,6 +231,111 @@ function App() {
       document.removeEventListener("visibilitychange", refreshVisible);
     };
   }, []);
+
+  useEffect(() => {
+    const liveConfig = config;
+    if (!online || configState !== "ready" || !liveConfig?.enabled) return undefined;
+    const candidate = loadRecoveryResumeCandidate({
+      poolAddress: liveConfig.poolAddress,
+      campaignNumber: liveConfig.campaignNumber,
+    });
+    if (!candidate) return undefined;
+    submittedRecoveryStartedAt.current = candidate.createdAt;
+    const reconciliationKey = [
+      candidate.poolAddress,
+      candidate.campaignNumber,
+      candidate.wallet,
+      candidate.failedTransactionHash,
+      candidate.successfulTransactionHash,
+      candidate.updatedAt,
+      liveConfig.contractVersion,
+      liveConfig.publicOrigin,
+      liveConfig.campaign?.creditAmount,
+      liveConfig.lineage?.releasesUnlocked,
+    ].join(":");
+    if (resumeReconciliation.current === reconciliationKey) return undefined;
+    resumeReconciliation.current = reconciliationKey;
+
+    const pair = {
+      failedTransactionHash: candidate.failedTransactionHash,
+      successfulTransactionHash: candidate.successfulTransactionHash,
+    };
+    pairDraftRef.current = pair;
+    setPairDraft(pair);
+    setPairErrors({});
+    setReleaseResult(null);
+    setError("Rechecking the submitted pair from public recovery state. No signature or release is being replayed.");
+    updateFlow("release-uncertain");
+    const operation = pairOperations.current.begin(pair);
+    let active = true;
+
+    checkRecoveryPairEligibility({ apiOrigin: API_ORIGIN, pair })
+      .then((response) => {
+        if (!active || !pairOperations.current.isCurrent(operation)) return;
+        if (!recoveryCampaignsMatch(liveConfig, configRef.current)) return;
+        const result = validatePairEligibilityResponse({
+          response,
+          requestedPair: pair,
+          config: liveConfig,
+        });
+        const exactResume = loadRecoveryResumeState({
+          poolAddress: liveConfig.poolAddress,
+          campaignNumber: liveConfig.campaignNumber,
+          wallet: result.wallet,
+          failedTransactionHash: pair.failedTransactionHash,
+          successfulTransactionHash: pair.successfulTransactionHash,
+        });
+        if (!exactResume || !walletsMatch(result.wallet, candidate.wallet)) {
+          clearSubmittedRecovery();
+          updateEligibility(null);
+          setError("The stored recovery identity no longer matches the live-derived source wallet. Check the pair again.");
+          updateFlow("pair-changed");
+          return;
+        }
+
+        updateEligibility(result);
+        if (result.status === "claimed") {
+          setReleaseResult(result.release ? result : null);
+          setError("");
+          updateFlow("already-claimed");
+          persistSubmittedRecovery("already-claimed", result);
+        } else if (result.status === "processing") {
+          setError("The submitted release is still processing. RetryCredit will not request another signature.");
+          updateFlow("release-processing");
+          persistSubmittedRecovery("release-processing", result);
+        } else if (result.status === "eligible") {
+          setError("No release receipt is visible yet. RetryCredit will keep this submitted pair locked for its original fifteen-minute reconciliation window.");
+          updateFlow("release-uncertain");
+          persistSubmittedRecovery("release-uncertain", result);
+        } else {
+          clearSubmittedRecovery();
+          setError("");
+          updateFlow(result.status === "full"
+            ? "campaign-full"
+            : result.status === "closed"
+              ? "campaign-closed"
+              : "continuation-waiting");
+        }
+      })
+      .catch((nextError) => {
+        if (!active || !pairOperations.current.isCurrent(operation)) return;
+        resumeReconciliation.current = "";
+        setError(`The submitted pair could not be reconciled yet. ${cleanError(nextError)}`);
+        updateFlow("release-uncertain");
+      });
+
+    return () => { active = false; };
+  }, [
+    config?.enabled,
+    config?.poolAddress,
+    config?.campaignNumber,
+    config?.contractVersion,
+    config?.publicOrigin,
+    config?.campaign?.creditAmount,
+    config?.lineage?.releasesUnlocked,
+    configState,
+    online,
+  ]);
 
   useEffect(() => {
     if (!window.ethereum) return undefined;
@@ -329,6 +467,7 @@ function App() {
     if (featuredChanged) setFeaturedEligibility(null);
     if (!campaignChanged) return;
 
+    clearSubmittedRecovery();
     const connected = walletOperations.current.currentAccount();
     walletOperations.current.begin(connected);
     pairOperations.current.invalidate();
@@ -368,6 +507,7 @@ function App() {
     if (interruptedRelease) {
       setError("The connected account changed after submission. Check the exact pair before authorizing anything again.");
       updateFlow("release-uncertain");
+      persistSubmittedRecovery("release-uncertain", liveEligibility);
       return true;
     }
     if (walletsMatch(next, liveEligibility.wallet)) {
@@ -392,6 +532,7 @@ function App() {
   }
 
   function changePairField(field, value) {
+    clearSubmittedRecovery();
     const next = { ...pairDraftRef.current, [field]: value };
     const hadDerivedState = Boolean(eligibilityRef.current || releaseResult || busy);
     pairDraftRef.current = next;
@@ -407,6 +548,7 @@ function App() {
   function loadRecoveredExample() {
     const featured = configRef.current?.featuredCase;
     if (!featured) return;
+    clearSubmittedRecovery();
     const next = {
       failedTransactionHash: featured.failedTransactionHash,
       successfulTransactionHash: featured.successfulTransactionHash,
@@ -447,21 +589,43 @@ function App() {
       const response = await checkRecoveryPairEligibility({ apiOrigin: API_ORIGIN, pair });
       if (!operationIsCurrent(operation)) return;
       const result = validatePairEligibilityResponse({ response, requestedPair: pair, config: liveConfig });
+      const resumedSubmission = loadRecoveryResumeState({
+        poolAddress: liveConfig.poolAddress,
+        campaignNumber: liveConfig.campaignNumber,
+        wallet: result.wallet,
+        failedTransactionHash: pair.failedTransactionHash,
+        successfulTransactionHash: pair.successfulTransactionHash,
+      });
+      if (resumedSubmission) submittedRecoveryStartedAt.current = resumedSubmission.createdAt;
       updateEligibility(result);
       if (result.status === "claimed") {
-        setReleaseResult(result);
+        setReleaseResult(result.release ? result : null);
+        if (resumedSubmission) persistSubmittedRecovery("already-claimed", result);
         updateFlow("already-claimed");
       } else if (result.eligible && result.status === "eligible") {
         setReleaseResult(null);
-        const currentAccount = walletOperations.current.currentAccount();
-        updateFlow(currentAccount && !walletsMatch(currentAccount, result.wallet) ? "wrong-wallet" : "qualifying");
+        if (resumedSubmission) {
+          setError("No release receipt is visible yet. The submitted pair remains locked for its original fifteen-minute reconciliation window.");
+          updateFlow("release-uncertain");
+          persistSubmittedRecovery("release-uncertain", result);
+        } else {
+          const currentAccount = walletOperations.current.currentAccount();
+          updateFlow(currentAccount && !walletsMatch(currentAccount, result.wallet) ? "wrong-wallet" : "qualifying");
+        }
       } else if (result.status === "processing") {
         setReleaseResult(null);
+        if (resumedSubmission) persistSubmittedRecovery("release-processing", result);
         updateFlow("release-processing");
+      } else if (result.status === "continuation-waiting") {
+        clearSubmittedRecovery();
+        setReleaseResult(null);
+        updateFlow("continuation-waiting");
       } else if (result.status === "closed") {
+        clearSubmittedRecovery();
         updateFlow("campaign-closed");
         void refreshConfig();
       } else if (result.status === "full") {
+        clearSubmittedRecovery();
         updateFlow("campaign-full");
         void refreshConfig();
       }
@@ -482,13 +646,17 @@ function App() {
     if (
       authorizationInFlight.current
       || isBusyFlow(flowRef.current)
-      || ["release-processing", "release-uncertain", "campaign-closed", "campaign-full"].includes(flowRef.current)
+      || ["release-processing", "release-uncertain", "continuation-waiting", "campaign-closed", "campaign-full"].includes(flowRef.current)
     ) return;
     const liveEligibility = eligibilityRef.current;
     if (!liveEligibility?.eligible) return;
     const liveConfig = configRef.current;
     if (!liveConfig?.enabled) {
       updateFlow("service-unavailable");
+      return;
+    }
+    if (isContinuationWaiting(liveConfig)) {
+      updateFlow("continuation-waiting");
       return;
     }
     const liveAvailability = recoveryCampaignAvailability(liveConfig);
@@ -551,8 +719,10 @@ function App() {
         params: [hexlify(toUtf8Bytes(challenge.message)), wallet],
       });
       if (!operationIsCurrent(operation, walletOperation)) return;
+      submittedRecoveryStartedAt.current = Date.now();
       updateFlow("proof-queued");
       releaseSubmitted = true;
+      persistSubmittedRecovery("proof-queued", liveEligibility);
       const releaseResponse = await releaseRecoveryPairWhenReady({
         apiOrigin: API_ORIGIN,
         authorizationStartedAtMs,
@@ -563,15 +733,22 @@ function App() {
         expiresAt: challenge.expiresAt,
         signature,
         onPending: () => {
-          if (operationIsCurrent(operation, walletOperation)) updateFlow("proof-building");
+          if (operationIsCurrent(operation, walletOperation)) {
+            updateFlow("proof-building");
+            persistSubmittedRecovery("proof-building", liveEligibility);
+          }
         },
         onRetrying: () => {
-          if (operationIsCurrent(operation, walletOperation)) updateFlow("release-relaying");
+          if (operationIsCurrent(operation, walletOperation)) {
+            updateFlow("release-relaying");
+            persistSubmittedRecovery("release-relaying", liveEligibility);
+          }
         },
       });
       if (!operationIsCurrent(operation, walletOperation)) {
         setError("The browser state changed after submission. Check the exact pair before authorizing anything again.");
         updateFlow("release-uncertain");
+        persistSubmittedRecovery("release-uncertain", liveEligibility);
         return;
       }
       const released = validatePairReleaseResponse({
@@ -583,16 +760,22 @@ function App() {
       setReleaseResult(released);
       updateEligibility({ ...liveEligibility, ...released, eligible: false });
       updateFlow(released.status === "claimed" ? "already-claimed" : "released");
+      persistSubmittedRecovery(
+        released.status === "claimed" ? "already-claimed" : "released",
+        { ...liveEligibility, ...released, eligible: false },
+      );
       refreshConfig();
     } catch (nextError) {
       if (!operationIsCurrent(operation, walletOperation)) {
         if (releaseSubmitted) {
           setError("The browser state changed after submission. Check the exact pair before authorizing anything again.");
           updateFlow("release-uncertain");
+          persistSubmittedRecovery("release-uncertain", liveEligibility);
         }
         return;
       }
       if (["RECOVERY_CLOSED", "RECOVERY_FULL"].includes(nextError?.code)) {
+        clearSubmittedRecovery();
         const status = nextError.code === "RECOVERY_FULL" ? "full" : "closed";
         updateEligibility({ ...liveEligibility, eligible: false, status, reason: cleanError(nextError) });
         setError(cleanError(nextError));
@@ -602,6 +785,7 @@ function App() {
       } else if (releaseSubmitted) {
         setError("The browser did not confirm the submitted release. Check this exact pair before signing again; the server may still finish it.");
         updateFlow("release-uncertain");
+        persistSubmittedRecovery("release-uncertain", liveEligibility);
         return;
       } else if (isRecoveryResponseMismatch(nextError)) {
         await refreshAfterResponseMismatch(nextError, operation, walletOperation);
@@ -646,6 +830,8 @@ function App() {
       || authorizationInFlight.current
       || isBusyFlow(flowRef.current)
       || needsReleaseStatusCheck(flowRef.current)
+      || flowRef.current === "continuation-waiting"
+      || isContinuationWaiting(configRef.current)
     ) return;
     const operation = pairOperations.current.begin(expectedEligibility.pair);
     updateFlow("wallet-connecting");
@@ -672,7 +858,17 @@ function App() {
   const terminal = ["released", "already-claimed"].includes(flow);
   const preserveSubmittedFlow = ["proof-queued", "proof-building", "release-relaying", "release-processing", "release-uncertain"].includes(flow);
   const campaignAvailability = recoveryCampaignAvailability(config);
-  const campaignUnavailable = configState === "ready" && campaignAvailability !== "open" && !terminal && !busy && !preserveSubmittedFlow;
+  const continuationWaiting = isContinuationWaiting(config);
+  const campaignUnavailable = configState === "ready"
+    && !["open", "continuation-waiting"].includes(campaignAvailability)
+    && !terminal
+    && !busy
+    && !preserveSubmittedFlow;
+  const showContinuationBaseline = continuationWaiting
+    && ["empty", "editing"].includes(flow)
+    && !terminal
+    && !busy
+    && !preserveSubmittedFlow;
   const effectiveFlow = !online && !terminal && !preserveSubmittedFlow
     ? "offline"
     : configState === "loading" && !terminal && !preserveSubmittedFlow
@@ -680,8 +876,12 @@ function App() {
       : configState === "unavailable" && !terminal && !preserveSubmittedFlow
         ? "service-unavailable"
         : campaignUnavailable
-          ? campaignAvailability === "full" ? "campaign-full" : "campaign-closed"
-          : flow;
+          ? campaignAvailability === "full"
+            ? "campaign-full"
+            : "campaign-closed"
+          : showContinuationBaseline
+            ? "continuation-waiting"
+            : flow;
 
   const context = useMemo(() => ({
     account,
@@ -705,6 +905,7 @@ function App() {
     && online
     && configState === "ready"
     && campaignAvailability === "open"
+    && !continuationWaiting
     && !busy
     && !needsReleaseStatusCheck(flow)
   );
@@ -740,8 +941,11 @@ function App() {
 
 function AppHeader({ account, config, configState, online, route, onConnect, walletActionEnabled }) {
   const campaignAvailability = recoveryCampaignAvailability(config);
+  const continuationWaiting = isContinuationWaiting(config);
   const service = !online
     ? "offline"
+    : configState === "ready" && continuationWaiting
+      ? "continuation-waiting"
     : configState === "ready" && campaignAvailability !== "open"
       ? campaignAvailability === "full" ? "campaign-full" : "campaign-closed"
       : configState;
@@ -791,8 +995,8 @@ function RecoveryPage(props) {
   const { config, configState, eligibility, flow, releaseResult } = props;
   return <div className="route-page recovery-page">
     <div className="campaign-layout">
-      <CampaignFile config={config} configState={configState} />
       <EligibilityDesk {...props} />
+      <CampaignFile config={config} configState={configState} />
     </div>
     <EvidenceBand config={config} eligibility={eligibility} flow={flow} releaseResult={releaseResult} />
     <section className="plain-boundary" aria-labelledby="boundary-heading">
@@ -814,19 +1018,24 @@ function CampaignFile({ config, configState }) {
   const capacity = config?.capacity;
   const campaignReady = configState === "ready" && config?.enabled === true;
   const campaignAvailability = recoveryCampaignAvailability(config);
+  const continuationWaiting = isContinuationWaiting(config);
   const campaignFull = campaignAvailability === "full";
   const campaignClosed = campaignReady && ["closed", "full"].includes(campaignAvailability);
   return <section className="campaign-file" aria-labelledby="campaign-heading">
     <div className="file-registration" aria-hidden="true"><span /><span /><span /></div>
-    <h1 id="campaign-heading" tabIndex="-1">{!campaignReady
+    <h2 id="campaign-heading" tabIndex="-1">{!campaignReady
       ? "The recovery campaign is being verified."
       : campaignClosed
       ? campaignFull ? "This recovery campaign has filled." : "This recovery campaign has closed."
-      : "A completed mint can unlock one fixed credit."}</h1>
+      : continuationWaiting
+      ? "This funded continuation is waiting to release."
+      : "A completed mint can unlock one fixed credit."}</h2>
     <p className="campaign-summary">{!campaignReady
       ? "Funding, capacity, rule, and deadline facts will appear only after the recovery service returns one complete authenticated configuration."
       : campaignClosed
       ? "The public source-pair record remains inspectable, but this campaign is not accepting another fixed release."
+      : continuationWaiting
+      ? "Continuation funded — releases begin after the predecessor campaign fills or passes its deadline. Pair checks remain available while prior wallet and proof use stays excluded."
       : "This funded campaign recognizes the same Ethereum wallet moving from a failed paid SeaDrop mint to its completed mint. RetryCredit pre-funds the bounded Creditcoin release."}</p>
     <dl className="campaign-facts">
       <div>
@@ -846,8 +1055,30 @@ function CampaignFile({ config, configState }) {
         <dd>{formatDeadline(campaign?.deadline)}</dd>
       </div>
     </dl>
+    <CampaignTerms config={config} />
     <p className="funding-note"><CircleDot aria-hidden="true" /> Campaign {config?.campaignNumber ? `#${config.campaignNumber}` : "awaiting publication"}. SeaDrop, OpenSea, and the NFT collection do not sponsor or endorse this pilot.</p>
   </section>;
+}
+
+function CampaignTerms({ config }) {
+  const campaign = config?.campaign;
+  const predecessor = isLineageV2(config) ? config.lineage.predecessor : null;
+  return <details className="campaign-terms">
+    <summary>
+      <span>Expand campaign terms</span>
+      <ChevronRight aria-hidden="true" />
+    </summary>
+    <dl>
+      <ProtocolField label="Funded reserve" value={campaign?.fundedAmount ? formatCredit(campaign.fundedAmount) : null} />
+      <ProtocolField label="Recovery pool" value={config?.poolAddress} />
+      <ProtocolField label="Fee recipient" value={config?.rule?.feeRecipient} />
+      <ProtocolField label="Terms hash" value={campaign?.termsHash} />
+      {predecessor && <ProtocolField label="Predecessor" value={`${short(predecessor.poolAddress)} · campaign #${predecessor.campaignNumber}`} />}
+      {predecessor && <ProtocolField label="Continuation gate" value={config.lineage.releasesUnlocked
+        ? "Predecessor boundary satisfied"
+        : `Predecessor fills or passes ${formatDeadline(predecessor.deadline)}`} />}
+    </dl>
+  </details>;
 }
 
 function EligibilityDesk({
@@ -878,16 +1109,18 @@ function EligibilityDesk({
     || configState === "loading";
   const authorizationDisabled = busy
     || flow === "offline"
+    || flow === "continuation-waiting"
     || ["campaign-closed", "campaign-full"].includes(flow)
     || needsStatusCheck
     || !hasQualifyingResult;
   const campaignAcceptsAuthorization = configState === "ready"
-    && recoveryCampaignAvailability(config) === "open";
+    && recoveryCampaignAvailability(config) === "open"
+    && !isContinuationWaiting(config);
   return <section className={`eligibility-desk state-${flow}`} aria-labelledby="eligibility-heading">
     <div className="desk-heading">
       <span className="state-mark" aria-hidden="true">{stateIcon(flow)}</span>
       <div>
-        <h2 id="eligibility-heading" tabIndex="-1">{copy.title}</h2>
+        <h1 id="eligibility-heading" tabIndex="-1">{copy.title}</h1>
         <p role="status" aria-live="polite" aria-atomic="true">{copy.body}</p>
       </div>
     </div>
@@ -937,6 +1170,18 @@ function EligibilityDesk({
       >
         Load published example <ChevronRight aria-hidden="true" />
       </button>
+
+      <details className="transaction-help">
+        <summary>
+          <span>How to find these transactions</span>
+          <ChevronRight aria-hidden="true" />
+        </summary>
+        <ol>
+          <li>Open the source wallet&apos;s activity on Etherscan.</li>
+          <li>Choose the failed paid SeaDrop mint, then the later completed retry for the same mint.</li>
+          <li>Paste each transaction hash or its full etherscan.io transaction URL above.</li>
+        </ol>
+      </details>
     </form>
 
     {eligibility?.wallet && <div className="wallet-readout">
@@ -944,6 +1189,8 @@ function EligibilityDesk({
       <code>{eligibility.wallet}</code>
       <small>{account ? `Connected: ${short(account)}` : "No wallet requested during the check"}</small>
     </div>}
+
+    <LineageAssurance config={config} eligibility={eligibility} />
 
     {error && <div className="inline-notice" role="alert">
       <AlertCircle aria-hidden="true" />
@@ -965,12 +1212,35 @@ function EligibilityDesk({
       {busy ? <LoaderCircle className="spin" aria-hidden="true" /> : <Wallet aria-hidden="true" />}
     </button>}
 
-    {["semantic-mismatch", "campaign-closed", "campaign-full"].includes(flow) && <a className="secondary-action" href="/cases" onClick={(event) => navigate(event, "/cases")}>
+    {["semantic-mismatch", "continuation-waiting", "campaign-closed", "campaign-full"].includes(flow) && <a className="secondary-action" href="/cases" onClick={(event) => navigate(event, "/cases")}>
       Inspect the public case <ChevronRight aria-hidden="true" />
     </a>}
 
     <p id="authorization-scope-note" className="destination-note"><LockKeyhole aria-hidden="true" /> No destination field and no network switch. The signature gates RetryCredit&apos;s hosted relayer for this exact pair; the contract independently derives the source-wallet recipient.</p>
   </section>;
+}
+
+function LineageAssurance({ config, eligibility }) {
+  if (!isLineageV2(config)) return null;
+  const predecessor = config.lineage.predecessor;
+  const status = eligibility?.lineage?.status;
+  const copy = lineageEligibilityCopy(status, config.lineage.releasesUnlocked);
+  return <aside className={`lineage-assurance lineage-${status ?? "pending"}`} aria-label="Continuation replay protection">
+    <div>
+      <ShieldCheck aria-hidden="true" />
+      <span>
+        <small>Continuation lineage</small>
+        <strong>{copy.title}</strong>
+      </span>
+    </div>
+    <p role={status ? "status" : undefined}>{copy.body}</p>
+    <ul>
+      <li>Predecessor campaign #{predecessor.campaignNumber} checked</li>
+      <li>Sponsor-wide wallet, query, and pair replay guard</li>
+      <li>An unrelated pool cannot mark this retry as used</li>
+      <li>Source-derived payout only</li>
+    </ul>
+  </aside>;
 }
 
 function TransactionField({ disabled, error, helper, id, label, marker, onChange, value }) {
@@ -1021,9 +1291,11 @@ function EvidenceBand({ config, eligibility, flow, releaseResult }) {
   const { pair, release, wallet } = evidence;
   const paymentValue = formatEthValue(pair?.valueWei);
   const mintPrice = formatEthValue(pair?.mintPriceWei);
+  const continuationWaiting = isContinuationWaiting(config);
   const releaseAvailable = eligibility?.eligible === true
     && recoveryRecordMatchesConfig(eligibility, config)
-    && recoveryCampaignAvailability(config) === "open";
+    && recoveryCampaignAvailability(config) === "open"
+    && !continuationWaiting;
   const releaseProcessing = ["release-processing", "release-uncertain"].includes(flow)
     || eligibility?.status === "processing";
   return <section className="evidence-band" aria-labelledby="evidence-heading">
@@ -1071,12 +1343,14 @@ function EvidenceBand({ config, eligibility, flow, releaseResult }) {
       />
       <div className="sequence-link" aria-hidden="true"><ArrowRight /></div>
       <EvidenceStep
-        kind={release ? "released" : "funded"}
+        kind={release ? "released" : continuationWaiting ? "waiting" : "funded"}
         number="C"
         title={release
           ? "Fixed credit released"
           : releaseProcessing
             ? "Release status needs confirmation"
+            : continuationWaiting
+              ? "Continuation release is waiting"
             : releaseAvailable ? "Fixed release awaits authorization" : "No new release available"}
         subtitle="Creditcoin Testnet · source-derived payout"
         hash={release?.transactionHash}
@@ -1088,6 +1362,8 @@ function EvidenceBand({ config, eligibility, flow, releaseResult }) {
             ? "Replay consumed"
             : releaseProcessing
               ? "Check exact pair before any new signature"
+              : continuationWaiting
+                ? "Predecessor must fill or pass its deadline"
               : releaseAvailable ? "Hosted-relayer authorization available" : "Campaign closed or full",
         ]}
       />
@@ -1190,6 +1466,7 @@ function CasesPage({ config, eligibility, featuredEligibility, featuredState, re
 }
 
 function ProtocolPage({ config }) {
+  const lineageV2 = isLineageV2(config);
   return <div className="route-page protocol-page">
     <PageHeading
       id="protocol-heading"
@@ -1213,7 +1490,9 @@ function ProtocolPage({ config }) {
         </section>
         <section>
           <h2>Fixed pool and replay boundary</h2>
-          <p>Campaign funding, credit amount, slot count, source rule, and deadline are fixed at creation. Each wallet, transaction query, and pair can release once. After the deadline, only the unused campaign remainder can return to its sponsor.</p>
+          <p>{lineageV2
+            ? "Campaign funding, credit amount, slot count, source rule, and deadline are fixed at creation. The continuation checks the predecessor and prevents wallet, transaction-query, or pair reuse across campaigns from the same sponsor. After the deadline, only the unused campaign remainder can return to its sponsor."
+            : "Campaign funding, credit amount, slot count, source rule, and deadline are fixed at creation. Each wallet, transaction query, and pair can release once. After the deadline, only the unused campaign remainder can return to its sponsor."}</p>
         </section>
         <section className="truth-limits">
           <h2>What the proof does not say</h2>
@@ -1231,6 +1510,8 @@ function ProtocolPage({ config }) {
           <ProtocolField label="Predicate" value={config?.predicateAddress} />
           <ProtocolField label="Fee recipient" value={config?.rule?.feeRecipient} />
           <ProtocolField label="Terms hash" value={config?.campaign?.termsHash} />
+          {lineageV2 && <ProtocolField label="Replay scope" value="Predecessor + sponsor lineage" />}
+          {lineageV2 && <ProtocolField label="Predecessor" value={`${short(config.lineage.predecessor.poolAddress)} · campaign #${config.lineage.predecessor.campaignNumber}`} />}
         </dl>
       </aside>
     </div>
@@ -1288,6 +1569,7 @@ function deskCopy(flow, eligibility, releaseResult) {
     "release-relaying": ["Relaying the fixed release", "RetryCredit is checking the finalized proof and submitting the source-derived Creditcoin release."],
     "release-processing": ["A signed release is still processing", "The server has an active request for this exact pair. Check its status here; do not sign another authorization."],
     "release-uncertain": ["Confirm the submitted release", "The browser lost a definitive result after submission. Check this exact pair before signing again; it may still be processing or already released."],
+    "continuation-waiting": ["Check the pair while settlement waits", lineageEligibilityCopy(eligibility?.lineage?.status, false).body],
     released: ["Credit reached the source wallet", `${formatCredit(releaseResult?.creditAmount)} was released once on Creditcoin Testnet.`],
     "already-claimed": ["This pair already recovered", "The live campaign recognizes the prior release and will not pay the same wallet or pair again."],
     "campaign-closed": ["This campaign is closed", eligibility?.reason || "Its public records remain inspectable, but it cannot accept another recovery release."],
@@ -1310,6 +1592,7 @@ function pairCheckLabel(flow, configState) {
     "wallet-connecting": "Connecting source wallet",
     "release-processing": "Check processing status",
     "release-uncertain": "Check release status",
+    "continuation-waiting": "Check lineage eligibility",
     empty: "Check exact pair",
     editing: "Check exact pair",
     malformed: "Fix fields and check again",
@@ -1346,6 +1629,7 @@ function stateIcon(flow) {
   if (flow === "qualifying") return <ShieldCheck />;
   if (["checking", "wallet-connecting", "authorization-requested", "proof-queued", "proof-building", "release-relaying", "loading-config"].includes(flow)) return <LoaderCircle className="spin" />;
   if (["malformed", "semantic-mismatch", "retryable-error", "service-unavailable", "rate-limited", "offline", "campaign-changed", "campaign-closed", "campaign-full", "pair-changed", "release-uncertain"].includes(flow)) return <AlertCircle />;
+  if (flow === "continuation-waiting") return <LockKeyhole />;
   if (flow === "release-processing") return <LoaderCircle className="spin" />;
   if (["wrong-wallet", "account-changed"].includes(flow)) return <Wallet />;
   return <Search />;
@@ -1413,10 +1697,56 @@ function trimDecimal(value) {
   return value.includes(".") ? value.replace(/0+$/, "").replace(/\.$/, "") : value;
 }
 
+function isLineageV2(config) {
+  return Boolean(
+    config?.contractVersion === "v2"
+    && config?.lineage
+    && typeof config.lineage === "object"
+    && config.lineage.predecessor
+    && typeof config.lineage.predecessor === "object"
+  );
+}
+
+function isContinuationWaiting(config) {
+  return isLineageV2(config)
+    && config.lineage.releasesUnlocked === false
+    && config.campaign?.releaseState === "continuation-waiting";
+}
+
+function lineageEligibilityCopy(status, releasesUnlocked) {
+  const copies = {
+    unused: {
+      title: "Unused across RetryCredit-sponsored history",
+      body: releasesUnlocked
+        ? "Recovery history carries forward across campaigns this sponsor funds. An unrelated pool cannot mark this retry as used."
+        : "Recovery history carries forward across campaigns this sponsor funds. This pair is unused, but settlement still waits for the predecessor boundary.",
+    },
+    "claimed-current": {
+      title: "Already used in this campaign",
+      body: "The current campaign has already consumed this wallet or its exact evidence and cannot release it again.",
+    },
+    "claimed-predecessor": {
+      title: "Already recovered in an earlier RetryCredit campaign",
+      body: "The bound predecessor already consumed this wallet or evidence. Recovery remains recorded across future campaigns from this sponsor.",
+    },
+    "claimed-sponsor": {
+      title: "Already recovered in this sponsor lineage",
+      body: "Another campaign from the same sponsor already consumed this wallet or evidence. Recovery remains recorded across future campaigns from this sponsor.",
+    },
+  };
+  return copies[status] ?? {
+    title: releasesUnlocked ? "Lineage checks apply" : "Predecessor boundary still waiting",
+    body: releasesUnlocked
+      ? "Every release checks predecessor history and sponsor-wide wallet, query, and pair use."
+      : "You can check a pair now. Settlement opens only after the predecessor campaign fills or passes its deadline.",
+  };
+}
+
 function serviceLabel(state) {
   return ({
     loading: "Loading campaign",
     ready: "Recovery live",
+    "continuation-waiting": "Continuation waiting",
     "campaign-closed": "Campaign closed",
     "campaign-full": "Campaign full",
     unavailable: "Service unavailable",

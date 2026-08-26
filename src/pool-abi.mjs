@@ -29,7 +29,7 @@ export const poolAbi = poolAbiV1;
 
 const recoveryBatchProofTuple = "(uint64[] sourceBlocks,bytes[] encodedTransactions,(bytes32 root,(bytes32 hash,bool isLeft)[] siblings)[] merkleProofs,bytes32 lowerEndpointDigest,bytes32[] continuityRoots)";
 
-export const recoveryCampaignAbi = [
+export const recoveryCampaignAbiV1 = [
   "event CreditReleased(uint256 indexed campaignNumber,address indexed beneficiary,bytes32 indexed actionId,uint256 creditAmount,bytes32 failureQueryId,bytes32 successQueryId,bytes32 pairId,address relayer,uint32 claimCount)",
   "function campaignCount() view returns (uint256)",
   "function getCampaign(uint256 campaignNumber) view returns ((address sponsor,uint256 creditAmount,uint32 maxClaims,uint32 claimCount,uint64 deadline,uint256 fundedAmount,bytes32 termsHash,bool remainderRecovered))",
@@ -44,6 +44,32 @@ export const recoveryCampaignAbi = [
   "function SOURCE_CHAIN_ID() view returns (uint64)",
   `function releaseCredit(uint256 campaignNumber,${recoveryBatchProofTuple} proof)`,
 ];
+
+export const recoveryCampaignAbiV2 = [
+  ...recoveryCampaignAbiV1,
+  "function LEGACY_CAMPAIGN_NUMBER() view returns (uint256)",
+  "function legacyPool() view returns (address)",
+  "function legacySponsor() view returns (address)",
+  "function legacyTermsHash() view returns (bytes32)",
+  "function legacyBindingHash() view returns (bytes32)",
+  "function legacyStartBlock() view returns (uint64)",
+  "function legacyEndBlock() view returns (uint64)",
+  "function legacyDeadline() view returns (uint64)",
+  "function releasesUnlocked() view returns (bool)",
+  "function claimedBySponsor(address sponsor,address beneficiary) view returns (bool)",
+  "function consumedQueriesBySponsor(address sponsor,bytes32 queryId) view returns (bool)",
+  "function consumedPairsBySponsor(address sponsor,bytes32 pairId) view returns (bool)",
+];
+
+export function selectRecoveryCampaignAbi(contractVersion = "v1") {
+  if (contractVersion === "v1") return recoveryCampaignAbiV1;
+  if (contractVersion === "v2") return recoveryCampaignAbiV2;
+  throw new Error(`Unsupported recovery contract version: ${contractVersion}`);
+}
+
+// Keep the original export pinned to V1 so existing callers cannot silently
+// start invoking V2-only getters without an explicit configuration change.
+export const recoveryCampaignAbi = recoveryCampaignAbiV1;
 
 export const recoveryVerifierAbi = [
   "function predicate() view returns (address)",

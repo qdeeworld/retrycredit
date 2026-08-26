@@ -48,6 +48,8 @@ function config(overrides = {}) {
     waking: false,
     capabilities: { selfServePairIntake: true },
     consent: { scope: "hosted-relayer", protocolEnforced: false },
+    contractVersion: "v1",
+    lineage: { scope: "campaign", releasesUnlocked: true, predecessor: null },
     publicOrigin: "https://retrycredit.example",
     poolAddress: POOL_A,
     verifierAddress: VERIFIER,
@@ -62,6 +64,7 @@ function config(overrides = {}) {
       deadline: 2_000_000_000,
       fundedAmount: "30",
       termsHash: `0x${"9".repeat(64)}`,
+      releaseState: "release-unlocked",
       open: true,
     },
     rule: {
@@ -77,10 +80,18 @@ function config(overrides = {}) {
     featuredCase: { wallet: WALLET_A, ...pair("1") },
     discoverySize: 3,
   };
+  const campaign = { ...base.campaign, ...overrides.campaign };
+  if (!Object.hasOwn(overrides.campaign ?? {}, "releaseState")) {
+    campaign.releaseState = campaign.claimCount >= campaign.maxClaims
+      ? "full"
+      : campaign.open
+        ? "release-unlocked"
+        : "closed";
+  }
   return {
     ...base,
     ...overrides,
-    campaign: { ...base.campaign, ...overrides.campaign },
+    campaign,
     rule: { ...base.rule, ...overrides.rule },
     capacity: { ...base.capacity, ...overrides.capacity },
   };
@@ -137,8 +148,38 @@ function claimedResponse(overrides = {}) {
       relayer: WALLET_B,
       claimCount: 1,
     },
+    lineage: { scope: "campaign", status: "claimed-current" },
     ...overrides,
   };
+}
+
+function v2Config(overrides = {}) {
+  const predecessor = {
+    poolAddress: POOL_B,
+    campaignNumber: 1,
+    sponsor: WALLET_B,
+    termsHash: `0x${"8".repeat(64)}`,
+    deadline: 1_900_000_000,
+    startBlock: 95,
+    endBlock: 105,
+  };
+  const releasesUnlocked = overrides.lineage?.releasesUnlocked ?? true;
+  return config({
+    ...overrides,
+    contractVersion: "v2",
+    campaign: {
+      ...overrides.campaign,
+      open: overrides.campaign?.open ?? releasesUnlocked,
+      releaseState: overrides.campaign?.releaseState
+        ?? (releasesUnlocked ? "release-unlocked" : "continuation-waiting"),
+    },
+    lineage: {
+      scope: "sponsor",
+      releasesUnlocked: true,
+      predecessor,
+      ...overrides.lineage,
+    },
+  });
 }
 
 test("active wallet evidence never borrows the featured wallet release", () => {
@@ -331,6 +372,9 @@ test("ready config requires a canonical origin, campaign amount, settlement, and
     config({ campaign: { creditAmount: "0" } }),
     config({ campaign: { creditAmount: 10 } }),
     config({ campaign: { creditAmount: "10", open: "true" } }),
+    config({ campaign: { releaseState: "unknown" } }),
+    config({ campaign: { releaseState: "closed", open: true } }),
+    config({ campaign: { releaseState: "full", open: false } }),
     config({ verifierAddress: "0x1234" }),
     config({ predicateAddress: "0x1234" }),
     config({ campaign: { sponsor: "0x1234" } }),
@@ -348,6 +392,9 @@ test("ready config requires a canonical origin, campaign amount, settlement, and
     config({ campaign: { creditAmount: "10", open: true }, capacity: { total: 3, claimed: 3, remaining: 0 } }),
     config({ source: { chainId: "1", chainKey: 3 } }),
     config({ settlement: { chainId: 0 } }),
+    config({ contractVersion: "v3" }),
+    config({ lineage: { scope: "sponsor", releasesUnlocked: true, predecessor: null } }),
+    config({ lineage: { scope: "campaign", releasesUnlocked: false, predecessor: null } }),
     config({ capabilities: { selfServePairIntake: false } }),
     config({ consent: { scope: "hosted-relayer", protocolEnforced: true } }),
     config({ featuredCase: { wallet: WALLET_A, failedTransactionHash: "0x01", successfulTransactionHash: "0x02" } }),
@@ -355,6 +402,14 @@ test("ready config requires a canonical origin, campaign amount, settlement, and
     { ...config(), enabled: 1 },
     { ...config(), enabled: null },
     Object.fromEntries(Object.entries(config()).filter(([key]) => key !== "enabled")),
+    Object.fromEntries(Object.entries(config()).filter(([key]) => key !== "contractVersion")),
+    Object.fromEntries(Object.entries(config()).filter(([key]) => key !== "lineage")),
+    {
+      ...config(),
+      campaign: Object.fromEntries(
+        Object.entries(config().campaign).filter(([key]) => key !== "releaseState"),
+      ),
+    },
   ]) {
     assert.throws(
       () => validateRecoveryConfigResponse(response),
@@ -393,6 +448,88 @@ test("campaign availability fails closed from the live open flag and remaining c
   assert.equal(recoveryCampaignAvailability(null), "unavailable");
 });
 
+test("lineage-aware configuration exposes a distinct predecessor-waiting state", () => {
+  const waiting = validateRecoveryConfigResponse(v2Config({
+    campaign: { open: false },
+    lineage: { releasesUnlocked: false },
+  }));
+  assert.equal(recoveryCampaignAvailability(waiting), "continuation-waiting");
+  assert.equal(waiting.lineage.predecessor.poolAddress, POOL_B);
+
+  const unlocked = validateRecoveryConfigResponse(v2Config());
+  assert.equal(recoveryCampaignAvailability(unlocked), "open");
+  assert.equal(recoveryCampaignsMatch(waiting, unlocked), false);
+
+  for (const invalid of [
+    v2Config({ lineage: { predecessor: null } }),
+    v2Config({ lineage: { scope: "campaign" } }),
+    v2Config({ lineage: { predecessor: { poolAddress: POOL_A } } }),
+    v2Config({ lineage: { predecessor: { sponsor: WALLET_A } } }),
+    v2Config({ lineage: { predecessor: { termsHash: `0x${"0".repeat(64)}` } } }),
+    v2Config({ lineage: { predecessor: { deadline: 2_000_000_000 } } }),
+    v2Config({ lineage: { predecessor: { startBlock: 89 } } }),
+    v2Config({ lineage: { predecessor: { endBlock: 111 } } }),
+    v2Config({ campaign: { open: true }, lineage: { releasesUnlocked: false } }),
+  ]) {
+    assert.throws(
+      () => validateRecoveryConfigResponse(invalid),
+      (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
+    );
+  }
+});
+
+test("lineage eligibility distinguishes unused, predecessor, and sponsor history", () => {
+  const liveConfig = validateRecoveryConfigResponse(v2Config({
+    campaign: { open: false },
+    lineage: { releasesUnlocked: false },
+  }));
+  const sourcePair = analyzedPair("1");
+  const base = {
+    eligible: false,
+    status: "continuation-waiting",
+    reason: "The funded continuation is waiting for its predecessor.",
+    wallet: WALLET_A,
+    campaignNumber: 7,
+    creditAmount: "10",
+    pair: sourcePair,
+    release: null,
+    lineage: { scope: "sponsor", status: "unused" },
+  };
+  const waiting = validatePairEligibilityResponse({
+    response: base,
+    requestedPair: pair("1"),
+    config: liveConfig,
+  });
+  assert.equal(waiting.status, "continuation-waiting");
+
+  for (const status of ["claimed-predecessor", "claimed-sponsor"]) {
+    const historical = validatePairEligibilityResponse({
+      response: {
+        ...base,
+        status: "claimed",
+        reason: "This source wallet already recovered in sponsor-bound history.",
+        lineage: { scope: "sponsor", status },
+      },
+      requestedPair: pair("1"),
+      config: liveConfig,
+    });
+    assert.equal(historical.lineage.status, status);
+    assert.equal(historical.release, null);
+  }
+
+  for (const mismatch of [
+    { ...base, lineage: { scope: "campaign", status: "unused" } },
+    { ...base, lineage: { scope: "sponsor", status: "claimed-current" } },
+    { ...base, status: "claimed", lineage: { scope: "sponsor", status: "unused" } },
+    { ...base, lineage: { scope: "sponsor", status: "unknown" } },
+  ]) {
+    assert.throws(
+      () => validatePairEligibilityResponse({ response: mismatch, requestedPair: pair("1"), config: liveConfig }),
+      (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
+    );
+  }
+});
+
 test("open-pair eligibility is bound to the submitted pair and live-derived facts", () => {
   const liveConfig = validateRecoveryConfigResponse(config());
   const sourcePair = analyzedPair("1");
@@ -405,6 +542,7 @@ test("open-pair eligibility is bound to the submitted pair and live-derived fact
     creditAmount: "10",
     pair: sourcePair,
     release: null,
+    lineage: { scope: "campaign", status: "unused" },
   };
   const validated = validatePairEligibilityResponse({
     response,
@@ -473,6 +611,7 @@ test("challenge validation accepts only the exact canonical five-minute consent"
       eligible: true,
       status: "eligible",
       release: null,
+      lineage: { scope: "campaign", status: "unused" },
     },
     requestedWallet: WALLET_A,
     config: liveConfig,
@@ -566,6 +705,7 @@ test("browser challenge reconstruction matches server hash and address canonical
       status: "eligible",
       pair: mixedPair,
       release: null,
+      lineage: { scope: "campaign", status: "unused" },
     },
     requestedWallet: WALLET_A,
     config: liveConfig,
@@ -607,6 +747,7 @@ test("release validation binds the receipt and stale campaign evidence stays hid
       eligible: true,
       status: "eligible",
       release: null,
+      lineage: { scope: "campaign", status: "unused" },
     },
     requestedWallet: WALLET_A,
     config: liveConfig,
@@ -663,6 +804,7 @@ test("open-pair release keeps the full live pair facts bound to the receipt", ()
       creditAmount: "10",
       pair: sourcePair,
       release: null,
+      lineage: { scope: "campaign", status: "unused" },
     },
     requestedPair: pair("1"),
     config: liveConfig,
@@ -674,6 +816,7 @@ test("open-pair release keeps the full live pair facts bound to the receipt", ()
     creditAmount: "10",
     pair: sourcePair,
     release: claimedResponse().release,
+    lineage: { scope: "campaign", status: "claimed-current" },
   };
 
   assert.equal(validatePairReleaseResponse({
