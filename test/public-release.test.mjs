@@ -240,7 +240,9 @@ test("the interface keeps the public accessibility and responsive floor", () => 
 
 test("the public release carries a license and Cloudflare security policy", () => {
   assert.match(license, /^MIT License/m);
-  assert.match(readme, /No wallet connection is needed to check them/);
+  assert.match(readme, /searches a bounded slice of its public transaction history/);
+  assert.match(readme, /Every discovered candidate is advisory/);
+  assert.match(readme, /Manual pair checking remains available without connecting a wallet/);
   assert.match(readme, /npm run verify:recovery-gate/);
   assert.match(headers, /Content-Security-Policy:/);
   assert.match(headers, /connect-src 'self' https:\/\/retrycredit-api\.onrender\.com/);

@@ -87,7 +87,19 @@ Returns process identity, Creditcoin network `102031`, legacy-service configurat
 
 ### `GET /api/recovery/config`
 
-Returns a stable disabled/waking shape until recovery is ready, then the canonical public origin, dedicated public `relayerAddress`, authenticated source and settlement identities, pool/verifier/predicate addresses, exact `contractVersion`, campaign number, immutable terms, live capacity, featured public case, and discovery size. V1 reports campaign-scoped lineage with no predecessor. V2 reports its exact predecessor boundary, sponsor-scoped lineage, and whether releases are unlocked; a fully funded but locked campaign uses `campaign.releaseState: "continuation-waiting"` and `campaign.open: false`. `capabilities.selfServePairIntake` is exactly `true` when this API contract is present. `consent.scope` is `hosted-relayer` and `consent.protocolEnforced` is `false`: the wallet signature authorizes this hosted service to build and relay the exact pair, but the deployed permissionless campaign contract does not itself verify that offchain signature. The browser uses the origin and returned identities to reconstruct the exact five-minute consent before opening `personal_sign`. The service authenticates the exact active runtime bytecode, the exact V1 predecessor runtime for V2, and all native/source bindings before entering `ready`.
+Returns a stable disabled/waking shape until recovery is ready, then the canonical public origin, dedicated public `relayerAddress`, authenticated source and settlement identities, pool/verifier/predicate addresses, exact `contractVersion`, campaign number, immutable terms, live capacity, featured public case, and discovery size. V1 reports campaign-scoped lineage with no predecessor. V2 reports its exact predecessor boundary, sponsor-scoped lineage, and whether releases are unlocked; a fully funded but locked campaign uses `campaign.releaseState: "continuation-waiting"` and `campaign.open: false`. `capabilities.selfServePairIntake` and `capabilities.walletNativeDiscovery` are exactly `true` when those API contracts are present. `consent.scope` is `hosted-relayer` and `consent.protocolEnforced` is `false`: the wallet signature authorizes this hosted service to build and relay the exact pair, but the deployed permissionless campaign contract does not itself verify that offchain signature. The browser uses the origin and returned identities to reconstruct the exact five-minute consent before opening `personal_sign`. The service authenticates the exact active runtime bytecode, the exact V1 predecessor runtime for V2, and all native/source bindings before entering `ready`.
+
+### `POST /api/recovery/discover`
+
+Request:
+
+```json
+{ "wallet": "0x..." }
+```
+
+This is advisory discovery, not eligibility or payout authority. The service searches a bounded, paginated slice of the supplied wallet's public Ethereum transaction history inside the immutable campaign source window. It locally discards calls that cannot satisfy deterministic campaign rules, caps the remaining candidates, then independently re-reads each candidate's transactions and receipts through the normal live-pair authority path. The response identifies itself with `authority: "advisory-discovery-only"`, reports rows and pages inspected, discloses truncation, and returns only live-revalidated matches. A wallet address never becomes a payout destination: the campaign still derives the beneficiary from the Attestcoin-proven source transactions.
+
+History lookup and candidate validation use separate bounded pools so a slow explorer cannot occupy manual pair-intake capacity. HTTP `429` means discovery is busy; HTTP `503` means discovery or live source validation is temporarily unavailable. Both states leave exact manual pair intake available.
 
 ### `POST /api/recovery/intake/eligibility`
 

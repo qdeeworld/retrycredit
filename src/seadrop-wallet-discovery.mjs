@@ -1,4 +1,4 @@
-import { getAddress, isHexString } from "ethers";
+import { ZeroAddress, getAddress, isHexString } from "ethers";
 
 import {
   MINT_PARAM_FIELDS,
@@ -111,7 +111,12 @@ export function discoverSeaDropPairs(transactions, {
       const value = BigInt(transaction.value);
       if (
         value <= 0n
+        || mint.nftContract === ZeroAddress
+        || mint.minterIfNotPayer !== ZeroAddress
         || mint.quantity > quantityLimit
+        || mint.mintParams.mintPrice <= 0n
+        || !mint.mintParams.restrictFeeRecipients
+        || value !== mint.quantity * mint.mintParams.mintPrice
         || (expectedFeeRecipient && mint.feeRecipient.toLowerCase() !== expectedFeeRecipient)
       ) return [];
       return [{

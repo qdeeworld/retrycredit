@@ -99,17 +99,56 @@ test("campaign fee recipient filters advisory candidates before live-validation 
   ], { ...config(), feeRecipient: "0x2222222222222222222222222222222222222222" }), []);
 });
 
+test("deterministic predicate failures cannot hide an older valid pair behind the validation cap", () => {
+  const validFailed = mintInput(1n, `0x${"21".repeat(65)}`);
+  const validSuccess = mintInput(2n, `0x${"22".repeat(65)}`);
+  const delegatedFailed = mintInput(3n, `0x${"23".repeat(65)}`, 1n, { minterIfNotPayer: nft });
+  const delegatedSuccess = mintInput(4n, `0x${"24".repeat(65)}`, 1n, { minterIfNotPayer: nft });
+  const unrestrictedFailed = mintInput(5n, `0x${"25".repeat(65)}`, 1n, { restrictFeeRecipients: false });
+  const unrestrictedSuccess = mintInput(6n, `0x${"26".repeat(65)}`, 1n, { restrictFeeRecipients: false });
+  const zeroPriceFailed = mintInput(7n, `0x${"27".repeat(65)}`, 1n, { mintPrice: 0n });
+  const zeroPriceSuccess = mintInput(8n, `0x${"28".repeat(65)}`, 1n, { mintPrice: 0n });
+  const wrongPaymentFailed = mintInput(9n, `0x${"29".repeat(65)}`);
+  const wrongPaymentSuccess = mintInput(10n, `0x${"2a".repeat(65)}`);
+
+  const result = discoverSeaDropPairs([
+    transaction({ hashByte: "71", nonce: 20, block: 190, status: 0, input: delegatedFailed }),
+    transaction({ hashByte: "72", nonce: 21, block: 191, status: 1, input: delegatedSuccess }),
+    transaction({ hashByte: "73", nonce: 18, block: 185, status: 0, input: unrestrictedFailed }),
+    transaction({ hashByte: "74", nonce: 19, block: 186, status: 1, input: unrestrictedSuccess }),
+    transaction({ hashByte: "75", nonce: 16, block: 180, status: 0, input: zeroPriceFailed }),
+    transaction({ hashByte: "76", nonce: 17, block: 181, status: 1, input: zeroPriceSuccess }),
+    transaction({ hashByte: "77", nonce: 14, block: 175, status: 0, input: wrongPaymentFailed, value: "9000000000000000" }),
+    transaction({ hashByte: "78", nonce: 15, block: 176, status: 1, input: wrongPaymentSuccess, value: "9000000000000000" }),
+    transaction({ hashByte: "79", nonce: 2, block: 120, status: 0, input: validFailed }),
+    transaction({ hashByte: "7a", nonce: 3, block: 121, status: 1, input: validSuccess }),
+  ], { ...config(), feeRecipient });
+
+  assert.deepEqual(result, [{
+    wallet,
+    failedTransactionHash: `0x${"79".repeat(32)}`,
+    successfulTransactionHash: `0x${"7a".repeat(32)}`,
+    failureBlock: 120,
+    successBlock: 121,
+    blockGap: 1,
+  }]);
+});
+
 function config() {
   return { wallet, startBlock: 100, endBlock: 200, maxBlockGap: 5, maxQuantity: 2 };
 }
 
-function mintInput(salt, signature, quantity = 1n) {
+function mintInput(salt, signature, quantity = 1n, {
+  minterIfNotPayer = "0x0000000000000000000000000000000000000000",
+  mintPrice = 10_000_000_000_000_000n,
+  restrictFeeRecipients = true,
+} = {}) {
   return interface_.encodeFunctionData("mintSigned", [
     nft,
     feeRecipient,
-    "0x0000000000000000000000000000000000000000",
+    minterIfNotPayer,
     quantity,
-    [10_000_000_000_000_000n, 2n, 1n, 4_000_000_000n, 1n, 10_000n, 250n, true],
+    [mintPrice, 2n, 1n, 4_000_000_000n, 1n, 10_000n, 250n, restrictFeeRecipients],
     salt,
     signature,
   ]);
