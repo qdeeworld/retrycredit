@@ -56,7 +56,8 @@ Transaction [`0xef81…149b`](https://creditcoin-testnet.blockscout.com/tx/0xef8
 The initial V2 campaign has these immutable terms:
 
 - Ten fixed `0.1 tCTC` credits, funded exactly with `1 tCTC`.
-- The same verifier, paid SeaDrop predicate, source window, fee recipient, five-block gap, and maximum quantity two as V1 campaign `#1`.
+- The same verifier, paid SeaDrop predicate, fee recipient, five-block gap, and maximum quantity two as V1 campaign `#1`.
+- An expanded Ethereum source window from block `15527904` through `25836490` (V1 is bound to blocks `25805168` through `25835360`).
 - Deadline September 23, 2026 at 23:59 UTC, covering the submission and judging schedule.
 - An immutable predecessor binding to V1 pool `0x646c…dF66`, campaign `#1`, its sponsor, terms, source window, and deadline.
 - Releases remain locked until the predecessor reaches its exact deadline or all three V1 claims are consumed.
