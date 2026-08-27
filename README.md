@@ -11,11 +11,12 @@ RetryCredit is a pre-funded recovery campaign for an exact Ethereum transaction 
 
 ## The recovery path
 
-1. Paste the failed paid mint and its later successful retry as transaction hashes or canonical Etherscan URLs. No wallet connection is needed to check them.
-2. RetryCredit re-reads both mainnet transactions and receipts, validates the funded rule, and derives the source wallet from live facts; the three public examples are never eligibility authority.
-3. Only after the pair qualifies, that derived wallet signs a five-minute hosted-relayer consent bound to the exact pair, public origin, campaign, and pool.
-4. The relayer builds one pair-local Attestcoin batch and simulates the immutable campaign release.
-5. The contract derives the beneficiary from the proven source transaction and releases exactly `0.1 tCTC`. There is no destination field.
+1. Connect the Ethereum wallet that paid for the mint. RetryCredit searches a bounded slice of its public transaction history for an exact failed-then-completed SeaDrop retry; connection supplies only the address to search.
+2. Every discovered candidate is advisory. RetryCredit independently re-reads both mainnet transactions and receipts, validates the funded rule, and derives the source wallet from live facts before showing it as eligible.
+3. If public history is unavailable, truncated, or misses the pair, enter the failed paid mint and its later successful retry as transaction hashes or canonical Etherscan URLs. Manual pair checking remains available without connecting a wallet.
+4. Only after the pair qualifies, that derived wallet signs a five-minute hosted-relayer consent bound to the exact pair, public origin, campaign, and pool.
+5. The relayer builds one pair-local Attestcoin batch and simulates the immutable campaign release.
+6. The contract derives the beneficiary from the proven source transaction and releases exactly `0.1 tCTC`. There is no destination field.
 
 The live V1 campaign is intentionally small: three fixed slots, exactly `0.3 tCTC` funded, and unused funds recoverable only by the sponsor after the deadline. Each wallet, query, and pair is consumed within that campaign. Replay state is campaign-scoped so an outsider cannot poison the official campaign with a dust-funded copy.
 
@@ -69,4 +70,4 @@ For a local journey, copy `.env.example` to `.env`, populate only testnet values
 
 ## Truth boundary
 
-Attestcoin proves the included paid failure, later completion, and exact onchain outcome. It does **not** prove a human-readable failure reason, human identity, intent, user loss, exact gas expenditure, insurance eligibility, adoption, or demand. The three published examples are a public-chain research set, not three users and not the boundary of Open Pair Intake.
+Attestcoin proves the included paid failure, later completion, and exact onchain outcome. It does **not** prove a human-readable failure reason, human identity, intent, user loss, exact gas expenditure, insurance eligibility, adoption, or demand. The three published examples are a public-chain research set, not three users and not the boundary of wallet discovery or Open Pair Intake.

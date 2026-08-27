@@ -1,7 +1,7 @@
 ---
 version: alpha
 name: RetryCredit Recovery Dispatch
-description: A warm, ruled incident-recovery desk that leads with an exact failed-and-completed transaction pair, derives the qualifying wallet from live source facts, and makes campaign continuity legible without turning proof into the product.
+description: A warm, ruled incident-recovery desk that leads with a source-wallet history check, discovers an exact failed-and-completed transaction pair, and makes campaign continuity legible without turning proof into the product.
 colors:
   sheet: "#f4f0e4"
   sheet-2: "#ebe6d8"
@@ -109,7 +109,7 @@ omitted:
 
 **Creative North Star: “The Recovery Dispatch”**
 
-RetryCredit is an operational desk for one result: let a visitor submit an exact paid failure and completed retry, derive the source wallet from live Ethereum facts, then let that matching wallet authorize a fixed Creditcoin release. When a lineage-aware campaign is configured, the same desk also explains whether its predecessor still controls release timing and whether the wallet or pair was already recovered in sponsor-bound history. It is not a promotional landing page, a proof explorer, or a generic claims dashboard.
+RetryCredit is an operational desk for one result: let a visitor connect the source wallet, discover an exact paid failure and completed retry from public history, then let that same wallet authorize a fixed Creditcoin release. Manual pair entry remains an advanced fallback for truncated or unavailable history. When a lineage-aware campaign is configured, the same desk also explains whether its predecessor still controls release timing and whether the wallet or pair was already recovered in sponsor-bound history. It is not a promotional landing page, a proof explorer, or a generic claims dashboard.
 
 The existing warm signal-sheet world remains the product identity. Recovery is the live pair-intake, eligibility, and release surface; Cases records actual campaign outcomes and curated examples; Protocol explains the paired-receipt boundary. These remain separate routes with shared chrome.
 
@@ -165,11 +165,11 @@ Lineage language follows the contract's actual scope. Sponsor-bound history may 
 
 Refresh campaign configuration silently while a visible tab remains open and when connectivity or visibility returns. Re-evaluate the deadline locally between server responses. A stale open/capacity snapshot must never keep authorization enabled; read-only pair inspection remains available after closure or fullness.
 
-### Pair intake and eligibility desk
+### Wallet discovery, pair intake, and eligibility desk
 
-The desk owns two required transaction fields and one primary action. It accepts an exact failed transaction hash or Etherscan transaction URL followed by the completed retry, then derives the wallet, order, receipt status, mint facts, and campaign fit from live Ethereum data. A clearly secondary example action may load the published public pair, but curated cases never determine eligibility and the action must not imply a live verification or release that has not been confirmed.
+The desk's first action connects an Ethereum wallet only to identify the address and search a bounded slice of its public transaction history. Discovery is advisory, declares when history is truncated, and never authorizes a release. Every discovered pair is re-read from independent Ethereum RPCs and checked through the same semantic predicate path used by manual intake. Exact failed and completed hashes remain available as an advanced fallback when discovery is empty, truncated, or unavailable. A clearly secondary example action may load the published public pair, but curated cases never determine eligibility and the action must not imply a live verification or release that has not been confirmed.
 
-Checking a pair happens before wallet connection. A qualifying result then asks only the derived source wallet to connect and authorize the exact origin, pool, campaign, pair, and five-minute window before the application requests proof work. The browser and API never accept a payout destination or a caller-supplied source wallet as authority. Application consent gates the hosted relayer; do not imply the permissionless campaign contract enforces owner consent onchain.
+Discovery may connect a wallet before a verdict, but connection supplies only the address to search; it supplies neither eligibility nor a payout destination. A qualifying result then asks only the live-derived source wallet to authorize the exact origin, pool, campaign, pair, and five-minute window before the application requests proof work. The browser and API never accept a payout destination or a caller-supplied source wallet as authority. Application consent gates the hosted relayer; do not imply the permissionless campaign contract enforces owner consent onchain.
 
 The desk owns empty, editing, malformed, checking, semantic mismatch, qualifying, continuation waiting, wrong-wallet, wallet connecting, authorization requested, proof queued, proof building, release relaying, release processing, release uncertain, released, already claimed in the current campaign, already claimed in predecessor or sponsor history, campaign closed, campaign full, pair changed, account changed, service unavailable, rate-limited, and retryable-error states. Preserve the submitted pair across recoverable failures, invalidate every derived result when either hash changes, prevent duplicate submission, and describe the current operation in busy copy. After any uncertain post-sign result, lock the pair and check its public processing/claim state before offering another authorization.
 
@@ -203,7 +203,7 @@ Labels, helper text, and validation messages stay attached to their transaction 
 
 ### Do
 
-- **Do** open directly on the live campaign and exact source-pair intake.
+- **Do** open directly on the live campaign and source-wallet discovery, with exact pair intake as the fallback.
 - **Do** preserve Recovery, Cases, and Protocol as separate routes with shared application chrome.
 - **Do** keep campaign funding, window, capacity, deadline, and source-derived destination visible.
 - **Do** derive wallet, receipt, order, value, collection, and outcome facts from the submitted transactions rather than asking the visitor to supply them.
@@ -220,7 +220,7 @@ Labels, helper text, and validation messages stay attached to their transaction 
 - **Don’t** flatten the multi-route product into one page.
 - **Don’t** create judge navigation, a proof page, an invoice product, or a business-validation surface.
 - **Don’t** keep the three observed wallets as eligibility authority; they are examples and public evidence only.
-- **Don’t** require wallet connection before a visitor can obtain a live pair verdict.
+- **Don’t** treat wallet connection or explorer discovery as eligibility authority; manual pair intake must remain available without a wallet connection.
 - **Don’t** request Attestcoin proof work before the derived source wallet signs the exact bounded authorization.
 - **Don’t** persist signatures, challenges, proof material, or raw transactions to resume a flow.
 - **Don’t** let receipts outrank the wallet’s eligibility or result.

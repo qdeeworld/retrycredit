@@ -6,9 +6,11 @@ export const RELEASE_TOTAL_TIMEOUT_MS = 15 * 60_000;
 export const RELEASE_REQUEST_TIMEOUT_MS = 150_000;
 export const RELEASE_RETRY_DELAY_MS = 15_000;
 export const RECOVERY_ACTION_REQUEST_TIMEOUT_MS = 30_000;
+export const RECOVERY_DISCOVERY_REQUEST_TIMEOUT_MS = 40_000;
 export const RECOVERY_INTAKE_ELIGIBILITY_PATH = "/api/recovery/intake/eligibility";
 export const RECOVERY_INTAKE_CHALLENGE_PATH = "/api/recovery/intake/challenge";
 export const RECOVERY_INTAKE_RELEASE_PATH = "/api/recovery/intake/release";
+export const RECOVERY_DISCOVERY_PATH = "/api/recovery/discover";
 
 const RECOVERY_RELEASE_PENDING_MESSAGE = "Attestcoin is still finalizing. Check the wallet again before signing a fresh authorization.";
 export const LEGACY_RELEASE_PENDING_MESSAGE = "The archived RetryCredit release is still finalizing. Retry the archived flow shortly.";
@@ -80,6 +82,21 @@ export async function checkRecoveryPairEligibility({
     apiOrigin,
     path: RECOVERY_INTAKE_ELIGIBILITY_PATH,
     body: { pair },
+    fetchImpl,
+    timeoutMs,
+  });
+}
+
+export async function discoverRecoveryWallet({
+  apiOrigin = "",
+  wallet,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = RECOVERY_DISCOVERY_REQUEST_TIMEOUT_MS,
+} = {}) {
+  return postRecoveryJson({
+    apiOrigin,
+    path: RECOVERY_DISCOVERY_PATH,
+    body: { wallet },
     fetchImpl,
     timeoutMs,
   });

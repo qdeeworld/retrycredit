@@ -30,6 +30,7 @@ import {
   validateSeaDropRecoveryPair,
 } from "./seadrop-recovery.mjs";
 import { PUBLIC_CC3_RELAYER_ROLE, deriveRoleKey } from "./role-key.mjs";
+import { discoverWalletSeaDropPairs } from "./seadrop-wallet-discovery.mjs";
 
 export const RECOVERY_RELAYER_ROLE = PUBLIC_CC3_RELAYER_ROLE;
 
@@ -76,6 +77,8 @@ export const RECOVERY_DEFAULTS = Object.freeze({
   sourcePairNegativeCacheTtlSeconds: 30,
   campaignStateCacheTtlSeconds: 1,
   releaseQueueLimit: 8,
+  discoveryTimeoutMs: 35_000,
+  discoveryCandidateLimit: 4,
 });
 
 const DEFAULT_CREDITCOIN_RPC = "https://rpc.cc3-testnet.creditcoin.network";
@@ -179,6 +182,7 @@ export class RecoveryCampaignService {
     predecessorPoolContract,
     contractFactory = (address, abi) => new Contract(address, abi, ccProvider),
     discoveryIndex = RECOVERY_DISCOVERY_INDEX,
+    walletDiscovery = discoverWalletSeaDropPairs,
     pairResolver,
     now = () => Math.floor(Date.now() / 1000),
     config = {},
@@ -202,6 +206,7 @@ export class RecoveryCampaignService {
     this.predecessorPool = predecessorPoolContract ?? null;
     this.contractFactory = contractFactory;
     this.discoveryIndex = normalizeDiscoveryIndex(discoveryIndex);
+    this.walletDiscovery = walletDiscovery;
     this.discoveryByWallet = new Map(
       this.discoveryIndex.map((entry) => [entry.wallet.toLowerCase(), entry]),
     );
@@ -257,6 +262,16 @@ export class RecoveryCampaignService {
       "recovery intake timeout",
       { minimum: 1_000, maximum: 120_000 },
     );
+    const discoveryTimeoutMs = requireBoundedInteger(
+      mergedConfig.discoveryTimeoutMs,
+      "wallet discovery timeout",
+      { minimum: 5_000, maximum: 60_000 },
+    );
+    const discoveryCandidateLimit = requireBoundedInteger(
+      mergedConfig.discoveryCandidateLimit,
+      "wallet discovery candidate limit",
+      { minimum: 1, maximum: 8 },
+    );
     const sourceProviderAttempts = requireBoundedInteger(
       mergedConfig.sourceProviderAttempts,
       "source provider attempts",
@@ -296,6 +311,8 @@ export class RecoveryCampaignService {
       sourceLookupQueueLimit,
       sourceLookupTimeoutMs,
       intakeTimeoutMs,
+      discoveryTimeoutMs,
+      discoveryCandidateLimit,
       sourceProviderAttempts,
       sourcePairCacheMaxEntries,
       sourcePairCacheTtlSeconds,
@@ -336,6 +353,36 @@ export class RecoveryCampaignService {
         503,
       ),
     });
+    this.discoveryPool = new BoundedWorkPool({
+      concurrency: 1,
+      queueLimit: 4,
+      timeoutMs: discoveryTimeoutMs,
+      busyError: () => new WorkerError(
+        "RECOVERY_BUSY",
+        "Wallet discovery is busy; transaction hashes can still be entered manually.",
+        429,
+      ),
+      timeoutError: () => new WorkerError(
+        "RECOVERY_DISCOVERY_UNAVAILABLE",
+        "Wallet history discovery timed out; transaction hashes can still be entered manually.",
+        503,
+      ),
+    });
+    this.discoverySourceLookupPool = new BoundedWorkPool({
+      concurrency: 4,
+      queueLimit: 4,
+      timeoutMs: sourceLookupTimeoutMs,
+      busyError: () => new WorkerError(
+        "RECOVERY_BUSY",
+        "Wallet discovery is busy; transaction hashes can still be entered manually.",
+        429,
+      ),
+      timeoutError: () => new WorkerError(
+        "RECOVERY_SOURCE_TIMEOUT",
+        "Ethereum source validation timed out; transaction hashes can still be entered manually.",
+        503,
+      ),
+    });
     this.campaignStateCache = null;
     this.campaignStateGeneration = 0;
     this.campaignStateFlights = { normal: null, fresh: null };
@@ -360,6 +407,7 @@ export class RecoveryCampaignService {
       waking: false,
       capabilities: {
         selfServePairIntake: true,
+        walletNativeDiscovery: true,
       },
       consent: {
         scope: "hosted-relayer",
@@ -392,6 +440,54 @@ export class RecoveryCampaignService {
       },
       discoverySize: this.discoveryIndex.length,
     };
+  }
+
+  async discover(walletValue) {
+    const wallet = requireNonzeroAddress(walletValue, "wallet");
+    return this.discoveryPool.run(() => this.#discoverWallet(wallet));
+  }
+
+  async #discoverWallet(wallet) {
+    const state = await this.#campaignState();
+    const rule = serializeRule(state.rule);
+    let discovered;
+    try {
+      discovered = await this.walletDiscovery({ wallet, ...rule });
+    } catch (error) {
+      throw new WorkerError(
+        "RECOVERY_DISCOVERY_UNAVAILABLE",
+        "Wallet history discovery is temporarily unavailable; transaction hashes can still be entered manually.",
+        503,
+        error,
+      );
+    }
+
+    const candidates = discovered.pairs.slice(0, this.config.discoveryCandidateLimit);
+    const validations = await Promise.allSettled(candidates.map(async (pair) => {
+      const context = await this.#openPairEligibilityContext(pair, {
+        sourcePool: this.discoverySourceLookupPool,
+      });
+      return this.#publicEligibility(context);
+    }));
+    const matches = validations
+      .filter(({ status }) => status === "fulfilled")
+      .map(({ value }) => value);
+    const infrastructureFailure = validations.find(
+      ({ status, reason }) => status === "rejected"
+        && (!(reason instanceof WorkerError) || reason.status >= 500),
+    );
+    if (matches.length === 0 && infrastructureFailure) {
+      throw infrastructureFailure.reason;
+    }
+    return Object.freeze({
+      wallet,
+      authority: "advisory-discovery-only",
+      historyRowsInspected: discovered.transactions.length,
+      historyTruncated: discovered.truncated,
+      pagesInspected: discovered.pages,
+      matches: Object.freeze(matches),
+      manualFallbackRecommended: discovered.truncated || matches.length === 0,
+    });
   }
 
   async eligibility(walletValue) {
@@ -943,10 +1039,10 @@ export class RecoveryCampaignService {
     });
   }
 
-  async #openPairEligibilityContext(pairInput, { state, freshState = false } = {}) {
+  async #openPairEligibilityContext(pairInput, { state, freshState = false, sourcePool } = {}) {
     const { campaign, rule, releasesUnlocked } = state
       ?? await this.#campaignState({ fresh: freshState });
-    const pair = await this.#resolvePair(pairInput, rule);
+    const pair = await this.#resolvePair(pairInput, rule, { workPool: sourcePool });
     const wallet = requireNonzeroAddress(pair.claimant, "pair source wallet");
     const discovery = Object.freeze({ wallet, ...pairInput });
     const lineage = await this.#walletLineage(wallet, { campaign });
@@ -1123,7 +1219,7 @@ export class RecoveryCampaignService {
     }
   }
 
-  async #resolvePair(pairInput, rule, { expectedWallet = null } = {}) {
+  async #resolvePair(pairInput, rule, { expectedWallet = null, workPool = this.sourceLookupPool } = {}) {
     const identity = Object.freeze({
       failedTransactionHash: requireHash(pairInput.failedTransactionHash, "failed transaction hash"),
       successfulTransactionHash: requireHash(pairInput.successfulTransactionHash, "successful transaction hash"),
@@ -1136,7 +1232,7 @@ export class RecoveryCampaignService {
     if (!summary) {
       let flight = this.sourcePairFlights.get(cacheKey);
       if (!flight) {
-        flight = this.sourceLookupPool.run(async () => {
+        flight = workPool.run(async () => {
           try {
             const resolved = this.pairResolver
               ? await this.pairResolver({ discovery: resolverDiscovery, rule: serializeRule(rule) })

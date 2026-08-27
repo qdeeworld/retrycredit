@@ -100,7 +100,7 @@ test("configuration authenticates every binding and serializes campaign capacity
   const config = await fixture.service.configuration();
 
   assert.equal(config.enabled, true);
-  assert.deepEqual(config.capabilities, { selfServePairIntake: true });
+  assert.deepEqual(config.capabilities, { selfServePairIntake: true, walletNativeDiscovery: true });
   assert.deepEqual(config.consent, { scope: "hosted-relayer", protocolEnforced: false });
   assert.equal(config.poolAddress, poolAddress);
   assert.equal(config.verifierAddress, verifierAddress);
@@ -127,6 +127,38 @@ test("configuration authenticates every binding and serializes campaign capacity
   assert.equal(config.source.chainKey, 3);
   assert.equal(config.source.chainId, 1);
   assert.equal(config.settlement.chainId, 102031);
+});
+
+test("wallet-native discovery revalidates advisory hashes through live pair authority", async () => {
+  let discoveryCalls = 0;
+  const fixture = serviceFixture({
+    walletDiscovery: async (input) => {
+      discoveryCalls += 1;
+      assert.equal(input.wallet, source.address);
+      assert.equal(input.startBlock, 90);
+      assert.equal(input.endBlock, 110);
+      return {
+        transactions: Array.from({ length: 12 }, () => ({})),
+        truncated: false,
+        pages: 1,
+        pairs: [{
+          wallet: source.address,
+          failedTransactionHash: failedHash,
+          successfulTransactionHash: successHash,
+        }],
+      };
+    },
+  });
+  const result = await fixture.service.discover(source.address);
+  assert.equal(discoveryCalls, 1);
+  assert.equal(fixture.pairCalls, 1);
+  assert.equal(result.authority, "advisory-discovery-only");
+  assert.equal(result.historyRowsInspected, 12);
+  assert.equal(result.historyTruncated, false);
+  assert.equal(result.manualFallbackRecommended, false);
+  assert.deepEqual(result.matches.map(({ eligible, status }) => ({ eligible, status })), [
+    { eligible: true, status: "eligible" },
+  ]);
 });
 
 test("recovery ABI selection is explicit and defaults existing callers to V1", () => {
@@ -1064,6 +1096,7 @@ function serviceFixture({
   sponsorClaimed = false,
   lineageOverride = {},
   configOverride = {},
+  walletDiscovery,
 } = {}) {
   let currentNow = now;
   let pairCalls = 0;
@@ -1257,6 +1290,7 @@ function serviceFixture({
     nativeVerifierContract: nativeVerifier,
     predecessorPoolContract: predecessorPool,
     discoveryIndex,
+    walletDiscovery,
     ethereumProviders,
     ...(!useEthereumResolver ? {
       async pairResolver(input) {

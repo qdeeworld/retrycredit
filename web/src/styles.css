@@ -85,18 +85,24 @@ a:hover { text-decoration-thickness:2px; }
 
 .eligibility-desk { grid-area:desk; position:relative; min-width:0; min-height:446px; margin-block-start:40px; display:flex; flex-direction:column; padding:clamp(24px,3vw,40px); border:1px solid var(--ink); border-block-start:7px solid var(--blue); background:var(--sheet-2); }
 .eligibility-desk.state-qualifying,.eligibility-desk.state-released,.eligibility-desk.state-already-claimed { border-block-start-color:var(--green); }
-.eligibility-desk.state-malformed,.eligibility-desk.state-semantic-mismatch,.eligibility-desk.state-retryable-error,.eligibility-desk.state-service-unavailable,.eligibility-desk.state-offline,.eligibility-desk.state-campaign-closed,.eligibility-desk.state-pair-changed { border-block-start-color:var(--red); }
+.eligibility-desk.state-malformed,.eligibility-desk.state-semantic-mismatch,.eligibility-desk.state-discovery-empty,.eligibility-desk.state-discovery-unavailable,.eligibility-desk.state-retryable-error,.eligibility-desk.state-service-unavailable,.eligibility-desk.state-offline,.eligibility-desk.state-campaign-closed,.eligibility-desk.state-pair-changed { border-block-start-color:var(--red); }
 .eligibility-desk.state-wrong-wallet,.eligibility-desk.state-account-changed,.eligibility-desk.state-rate-limited,.eligibility-desk.state-campaign-full,.eligibility-desk.state-wallet-connecting,.eligibility-desk.state-authorization-requested,.eligibility-desk.state-proof-queued,.eligibility-desk.state-proof-building,.eligibility-desk.state-release-relaying,.eligibility-desk.state-release-processing,.eligibility-desk.state-release-uncertain { border-block-start-color:var(--amber); }
 .eligibility-desk.state-continuation-waiting { border-block-start-color:var(--amber); }
 .desk-heading { min-width:0; display:grid; grid-template-columns:44px minmax(0,1fr); gap:15px; }
 .state-mark { width:44px; height:44px; display:grid; place-items:center; color:var(--sheet); background:var(--blue); }
 .state-mark svg { width:20px; }
 .state-qualifying .state-mark,.state-released .state-mark,.state-already-claimed .state-mark { background:var(--green); }
-.state-malformed .state-mark,.state-semantic-mismatch .state-mark,.state-retryable-error .state-mark,.state-service-unavailable .state-mark,.state-offline .state-mark,.state-campaign-closed .state-mark,.state-pair-changed .state-mark { background:var(--red); }
+.state-malformed .state-mark,.state-semantic-mismatch .state-mark,.state-discovery-empty .state-mark,.state-discovery-unavailable .state-mark,.state-retryable-error .state-mark,.state-service-unavailable .state-mark,.state-offline .state-mark,.state-campaign-closed .state-mark,.state-pair-changed .state-mark { background:var(--red); }
 .state-wrong-wallet .state-mark,.state-account-changed .state-mark,.state-rate-limited .state-mark,.state-campaign-full .state-mark,.state-wallet-connecting .state-mark,.state-authorization-requested .state-mark,.state-proof-queued .state-mark,.state-proof-building .state-mark,.state-release-relaying .state-mark,.state-release-processing .state-mark,.state-release-uncertain .state-mark { color:var(--ink); background:var(--amber); }
 .state-continuation-waiting .state-mark { color:var(--ink); background:var(--amber); }
 .desk-heading h1 { margin:0 0 7px; font-size:clamp(25px,2.5vw,36px); line-height:1; letter-spacing:-.025em; text-wrap:balance; }
 .desk-heading p { margin:0; color:var(--muted); font-size:14px; line-height:1.55; }
+.wallet-discovery { display:grid; gap:8px; margin-block-start:24px; }
+.wallet-discovery .primary-action { margin:0; }
+.wallet-discovery p { margin:0; color:var(--muted); font-size:11px; line-height:1.5; }
+.wallet-discovery small { color:var(--ink); font:600 10px/1.45 "IBM Plex Mono",monospace; }
+.manual-divider { display:flex; align-items:center; gap:10px; margin-block-start:22px; color:var(--muted); font:600 9px "IBM Plex Mono",monospace; text-transform:uppercase; letter-spacing:.06em; }
+.manual-divider::before,.manual-divider::after { content:""; height:1px; flex:1; background:var(--rule); }
 .pair-intake { display:flex; flex-direction:column; margin-block-start:24px; }
 .pair-intake fieldset { min-width:0; margin:0; padding:0; border:0; }
 .pair-intake legend { width:100%; margin:0 0 12px; padding:0 0 8px; border-block-end:1px solid var(--rule); color:var(--muted); font:600 10px "IBM Plex Mono",monospace; text-transform:uppercase; letter-spacing:.06em; }

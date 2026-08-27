@@ -224,6 +224,13 @@ export function createAppHandler({
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/recovery/discover") {
+      requireRecoveryService(recovery);
+      const body = await readJson(request);
+      sendJson(response, 200, await recovery.service.discover(body?.wallet));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/recovery/intake/challenge") {
       requireRecoveryService(recovery);
       const body = await readJson(request);
@@ -513,6 +520,7 @@ function unavailableRecoveryConfig(waking, service = null) {
     waking,
     capabilities: {
       selfServePairIntake: true,
+      walletNativeDiscovery: true,
     },
     consent: {
       scope: "hosted-relayer",
