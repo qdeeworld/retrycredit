@@ -90,6 +90,15 @@ test("discovery rejects a wide gap and a stable-action mutation", () => {
   ], config()), []);
 });
 
+test("campaign fee recipient filters advisory candidates before live-validation capacity", () => {
+  const failedInput = mintInput(1n, `0x${"22".repeat(65)}`);
+  const successInput = mintInput(2n, `0x${"33".repeat(65)}`);
+  assert.deepEqual(discoverSeaDropPairs([
+    transaction({ hashByte: "61", nonce: 4, block: 130, status: 0, input: failedInput }),
+    transaction({ hashByte: "62", nonce: 5, block: 132, status: 1, input: successInput }),
+  ], { ...config(), feeRecipient: "0x2222222222222222222222222222222222222222" }), []);
+});
+
 function config() {
   return { wallet, startBlock: 100, endBlock: 200, maxBlockGap: 5, maxQuantity: 2 };
 }

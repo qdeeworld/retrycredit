@@ -487,6 +487,11 @@ function App() {
     if (!didChange) return false;
 
     setError("");
+    if (externalChange && flowRef.current === "discovering") {
+      setDiscoveryResult(null);
+      setError("The connected account changed before wallet discovery finished. Search the newly selected wallet when ready.");
+      updateFlow("empty");
+    }
     const liveEligibility = eligibilityRef.current;
     if (!liveEligibility?.eligible) return true;
     const currentFlow = flowRef.current;

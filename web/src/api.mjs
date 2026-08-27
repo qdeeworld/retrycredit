@@ -6,6 +6,7 @@ export const RELEASE_TOTAL_TIMEOUT_MS = 15 * 60_000;
 export const RELEASE_REQUEST_TIMEOUT_MS = 150_000;
 export const RELEASE_RETRY_DELAY_MS = 15_000;
 export const RECOVERY_ACTION_REQUEST_TIMEOUT_MS = 30_000;
+export const RECOVERY_DISCOVERY_REQUEST_TIMEOUT_MS = 40_000;
 export const RECOVERY_INTAKE_ELIGIBILITY_PATH = "/api/recovery/intake/eligibility";
 export const RECOVERY_INTAKE_CHALLENGE_PATH = "/api/recovery/intake/challenge";
 export const RECOVERY_INTAKE_RELEASE_PATH = "/api/recovery/intake/release";
@@ -90,7 +91,7 @@ export async function discoverRecoveryWallet({
   apiOrigin = "",
   wallet,
   fetchImpl = globalThis.fetch,
-  timeoutMs = RECOVERY_ACTION_REQUEST_TIMEOUT_MS,
+  timeoutMs = RECOVERY_DISCOVERY_REQUEST_TIMEOUT_MS,
 } = {}) {
   return postRecoveryJson({
     apiOrigin,

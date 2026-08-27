@@ -39,6 +39,7 @@ export async function fetchWalletTransactions({
   }
 
   const transactions = [];
+  const startedAt = Date.now();
   let truncated = false;
   let pages = 0;
   for (let page = 1; page <= maxPages; page += 1) {
@@ -53,7 +54,9 @@ export async function fetchWalletTransactions({
       offset: String(pageSize),
       sort: "desc",
     }).toString();
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) throw new Error("wallet history discovery timed out");
+    const response = await fetchImpl(url, { signal: AbortSignal.timeout(remainingMs) });
     if (!response.ok) throw new Error(`wallet history provider returned HTTP ${response.status}`);
     const body = await response.json();
     if (body?.status === "0" && body?.message === "No transactions found") break;
@@ -78,6 +81,7 @@ export function discoverSeaDropPairs(transactions, {
   endBlock,
   maxBlockGap,
   maxQuantity,
+  feeRecipient,
 } = {}) {
   if (!Array.isArray(transactions)) throw new Error("transactions must be an array");
   const sourceWallet = getAddress(wallet).toLowerCase();
@@ -85,6 +89,7 @@ export function discoverSeaDropPairs(transactions, {
   const lastBlock = requireBlock(endBlock, "endBlock");
   const gapLimit = requirePositiveInteger(maxBlockGap, "maxBlockGap");
   const quantityLimit = BigInt(requirePositiveInteger(maxQuantity, "maxQuantity"));
+  const expectedFeeRecipient = feeRecipient ? getAddress(feeRecipient).toLowerCase() : null;
 
   const calls = transactions.flatMap((transaction) => {
     try {
@@ -104,7 +109,11 @@ export function discoverSeaDropPairs(transactions, {
       ) return [];
       const mint = decodeCanonicalSeaDropMintSigned(input);
       const value = BigInt(transaction.value);
-      if (value <= 0n || mint.quantity > quantityLimit) return [];
+      if (
+        value <= 0n
+        || mint.quantity > quantityLimit
+        || (expectedFeeRecipient && mint.feeRecipient.toLowerCase() !== expectedFeeRecipient)
+      ) return [];
       return [{
         hash,
         blockNumber,
