@@ -1,6 +1,6 @@
 # RetryCredit Recovery Campaign API
 
-The active API operates one pre-funded Recovery Campaign for paid Ethereum-mainnet SeaDrop failure-to-completion pairs. Its namespaced Open Pair Intake accepts an exact failed/successful transaction-hash pair, derives the source wallet from live Ethereum facts, authenticates the deployed Creditcoin bindings, asks that wallet for a five-minute offchain consent, builds one pair-local Attestcoin batch, simulates the immutable campaign, and relays the fixed release. The earlier three-address discovery index remains a public example and staged-compatibility path; it is not eligibility authority for the intake routes.
+The active API operates the live V1 pre-funded Recovery Campaign for paid Ethereum-mainnet SeaDrop failure-to-completion pairs. Its namespaced Open Pair Intake accepts an exact failed/successful transaction-hash pair, derives the source wallet from live Ethereum facts, authenticates the deployed Creditcoin bindings, asks that wallet for a five-minute offchain consent, builds one pair-local Attestcoin batch, simulates the immutable campaign, and relays the fixed release. A finalized, funded V2 continuation is deployed but remains predecessor-locked, so production intentionally reports `contractVersion: "v1"` until the reviewed cutover. The earlier three-address discovery index remains a public example and staged-compatibility path; it is not eligibility authority for the intake routes.
 
 The wallet does not submit a transaction, switch networks, deposit an asset, or choose a destination. The contract derives the beneficiary from the proven Ethereum sender. Earlier Sepolia/Uniswap V3 endpoints remain available as an API-level predecessor and for archived evidence. The current Recovery Campaign interface does not fall back to those routes automatically, so their availability alone is not a product rollback.
 
@@ -47,6 +47,8 @@ npm run app:dev
 | `SEPOLIA_RPC_URL` | Archived V3 Ethereum Sepolia execution RPC. |
 | `CREDITCOIN_RPC` | Shared Creditcoin Testnet RPC. |
 | `ATTESTCOIN_PROOF_BUILDER` | Shared Creditcoin Testnet Attestcoin proof-builder URL. |
+
+The guarded one-time V2 deployment supervisor also recognizes `RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE`, `RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_REVISION`, `RETRYCREDIT_RECOVERY_V2_PREPARE_ARM_DIGEST`, `RETRYCREDIT_RECOVERY_V2_EXPECTED_TRANSACTION_HASH`, `RETRYCREDIT_RECOVERY_V2_BROADCAST_NOT_BEFORE`, `RETRYCREDIT_RECOVERY_V2_BROADCAST_NOT_AFTER`, and `RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_ARM_DIGEST`. These values bind a reviewed release, exact signed transaction fingerprint, and short broadcast window; they are not normal product configuration. Production reached the terminal `FINALIZED_PLUS_TWO_VERIFIED` state without exposing the signing key or raw transaction.
 
 `ETHEREUM_RPC_URLS` is used by the Recovery Campaign to re-read mainnet source data and also supports archived RuleDrop compatibility endpoints. `RULEDROP_POOL_ADDRESS` and `RULEDROP_POOL_VERSION` are legacy-only. The frontend build uses `VITE_RETRYCREDIT_API_ORIGIN` to select the public API origin.
 

@@ -17,7 +17,9 @@ RetryCredit is a pre-funded recovery campaign for an exact Ethereum transaction 
 4. The relayer builds one pair-local Attestcoin batch and simulates the immutable campaign release.
 5. The contract derives the beneficiary from the proven source transaction and releases exactly `0.1 tCTC`. There is no destination field.
 
-The first campaign is intentionally small: three fixed slots, exactly `0.3 tCTC` funded, and unused funds recoverable only by the sponsor after the deadline. Each wallet, query, and pair is consumed within that campaign. Replay state is campaign-scoped so an outsider cannot poison the official campaign with a dust-funded copy.
+The live V1 campaign is intentionally small: three fixed slots, exactly `0.3 tCTC` funded, and unused funds recoverable only by the sponsor after the deadline. Each wallet, query, and pair is consumed within that campaign. Replay state is campaign-scoped so an outsider cannot poison the official campaign with a dust-funded copy.
+
+A reviewed lineage-aware V2 contract is also finalized and funded on Creditcoin Testnet. Its first campaign holds ten `0.1 tCTC` credits through September 23, 2026, but releases remain locked until the immutable V1 predecessor is full or reaches its deadline. The public API therefore stays truthfully on V1 until that boundary; the V2 deployment is judging-window readiness, not a completed V2 user claim.
 
 ## Why Attestcoin is load-bearing
 
@@ -39,12 +41,14 @@ The first verified Recovery Campaign release executed on August 26, 2026:
 - Same-wallet completion two blocks later: [`0x8dbb…ec3a`](https://etherscan.io/tx/0x8dbb2cae48049b6ce4f0d469c7719f4f20a444e2465886a3ed7dcab41b25ec3a)
 - Exact `0.1 tCTC` Creditcoin release: [`0xc6e8…2a85`](https://creditcoin-testnet.blockscout.com/tx/0xc6e8ff4ec62f6a74de408c185ea0bdec318067c9bc9dab421118c13b1ed22a85)
 - Active campaign: [`0x646c…dF66`](https://creditcoin-testnet.blockscout.com/address/0x646c5c766Ce3B6058B44F41e89fE716f54E3dF66), campaign `#1`
+- Finalized V2 lineage deployment: [`0xef81…149b`](https://creditcoin-testnet.blockscout.com/tx/0xef8136a0424254ba502f3499f6324e8a02c12bc7ac341d64c00c9a505085149b), creating [`0x3Eee…82B8`](https://creditcoin-testnet.blockscout.com/address/0x3Eee179eDD6Fe6e40D7d23f0110ea639f2DA82B8)
 
 At the release block, the proven beneficiary moved from `0` to `0.1 tCTC`, the campaign moved from `0.3` to `0.2 tCTC`, claim count became `1/3`, and the failure query, success query, and pair replay markers were all consumed. This is E2 public execution relayed by the founder against an unrelated historical address; it is not public-product causability or proof that the wallet owner used RetryCredit, consented to the unsolicited testnet credit, or represents customer demand.
 
 ## Contracts
 
 - `RetryCreditRecoveryCampaign`: immutable funded terms, fixed capacity, proof-derived payouts, campaign-scoped replay, one claim per wallet, and accounted-only remainder recovery.
+- `RetryCreditRecoveryCampaignV2`: the same proof-derived fixed-credit boundary plus immutable V1 predecessor enforcement and sponsor-wide wallet, query, and pair replay across later campaigns.
 - `AttestcoinSeaDropRetryVerifier`: exact two-transaction native batch verification on Attestcoin chain key `3` / Ethereum chain ID `1`.
 - `SeaDropPaidRetryPredicateV1`: canonical call decoding and strict failed-then-completed paid-mint semantics.
 - `EvmV1Decoder`: strict Attestcoin EVM transaction and receipt decoding.
