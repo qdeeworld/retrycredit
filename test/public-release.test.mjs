@@ -37,14 +37,15 @@ test("the public shell is a multi-route Recovery Dispatch, not the old cockpit",
   assert.doesNotMatch(styles, /\.hero\b|linear-gradient|radial-gradient|backdrop-filter|box-shadow/);
 });
 
-test("Recovery leads with campaign truth and pair-first self-serve intake", () => {
+test("Recovery leads with campaign truth and wallet-native discovery with pair fallback", () => {
   assert.match(app, /A completed mint can unlock one fixed credit\./);
   for (const label of ["Fixed amount", "Capacity", "Source window", "Claim deadline"]) {
     assert.match(app, new RegExp(label));
   }
   assert.match(app, /RetryCredit pre-funds the bounded Creditcoin release/);
   assert.match(app, /SeaDrop, OpenSea, and the NFT collection do not sponsor or endorse this pilot/);
-  assert.match(app, /Submit the exact retry pair/);
+  assert.match(app, /Connect wallet and find my retry/);
+  assert.match(app, /or enter the exact pair/);
   assert.match(app, /Check exact pair/);
   assert.match(app, /Authorize exact recovery/);
   assert.match(app, /Load published example/);
@@ -54,7 +55,8 @@ test("Recovery leads with campaign truth and pair-first self-serve intake", () =
   assert.match(app, /<input/);
   assert.match(app, /Failed paid mint/);
   assert.match(app, /Completed retry/);
-  assert.match(app, /No wallet connection is needed to check public Ethereum facts/);
+  assert.match(app, /Connection reveals only the selected public address/);
+  assert.match(app, /independently rechecks any match before it can qualify/);
   assert.doesNotMatch(app, /Connect wallet and check/);
 
   assert.match(app, /One wallet\. One ordered source pair\. One fixed release\./);
@@ -85,6 +87,9 @@ test("the pair desk includes every required resilient state", () => {
     "editing",
     "malformed",
     "checking",
+    "discovering",
+    "discovery-empty",
+    "discovery-unavailable",
     "semantic-mismatch",
     "qualifying",
     "continuation-waiting",
@@ -113,10 +118,13 @@ test("the pair desk includes every required resilient state", () => {
   assert.match(app, /role="alert"/);
   assert.match(app, /pairOperations\.current\.invalidate\(\)/);
   assert.match(app, /operationIsCurrent\(operation, walletOperation\)/);
+  assert.match(app, /walletOperations\.current\.isCurrent\(walletOperation\)/);
   assert.match(app, /if \(!online \|\| authorizationInFlight\.current \|\| isBusyFlow\(flowRef\.current\)\) return/);
   assert.match(app, /if \(needsReleaseStatusCheck\(currentFlow\)\) \{[\s\S]*updateFlow\(currentFlow\);[\s\S]*return true;/);
   assert.match(app, /isBusyFlow\(flowRef\.current\)[\s\S]*needsReleaseStatusCheck\(flowRef\.current\)/);
-  assert.match(app, /campaignAvailability === "open"[\s\S]*!needsReleaseStatusCheck\(flow\)/);
+  assert.match(app, /config\?\.capabilities\?\.walletNativeDiscovery/);
+  assert.match(app, /eligibility\?\.eligible && campaignAvailability === "open" && !continuationWaiting/);
+  assert.match(app, /!needsReleaseStatusCheck\(flow\)/);
   assert.doesNotMatch(app, /knownAvailability !== "open"/);
   assert.match(app, /const checkDisabled = busy\s+\|\| !online\s+\|\| flow === "offline"\s+\|\| configState === "loading";/);
   assert.match(app, /validateRecoveryPairDraft\(pairDraftRef\.current\)/);

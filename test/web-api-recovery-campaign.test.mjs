@@ -368,7 +368,7 @@ test("disabled recovery config is shape-stable and CORS applies to GET and prefl
     assert.equal(body.rule, null);
     assert.equal(body.capacity, null);
     assert.equal(body.discoverySize, 3);
-    assert.deepEqual(body.capabilities, { selfServePairIntake: true });
+    assert.deepEqual(body.capabilities, { selfServePairIntake: true, walletNativeDiscovery: true });
     assert.deepEqual(body.consent, { scope: "hosted-relayer", protocolEnforced: false });
     assert.deepEqual(body.source, { name: "Ethereum Mainnet", chainId: 1, chainKey: 3 });
 
@@ -413,6 +413,10 @@ test("ready API routes preserve the fixed recovery response contract", async () 
       calls.push(["intakeEligibility", input]);
       return { eligible: true, status: "eligible", wallet, campaignNumber: 7, pair: input.pair };
     },
+    async discover(input) {
+      calls.push(["discover", input]);
+      return { wallet: input, matches: [pair], authority: "advisory-discovery-only" };
+    },
     async intakeChallenge(input) {
       calls.push(["intakeChallenge", input]);
       return { wallet, message: "pair consent", issuedAt: 1, expiresAt: 301, pair: input.pair };
@@ -439,6 +443,9 @@ test("ready API routes preserve the fixed recovery response contract", async () 
     assert.equal(configBody.publicOrigin, origin);
 
     const intakeEligibilityBody = { pair };
+    const discovery = await post(base, "/api/recovery/discover", { wallet });
+    assert.equal(discovery.status, 200);
+    assert.equal((await discovery.json()).authority, "advisory-discovery-only");
     const intakeEligibility = await post(
       base,
       "/api/recovery/intake/eligibility",
@@ -483,6 +490,7 @@ test("ready API routes preserve the fixed recovery response contract", async () 
     assert.equal((await release.json()).status, "released");
     assert.deepEqual(calls, [
       ["configuration"],
+      ["discover", wallet],
       ["intakeEligibility", intakeEligibilityBody],
       ["intakeChallenge", intakeChallengeBody],
       ["intakeRelease", intakeReleaseBody],

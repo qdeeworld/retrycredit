@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   checkRecoveryEligibility,
+  discoverRecoveryWallet,
   LEGACY_RELEASE_PENDING_MESSAGE,
   RECOVERY_AUTHORIZATION_EXPIRED_MESSAGE,
   recoveryAuthorizationDeadlines,
@@ -71,6 +72,24 @@ test("eligibility posts only the source wallet to the V2 endpoint", async () => 
   assert.equal(result.status, "eligible");
   assert.equal(captured.url, "/api/recovery/eligibility");
   assert.equal(captured.options.method, "POST");
+  assert.deepEqual(JSON.parse(captured.options.body), { wallet: WALLET });
+});
+
+test("wallet discovery posts only the connected address to the advisory endpoint", async () => {
+  let captured;
+  const result = await discoverRecoveryWallet({
+    wallet: WALLET,
+    fetchImpl: async (url, options) => {
+      captured = { url, options };
+      return new Response(JSON.stringify({
+        wallet: WALLET,
+        authority: "advisory-discovery-only",
+        matches: [],
+      }), { status: 200 });
+    },
+  });
+  assert.equal(result.authority, "advisory-discovery-only");
+  assert.equal(captured.url, "/api/recovery/discover");
   assert.deepEqual(JSON.parse(captured.options.body), { wallet: WALLET });
 });
 

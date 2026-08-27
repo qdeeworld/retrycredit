@@ -30,6 +30,7 @@ import {
   validateSeaDropRecoveryPair,
 } from "./seadrop-recovery.mjs";
 import { PUBLIC_CC3_RELAYER_ROLE, deriveRoleKey } from "./role-key.mjs";
+import { discoverWalletSeaDropPairs } from "./seadrop-wallet-discovery.mjs";
 
 export const RECOVERY_RELAYER_ROLE = PUBLIC_CC3_RELAYER_ROLE;
 
@@ -179,6 +180,7 @@ export class RecoveryCampaignService {
     predecessorPoolContract,
     contractFactory = (address, abi) => new Contract(address, abi, ccProvider),
     discoveryIndex = RECOVERY_DISCOVERY_INDEX,
+    walletDiscovery = discoverWalletSeaDropPairs,
     pairResolver,
     now = () => Math.floor(Date.now() / 1000),
     config = {},
@@ -202,6 +204,7 @@ export class RecoveryCampaignService {
     this.predecessorPool = predecessorPoolContract ?? null;
     this.contractFactory = contractFactory;
     this.discoveryIndex = normalizeDiscoveryIndex(discoveryIndex);
+    this.walletDiscovery = walletDiscovery;
     this.discoveryByWallet = new Map(
       this.discoveryIndex.map((entry) => [entry.wallet.toLowerCase(), entry]),
     );
@@ -360,6 +363,7 @@ export class RecoveryCampaignService {
       waking: false,
       capabilities: {
         selfServePairIntake: true,
+        walletNativeDiscovery: true,
       },
       consent: {
         scope: "hosted-relayer",
@@ -392,6 +396,47 @@ export class RecoveryCampaignService {
       },
       discoverySize: this.discoveryIndex.length,
     };
+  }
+
+  async discover(walletValue) {
+    const wallet = requireNonzeroAddress(walletValue, "wallet");
+    return this.intakePool.run(() => this.#discoverWallet(wallet));
+  }
+
+  async #discoverWallet(wallet) {
+    const state = await this.#campaignState();
+    const rule = serializeRule(state.rule);
+    let discovered;
+    try {
+      discovered = await this.walletDiscovery({ wallet, ...rule });
+    } catch (error) {
+      throw new WorkerError(
+        "RECOVERY_DISCOVERY_UNAVAILABLE",
+        "Wallet history discovery is temporarily unavailable; transaction hashes can still be entered manually.",
+        503,
+        error,
+      );
+    }
+
+    const matches = [];
+    for (const pair of discovered.pairs.slice(0, 8)) {
+      try {
+        const context = await this.#openPairEligibilityContext(pair);
+        const eligibility = this.#publicEligibility(context);
+        matches.push(eligibility);
+      } catch (error) {
+        if (!(error instanceof WorkerError) || error.status >= 500) throw error;
+      }
+    }
+    return Object.freeze({
+      wallet,
+      authority: "advisory-discovery-only",
+      historyRowsInspected: discovered.transactions.length,
+      historyTruncated: discovered.truncated,
+      pagesInspected: discovered.pages,
+      matches: Object.freeze(matches),
+      manualFallbackRecommended: discovered.truncated || matches.length === 0,
+    });
   }
 
   async eligibility(walletValue) {

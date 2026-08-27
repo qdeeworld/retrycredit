@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import {
   checkRecoveryPairEligibility,
+  discoverRecoveryWallet,
   releaseRecoveryPairWhenReady,
   recoveryClockNow,
   recoveryWallClockNow,
@@ -120,6 +121,7 @@ function App() {
   const [error, setError] = useState("");
   const [online, setOnline] = useState(() => navigator.onLine);
   const [authorizationPending, setAuthorizationPending] = useState(false);
+  const [discoveryResult, setDiscoveryResult] = useState(null);
   const [, setCampaignClock] = useState(() => Date.now());
 
   const route = normalizeRoute(path);
@@ -521,14 +523,89 @@ function App() {
     return true;
   }
 
-  async function connectWallet() {
-    if (!eligibilityRef.current?.eligible) return "";
-    if (!window.ethereum) throw new Error("Install an EVM wallet to authorize this qualifying source pair.");
+  async function connectWallet({ discovery = false } = {}) {
+    if (!discovery && !eligibilityRef.current?.eligible) return "";
+    if (!window.ethereum) throw new Error(discovery
+      ? "Install an EVM wallet to search its public Ethereum history."
+      : "Install an EVM wallet to authorize this qualifying source pair.");
     const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
     const next = safeAddress(accounts?.[0]);
     if (!next) throw new Error("The wallet did not return an Ethereum address.");
     updateConnectedAccount(next);
     return next;
+  }
+
+  async function discoverConnectedWallet() {
+    if (!online || authorizationInFlight.current || isBusyFlow(flowRef.current)) return;
+    let walletOperation;
+    updateFlow("discovering");
+    setError("");
+    setDiscoveryResult(null);
+    updateEligibility(null);
+    setReleaseResult(null);
+    pairOperations.current.invalidate();
+    try {
+      const wallet = await connectWallet({ discovery: true });
+      if (!wallet) throw new Error("The wallet did not return an Ethereum address.");
+      walletOperation = walletOperations.current.begin(wallet);
+      const liveConfig = configState === "ready" ? config : await refreshConfig();
+      if (!walletOperations.current.isCurrent(walletOperation)) return;
+      if (!liveConfig?.enabled) throw new TemporaryUnavailableError();
+      const response = await discoverRecoveryWallet({ apiOrigin: API_ORIGIN, wallet });
+      if (!walletOperations.current.isCurrent(walletOperation)) return;
+      if (
+        response?.authority !== "advisory-discovery-only"
+        || !walletsMatch(response?.wallet, wallet)
+        || !Array.isArray(response?.matches)
+      ) throw new Error("Wallet discovery returned an invalid response.");
+      setDiscoveryResult(response);
+      const match = response.matches.find((item) => item?.eligible)
+        ?? response.matches.find((item) => ["claimed", "processing", "continuation-waiting"].includes(item?.status))
+        ?? response.matches[0];
+      if (!match?.pair) {
+        setError(response.historyTruncated
+          ? `No matching retry appeared in the ${response.historyRowsInspected ?? "bounded"} most recent transactions. Older history may still qualify; use the exact hashes below.`
+          : "No matching paid retry was found in this wallet's bounded campaign history. You can still enter exact transaction hashes below.");
+        updateFlow("discovery-empty");
+        return;
+      }
+      const pair = {
+        failedTransactionHash: match.pair.failedTransactionHash,
+        successfulTransactionHash: match.pair.successfulTransactionHash,
+      };
+      const validated = validatePairEligibilityResponse({ response: match, requestedPair: pair, config: liveConfig });
+      if (!walletsMatch(validated.wallet, wallet)) throw new Error("The discovered pair belongs to a different source wallet.");
+      pairDraftRef.current = pair;
+      pairOperations.current.begin(pair);
+      setPairDraft(pair);
+      setPairErrors({});
+      updateEligibility(validated);
+      if (validated.status === "claimed") {
+        setReleaseResult(validated.release ? validated : null);
+        updateFlow("already-claimed");
+      } else if (validated.status === "processing") {
+        updateFlow("release-processing");
+      } else if (validated.status === "continuation-waiting") {
+        updateFlow("continuation-waiting");
+      } else if (validated.status === "closed") {
+        updateFlow("campaign-closed");
+      } else if (validated.status === "full") {
+        updateFlow("campaign-full");
+      } else if (validated.eligible) {
+        updateFlow(walletsMatch(walletOperations.current.currentAccount(), validated.wallet) ? "qualifying" : "wrong-wallet");
+      } else {
+        updateFlow("semantic-mismatch");
+      }
+    } catch (nextError) {
+      if (walletOperation && !walletOperations.current.isCurrent(walletOperation)) return;
+      if (nextError?.code === 4001 || nextError?.code === "ACTION_REJECTED") {
+        setError("The wallet request was closed. No history was searched and nothing was submitted.");
+        updateFlow("empty");
+        return;
+      }
+      setError(cleanError(nextError));
+      updateFlow(nextError instanceof TemporaryUnavailableError ? "service-unavailable" : "discovery-unavailable");
+    }
   }
 
   function changePairField(field, value) {
@@ -542,6 +619,7 @@ function App() {
     updateEligibility(null);
     setReleaseResult(null);
     setError("");
+    setDiscoveryResult(null);
     updateFlow(hasPairDraft(next) ? (hadDerivedState ? "pair-changed" : "editing") : "empty");
   }
 
@@ -560,6 +638,7 @@ function App() {
     updateEligibility(null);
     setReleaseResult(null);
     setError("");
+    setDiscoveryResult(null);
     updateFlow("editing");
   }
 
@@ -897,17 +976,18 @@ function App() {
     pairDraft,
     pairErrors,
     releaseResult: visibleRelease,
-  }), [account, busy, config, configState, effectiveFlow, eligibility, error, featuredEligibility, featuredState, online, pairDraft, pairErrors, visibleRelease]);
+    discoveryResult,
+  }), [account, busy, config, configState, effectiveFlow, eligibility, error, featuredEligibility, featuredState, online, pairDraft, pairErrors, visibleRelease, discoveryResult]);
 
   const walletActionEnabled = Boolean(
-    eligibility?.eligible
-    && (!account || !walletsMatch(account, eligibility.wallet))
-    && online
+    online
     && configState === "ready"
-    && campaignAvailability === "open"
-    && !continuationWaiting
     && !busy
     && !needsReleaseStatusCheck(flow)
+    && (
+      config?.capabilities?.walletNativeDiscovery
+      || (eligibility?.eligible && campaignAvailability === "open" && !continuationWaiting)
+    )
   );
 
   return <div className="app-shell">
@@ -919,13 +999,14 @@ function App() {
       online={online}
       route={route}
       walletActionEnabled={walletActionEnabled}
-      onConnect={walletControl}
+      onConnect={eligibility?.eligible ? walletControl : discoverConnectedWallet}
     />
     <main id="main-content" tabIndex="-1">
       {route === "/" && <RecoveryPage
         {...context}
         onAuthorize={authorizeAndRelease}
         onCheckPair={checkPair}
+        onDiscover={discoverConnectedWallet}
         onLoadExample={loadRecoveredExample}
         onPairChange={changePairField}
       />}
@@ -969,12 +1050,12 @@ function AppHeader({ account, config, configState, online, route, onConnect, wal
         onClick={onConnect}
         disabled={!walletActionEnabled}
         aria-describedby={!account && !walletActionEnabled ? "wallet-gate-note" : undefined}
-        title={!account && !walletActionEnabled ? "Check a qualifying pair before connecting a wallet." : undefined}
+        title={!account && !walletActionEnabled ? "Wallet discovery is unavailable while the recovery service is loading." : undefined}
       >
         <Wallet aria-hidden="true" />
-        <span>{account ? short(account) : walletActionEnabled ? "Connect source wallet" : "Wallet after match"}</span>
+        <span>{account ? short(account) : walletActionEnabled ? "Find my retry" : "Wallet unavailable"}</span>
       </button>
-      {!account && !walletActionEnabled && <span id="wallet-gate-note" className="visually-hidden">Wallet connection becomes available after a pair qualifies.</span>}
+      {!account && !walletActionEnabled && <span id="wallet-gate-note" className="visually-hidden">Wallet discovery becomes available when the recovery service is ready.</span>}
     </div>
     <nav aria-label="Primary">
       {ROUTES.map(({ path, label, icon: Icon }) => <a
@@ -1092,11 +1173,13 @@ function EligibilityDesk({
   online,
   onAuthorize,
   onCheckPair,
+  onDiscover,
   onLoadExample,
   onPairChange,
   pairDraft,
   pairErrors,
   releaseResult,
+  discoveryResult,
 }) {
   const copy = deskCopy(flow, eligibility, releaseResult);
   const isTerminal = flow === "released" || flow === "already-claimed";
@@ -1124,6 +1207,23 @@ function EligibilityDesk({
         <p role="status" aria-live="polite" aria-atomic="true">{copy.body}</p>
       </div>
     </div>
+
+    {!hasQualifyingResult && !isTerminal && <div className="wallet-discovery">
+      <button
+        className="primary-action discovery-action"
+        type="button"
+        onClick={onDiscover}
+        disabled={busy || !online || configState !== "ready" || !config?.capabilities?.walletNativeDiscovery}
+        aria-busy={flow === "discovering"}
+      >
+        <span>{flow === "discovering" ? "Searching wallet history" : account ? "Search this wallet's retries" : "Connect wallet and find my retry"}</span>
+        {flow === "discovering" ? <LoaderCircle className="spin" aria-hidden="true" /> : <Wallet aria-hidden="true" />}
+      </button>
+      <p>Connection reveals only the selected public address. RetryCredit searches a bounded history, then independently rechecks any match before it can qualify.</p>
+      {discoveryResult && <small>{discoveryResult.historyRowsInspected} transactions checked{discoveryResult.historyTruncated ? " · older history not included" : " · complete bounded history"}</small>}
+    </div>}
+
+    {!hasQualifyingResult && !isTerminal && <div className="manual-divider"><span>or enter the exact pair</span></div>}
 
     <form className="pair-intake" onSubmit={onCheckPair} noValidate aria-busy={busy}>
       <fieldset>
@@ -1555,7 +1655,10 @@ function ExplorerLink({ chain, children, hash }) {
 function deskCopy(flow, eligibility, releaseResult) {
   const copies = {
     "loading-config": ["Opening the campaign file", "Loading funding, capacity, and claim-window terms from the recovery service."],
-    empty: ["Submit the exact retry pair", "Start with the failed paid mint, then the completed retry. No wallet connection is needed to check public Ethereum facts."],
+    empty: ["Find a paid retry", "Connect the source wallet to search its public history, or enter the exact failed and completed transactions yourself."],
+    discovering: ["Searching public wallet history", "RetryCredit is looking for a paid SeaDrop failure followed by the matching completed retry. Discovery alone cannot authorize a credit."],
+    "discovery-empty": ["No retry found in the checked history", "Try the exact transaction hashes below, especially if the wallet has older activity outside the bounded search."],
+    "discovery-unavailable": ["Wallet search is temporarily unavailable", "Manual pair checking still works and remains the authority path for live Ethereum facts."],
     editing: ["Complete the ordered pair", "Both transactions must belong to the same source wallet and paid SeaDrop action."],
     malformed: ["Fix the transaction references", "Each field needs a full transaction hash or canonical etherscan.io transaction URL."],
     checking: ["Checking the live pair", "RetryCredit is deriving the wallet, receipts, mint facts, order, and campaign fit from Ethereum."],
@@ -1627,8 +1730,8 @@ function authorizationLabel(flow, account, derivedWallet) {
 function stateIcon(flow) {
   if (flow === "released" || flow === "already-claimed") return <Check />;
   if (flow === "qualifying") return <ShieldCheck />;
-  if (["checking", "wallet-connecting", "authorization-requested", "proof-queued", "proof-building", "release-relaying", "loading-config"].includes(flow)) return <LoaderCircle className="spin" />;
-  if (["malformed", "semantic-mismatch", "retryable-error", "service-unavailable", "rate-limited", "offline", "campaign-changed", "campaign-closed", "campaign-full", "pair-changed", "release-uncertain"].includes(flow)) return <AlertCircle />;
+  if (["checking", "discovering", "wallet-connecting", "authorization-requested", "proof-queued", "proof-building", "release-relaying", "loading-config"].includes(flow)) return <LoaderCircle className="spin" />;
+  if (["malformed", "semantic-mismatch", "discovery-empty", "discovery-unavailable", "retryable-error", "service-unavailable", "rate-limited", "offline", "campaign-changed", "campaign-closed", "campaign-full", "pair-changed", "release-uncertain"].includes(flow)) return <AlertCircle />;
   if (flow === "continuation-waiting") return <LockKeyhole />;
   if (flow === "release-processing") return <LoaderCircle className="spin" />;
   if (["wrong-wallet", "account-changed"].includes(flow)) return <Wallet />;
@@ -1780,7 +1883,7 @@ function hasPairDraft(pair) {
 }
 
 function isBusyFlow(flow) {
-  return ["checking", "wallet-connecting", "authorization-requested", "proof-queued", "proof-building", "release-relaying"].includes(flow);
+  return ["checking", "discovering", "wallet-connecting", "authorization-requested", "proof-queued", "proof-building", "release-relaying"].includes(flow);
 }
 
 function needsReleaseStatusCheck(flow) {
