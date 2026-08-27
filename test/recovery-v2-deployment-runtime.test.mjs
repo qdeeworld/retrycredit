@@ -371,6 +371,9 @@ test("post-finality hooks verify canonical tx, receipt, logs, code and getters a
   const initCode = buildRecoveryV2InitCode(artifact);
   const primary = postFinalityProvider({ artifact, manifest, initCode });
   const audit = postFinalityProvider({ artifact, manifest, initCode });
+  audit.getBalance = async () => {
+    throw new Error("CC3 Blockscout rejects historical eth_getBalance");
+  };
   const hooks = createRecoveryV2VerificationHooks({
     primaryProvider: primary,
     auditProvider: audit,
