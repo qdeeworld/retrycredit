@@ -120,7 +120,8 @@ test("the pair desk includes every required resilient state", () => {
   assert.match(app, /operationIsCurrent\(operation, walletOperation\)/);
   assert.match(app, /walletOperations\.current\.isCurrent\(walletOperation\)/);
   assert.match(app, /externalChange && flowRef\.current === "discovering"[\s\S]*updateFlow\("empty"\)/);
-  assert.match(app, /if \(!online \|\| authorizationInFlight\.current \|\| isBusyFlow\(flowRef\.current\)\) return/);
+  assert.match(app, /authorizationInFlight\.current[\s\S]*isBusyFlow\(flowRef\.current\)[\s\S]*needsReleaseStatusCheck\(flowRef\.current\)[\s\S]*\) return;/);
+  assert.match(app, /!config\?\.capabilities\?\.walletNativeDiscovery[\s\S]*\|\| needsStatusCheck/);
   assert.match(app, /if \(needsReleaseStatusCheck\(currentFlow\)\) \{[\s\S]*updateFlow\(currentFlow\);[\s\S]*return true;/);
   assert.match(app, /isBusyFlow\(flowRef\.current\)[\s\S]*needsReleaseStatusCheck\(flowRef\.current\)/);
   assert.match(app, /config\?\.capabilities\?\.walletNativeDiscovery/);

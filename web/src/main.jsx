@@ -541,7 +541,12 @@ function App() {
   }
 
   async function discoverConnectedWallet() {
-    if (!online || authorizationInFlight.current || isBusyFlow(flowRef.current)) return;
+    if (
+      !online
+      || authorizationInFlight.current
+      || isBusyFlow(flowRef.current)
+      || needsReleaseStatusCheck(flowRef.current)
+    ) return;
     let walletOperation;
     updateFlow("discovering");
     setError("");
@@ -1218,7 +1223,11 @@ function EligibilityDesk({
         className="primary-action discovery-action"
         type="button"
         onClick={onDiscover}
-        disabled={busy || !online || configState !== "ready" || !config?.capabilities?.walletNativeDiscovery}
+        disabled={busy
+          || !online
+          || configState !== "ready"
+          || !config?.capabilities?.walletNativeDiscovery
+          || needsStatusCheck}
         aria-busy={flow === "discovering"}
       >
         <span>{flow === "discovering" ? "Searching wallet history" : account ? "Search this wallet's retries" : "Connect wallet and find my retry"}</span>
