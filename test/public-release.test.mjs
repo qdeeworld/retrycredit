@@ -38,6 +38,9 @@ test("the public shell is a multi-route Recovery Dispatch, not the old cockpit",
 });
 
 test("Recovery leads with campaign truth and wallet-native discovery with pair fallback", () => {
+  assert.match(app, /Recovery Promise/);
+  assert.match(app, /manifest\.promise\.disclosure/);
+  assert.match(app, /Campaign sponsor/);
   assert.match(app, /A completed mint can unlock one fixed credit\./);
   for (const label of ["Fixed amount", "Capacity", "Source window", "Claim deadline"]) {
     assert.match(app, new RegExp(label));
@@ -185,6 +188,9 @@ test("Protocol states the exact predicate, payout, and truth limits", () => {
   assert.match(app, /does not prove a human-readable revert reason/);
   assert.match(app, /market demand/);
   assert.match(app, /exact gas refund/);
+  assert.match(app, /One recovery boundary, two reference adapters/);
+  assert.match(app, /organic mainnet evidence/);
+  assert.match(app, /archived controlled lab/);
 });
 
 test("the open-pair API surface is bounded and archived helpers remain available", () => {
