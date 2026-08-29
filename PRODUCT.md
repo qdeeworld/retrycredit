@@ -8,24 +8,26 @@ web
 
 ## Users
 
-Owners of Ethereum wallets whose paid SeaDrop failure and same-wallet completed retry may satisfy the currently selected campaign. Anyone can check an exact transaction pair without connecting a wallet; only the source wallet derived from live Ethereum facts can authorize the hosted relayer for that pair.
+Owners of Ethereum wallets whose included failure and same-wallet completion may satisfy a Recovery Campaign. The shipped organic-mainnet adapter is a paid SeaDrop mint campaign. Anyone can check an exact transaction pair without connecting a wallet; only the source wallet derived from live Ethereum facts can authorize the hosted relayer for that pair.
 
 ## Product Purpose
 
-RetryCredit is a self-service recovery campaign for a completed onchain retry. A successful experience makes eligibility, the ordered source pair, the fixed amount, the proof wait, and the final release understandable without requiring the user to inspect contracts or competition material.
+RetryCredit is a Recovery Center for completed onchain retries. An app can pre-fund a fixed service-credit campaign for one important action; when the same wallet completes after an included failure, RetryCredit proves the pair and releases the credit. A successful experience makes the campaign promise, eligibility, ordered source pair, fixed amount, proof wait, and final release understandable without requiring the user to inspect contracts or competition material.
 
 ## Positioning
 
-One native Attestcoin batch must prove a paid Ethereum SeaDrop failure and the same wallet's consecutive-nonce completion before an immutable, pre-funded Creditcoin campaign can release one fixed credit to the source-derived address.
+Recovery-backed actions use one native Attestcoin batch to prove an included failure and the same wallet's semantic completion before an immutable, pre-funded Creditcoin campaign can release one fixed service credit to the source-derived address. The current working mainnet campaign specializes that boundary to paid SeaDrop mints.
 
 ## Operating Context
 
-The source evidence is on Ethereum Mainnet and settlement is on Creditcoin Testnet. The public journey is to paste an exact failed and completed transaction pair, check it against live transactions, receipts, and the selected campaign, connect only after the source wallet is derived, sign a five-minute hosted-relayer consent with that wallet, wait for one pair-local Attestcoin proof, and inspect the fixed release. The published examples are not eligibility authority. No source transaction or network switch is requested.
+The active source evidence is on Ethereum Mainnet and settlement is on Creditcoin Testnet. The normal journey connects an Ethereum wallet, searches a bounded public history slice for an exact failed-and-completed pair, revalidates every candidate against live transactions, receipts, and the selected campaign, signs a five-minute hosted-relayer consent with the derived source wallet, waits for one pair-local Attestcoin proof, and inspects the fixed release. Exact pair entry remains an advanced fallback. The published examples and campaign manifest are not eligibility authority. No source transaction or Creditcoin network switch is requested.
 
 ## Capabilities and Constraints
 
 - The wallet signs only a short-lived offchain consent bound to origin, wallet, pool, campaign, and the exact pair.
 - The source transactions already exist; the product never manufactures the failure or completion.
+- A Recovery Promise can describe an action as Recovery-backed only when authenticated live terms were funded before that action. The historical SeaDrop pilot must not be retroactively described that way.
+- A campaign manifest is a product projection of authenticated configuration and contract state. It cannot authorize a release or replace receipt validation.
 - The relayer cannot supply or replace the destination. The predicate returns the shared Ethereum source sender.
 - Eligibility requires type-2 canonical paid `mintSigned` calls, consecutive nonces, bounded blocks, status `0 → 1`, one exact `SeaDropMint`, and quantity-matched ERC-721 mints.
 - Within one campaign, each source wallet can receive at most one fixed credit and each query or pair marker can be consumed once. Those replay records are campaign-scoped; a later campaign does not inherit them and may admit the same historical pair again.
@@ -46,6 +48,7 @@ The source evidence is on Ethereum Mainnet and settlement is on Creditcoin Testn
 ## Product Principles
 
 - Lead with the completed recovery and the source wallet's next action.
+- Make the sponsor, fixed promise, qualifying completion, and resulting credit legible in one sentence before explaining proof machinery.
 - Keep Recovery, Cases, and Protocol as separate navigable surfaces.
 - Preserve the relationship between paid failure, completed mint, and one fixed release.
 - State network, sponsorship, source window, deadline, and testnet limits where they affect a decision.

@@ -1,7 +1,7 @@
 ---
-version: alpha
+version: alpha-v3-spike
 name: RetryCredit Recovery Dispatch
-description: A warm, ruled incident-recovery desk that leads with a source-wallet history check, discovers an exact failed-and-completed transaction pair, and makes campaign continuity legible without turning proof into the product.
+description: A warm, ruled Recovery Center that makes an authenticated service-credit promise legible, leads with a source-wallet history check, and discovers an exact failed-and-completed transaction pair without turning proof into the product.
 colors:
   sheet: "#f4f0e4"
   sheet-2: "#ebe6d8"
@@ -109,7 +109,7 @@ omitted:
 
 **Creative North Star: “The Recovery Dispatch”**
 
-RetryCredit is an operational desk for one result: let a visitor connect the source wallet, discover an exact paid failure and completed retry from public history, then let that same wallet authorize a fixed Creditcoin release. Manual pair entry remains an advanced fallback for truncated or unavailable history. When a lineage-aware campaign is configured, the same desk also explains whether its predecessor still controls release timing and whether the wallet or pair was already recovered in sponsor-bound history. It is not a promotional landing page, a proof explorer, or a generic claims dashboard.
+RetryCredit is an operational Recovery Center for one result: let a visitor understand the app-funded service-credit promise, connect the source wallet, discover an exact paid failure and completed retry from public history, then let that same wallet authorize a fixed Creditcoin release. Manual pair entry remains an advanced fallback for truncated or unavailable history. When a lineage-aware campaign is configured, the same desk also explains whether its predecessor still controls release timing and whether the wallet or pair was already recovered in sponsor-bound history. It is not a promotional landing page, a proof explorer, a provider CRM, or a generic claims dashboard.
 
 The existing warm signal-sheet world remains the product identity. Recovery is the live pair-intake, eligibility, and release surface; Cases records actual campaign outcomes and curated examples; Protocol explains the paired-receipt boundary. These remain separate routes with shared chrome.
 
@@ -133,7 +133,7 @@ Use top application chrome rather than a dashboard sidebar. On wide screens, the
 
 Cases uses a ruled chronological register with one expanded recovery record, not metric cards. Protocol uses a reading column and a compact limits sheet. Supporting explanation may continue below the primary instrument, but the routes must not collapse into anchor-linked sections on one page.
 
-On narrow screens, order the campaign statement, source-pair fields, check action, live verdict, wallet authorization when applicable, then paired evidence. Keep the pair action and its explanation in the first viewport when practical. Long identifiers wrap safely, high zoom preserves reading order, and controls remain at least 44px tall.
+On narrow screens, keep source-wallet discovery, source-pair fields, and the check action first so the normal user action remains in the first viewport. Give that desk compact funded-campaign context, then place the full campaign statement and terms before paired evidence. Long identifiers wrap safely, high zoom preserves reading order, and controls remain at least 44px tall.
 
 ## Elevation & Depth
 
@@ -164,6 +164,18 @@ For a lineage-aware continuation, distinguish funding from availability. A fully
 Lineage language follows the contract's actual scope. Sponsor-bound history may say that a recovery remains used across campaigns funded by that sponsor and that an unrelated pool cannot poison the record. Campaign-scoped deployments must not inherit that copy.
 
 Refresh campaign configuration silently while a visible tab remains open and when connectivity or visibility returns. Re-evaluate the deadline locally between server responses. A stale open/capacity snapshot must never keep authorization enabled; read-only pair inspection remains available after closure or fullness.
+
+### Recovery Promise
+
+The campaign file may project authenticated live terms as a Recovery Promise: sponsor, source action, fixed service credit, capacity, source window, deadline, predicate version, and settlement campaign. Present the useful promise first and put contract identifiers in progressive disclosure.
+
+Only call an action Recovery-backed when its campaign was funded before the action and the displayed terms authenticate against live deployed state. The current retrospective SeaDrop pilot must explicitly say that it demonstrates the recovery mechanism but was not a promise shown before the historical mints. The archived Universal Router adapter may demonstrate a second semantic family, but its founder-generated testnet attempts must never appear as user demand.
+
+The promise is not eligibility authority. Wallet discovery, live source reads, the native verifier, immutable predicate, and campaign replay state remain authoritative. Never use insurance, cover, warranty, exact-refund, loss, or guaranteed-success language.
+
+### Adapter disclosure
+
+Keep the active SeaDrop campaign as the primary user journey. Protocol may show a compact two-row adapter register to establish repeatability: organic Ethereum-mainnet paid mint and archived Sepolia Universal Router lab. Each row must disclose source network, action family, evidence tier, and current availability. Do not turn adapter count into feature cards or imply multichain support beyond authenticated Attestcoin source chains.
 
 ### Wallet discovery, pair intake, and eligibility desk
 

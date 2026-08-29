@@ -63,6 +63,7 @@ import {
   loadRecoveryResumeState,
   saveRecoveryResumeState,
 } from "./recovery-resume-state.mjs";
+import { buildRecoveryCampaignManifest, RECOVERY_ADAPTERS } from "./recovery-campaign-manifest.mjs";
 import "./styles.css";
 
 const ETHEREUM_EXPLORER = "https://etherscan.io";
@@ -1241,6 +1242,7 @@ function RecoveryPage(props) {
 function CampaignFile({ config, configState }) {
   const campaign = config?.campaign;
   const capacity = config?.capacity;
+  const manifest = recoveryManifest(config);
   const campaignReady = configState === "ready" && isRecoveryConfigReadable(config);
   const campaignAvailability = recoveryCampaignAvailability(config);
   const continuationWaiting = isContinuationWaiting(config);
@@ -1248,6 +1250,7 @@ function CampaignFile({ config, configState }) {
   const campaignClosed = campaignReady && ["closed", "full"].includes(campaignAvailability);
   return <section className="campaign-file" aria-labelledby="campaign-heading">
     <div className="file-registration" aria-hidden="true">Campaign file</div>
+    <p className="promise-kicker">Recovery Promise · {manifest?.promise.label ?? "Authenticating funded terms"}</p>
     <h2 id="campaign-heading" tabIndex="-1">{!campaignReady
       ? "The recovery campaign is being verified."
       : campaignClosed
@@ -1262,6 +1265,7 @@ function CampaignFile({ config, configState }) {
       : continuationWaiting
       ? "Continuation funded — releases begin after the predecessor campaign fills or passes its deadline. Pair checks remain available while prior wallet and proof use stays excluded."
       : "This funded campaign recognizes the same Ethereum wallet moving from a failed paid SeaDrop mint to its completed mint. RetryCredit pre-funds the bounded Creditcoin release."}</p>
+    {manifest && <p className="promise-disclosure">{manifest.promise.disclosure}</p>}
     <dl className="campaign-facts">
       <div>
         <dt>Fixed amount</dt>
@@ -1295,6 +1299,7 @@ function CampaignTerms({ config }) {
     </summary>
     <dl>
       <ProtocolField label="Funded reserve" value={campaign?.fundedAmount ? formatCredit(campaign.fundedAmount) : null} />
+      <ProtocolField label="Campaign sponsor" value={campaign?.sponsor} />
       <ProtocolField label="Recovery pool" value={config?.poolAddress} />
       <ProtocolField label="Fee recipient" value={config?.rule?.feeRecipient} />
       <ProtocolField label="Terms hash" value={campaign?.termsHash} />
@@ -1791,6 +1796,11 @@ function ProtocolPage({ config }) {
             ? "Campaign funding, credit amount, slot count, source rule, and deadline are fixed at creation. The continuation checks the predecessor and prevents wallet, transaction-query, or pair reuse across campaigns from the same sponsor. After the deadline, only the unused campaign remainder can return to its sponsor."
             : "Campaign funding, credit amount, slot count, source rule, and deadline are fixed at creation. Each wallet, transaction query, and pair can release once. After the deadline, only the unused campaign remainder can return to its sponsor."}</p>
         </section>
+        <section>
+          <h2>One recovery boundary, two reference adapters</h2>
+          <p>The product boundary can describe more than one action family without pretending every failure is equivalent. The paid-mint campaign is organic mainnet evidence. The Universal Router implementation is an archived controlled lab that proves a second strict predicate family, not user demand.</p>
+          <AdapterRegister adapters={RECOVERY_ADAPTERS} />
+        </section>
         <section className="truth-limits">
           <h2>What the proof does not say</h2>
           <p>Attestcoin proves transaction inclusion and continuity. It does not prove a human-readable revert reason, the wallet owner’s identity, market demand, platform endorsement, insurance coverage, or an exact gas refund.</p>
@@ -1815,6 +1825,21 @@ function ProtocolPage({ config }) {
   </div>;
 }
 
+function AdapterRegister({ adapters }) {
+  return <div className="adapter-register" aria-label="Recovery adapter evidence">
+    {adapters.map((adapter) => <article key={adapter.id}>
+      <div>
+        <strong>{adapter.name}</strong>
+        <span>{adapter.source}</span>
+      </div>
+      <div>
+        <span>{adapter.evidence}</span>
+        <em>{adapter.availability}</em>
+      </div>
+    </article>)}
+  </div>;
+}
+
 function PageHeading({ body, id, title }) {
   return <header className="page-heading">
     <h1 id={id} tabIndex="-1">{title}</h1>
@@ -1836,6 +1861,15 @@ function EmptyCase({ text }) {
 
 function ProtocolField({ label, value }) {
   return <div><dt>{label}</dt><dd>{value ? <code>{value}</code> : "Awaiting live configuration"}</dd></div>;
+}
+
+function recoveryManifest(config) {
+  if (!config?.enabled) return null;
+  try {
+    return buildRecoveryCampaignManifest(config);
+  } catch {
+    return null;
+  }
 }
 
 function ExplorerLink({ chain, children, hash }) {
