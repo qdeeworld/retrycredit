@@ -88,22 +88,23 @@ export async function discoverWalletSeaDropPairsResilient({
     }
   }
   if (successes.length > 0) {
-    return mergeHistoryResults(successes, options, { usesRouteScan });
+    return mergeHistoryResults(successes, { usesRouteScan });
   }
   throw new AggregateError(failures, "wallet history providers are unavailable");
 }
 
-function mergeHistoryResults(histories, options, { usesRouteScan }) {
+function mergeHistoryResults(histories, { usesRouteScan }) {
   const transactions = [];
-  const hashes = new Set();
+  const transactionVariants = new Set();
   for (const history of histories) {
     for (const transaction of history.transactions) {
-      const hash = typeof transaction?.hash === "string" ? transaction.hash.toLowerCase() : null;
-      if (hash && hashes.has(hash)) continue;
-      if (hash) hashes.add(hash);
+      const variant = historyTransactionVariantKey(transaction);
+      if (variant && transactionVariants.has(variant)) continue;
+      if (variant) transactionVariants.add(variant);
       transactions.push(transaction);
     }
   }
+  const pairs = scheduleProviderPairCandidates(histories);
   const merged = Object.freeze({
     transactions: Object.freeze(transactions),
     // Once any provider reports a partial history, preserve that uncertainty
@@ -112,12 +113,70 @@ function mergeHistoryResults(histories, options, { usesRouteScan }) {
     // empty result while the manual pair entry remains available.
     truncated: histories.some(({ truncated }) => truncated),
     pages: histories.reduce((total, { pages }) => total + pages, 0),
-    pairs: discoverSeaDropPairs(transactions, options),
+    pairs,
   });
   return withRequiredAttribution(
     merged,
     usesRouteScan || histories.some(({ attribution }) => attribution?.url === ROUTESCAN_ATTRIBUTION.url),
   );
+}
+
+function historyTransactionVariantKey(transaction) {
+  try {
+    if (typeof transaction?.input !== "string") return null;
+    return JSON.stringify([
+      requireHash(transaction.hash),
+      getAddress(transaction.from).toLowerCase(),
+      getAddress(transaction.to).toLowerCase(),
+      requireBlock(Number(transaction.blockNumber), "transaction blockNumber"),
+      requireBlock(Number(transaction.nonce), "transaction nonce"),
+      normalizeStatus(transaction),
+      BigInt(transaction.value).toString(),
+      transaction.input.toLowerCase(),
+    ]);
+  } catch {
+    // Do not conflate malformed data with an independently returned row.
+    return null;
+  }
+}
+
+function scheduleProviderPairCandidates(histories) {
+  const queues = histories
+    .map((history, providerIndex) => ({
+      providerIndex,
+      truncated: history.truncated,
+      cursor: 0,
+      pairs: [...history.pairs].sort(comparePairCandidates),
+    }))
+    .sort((left, right) => Number(left.truncated) - Number(right.truncated)
+      || left.providerIndex - right.providerIndex);
+  const scheduled = [];
+  const identities = new Set();
+  while (queues.some(({ cursor, pairs }) => cursor < pairs.length)) {
+    for (const queue of queues) {
+      while (queue.cursor < queue.pairs.length) {
+        const candidate = queue.pairs[queue.cursor];
+        queue.cursor += 1;
+        const identity = pairCandidateIdentity(candidate);
+        if (identities.has(identity)) continue;
+        identities.add(identity);
+        scheduled.push(candidate);
+        break;
+      }
+    }
+  }
+  return Object.freeze(scheduled);
+}
+
+function pairCandidateIdentity(candidate) {
+  return `${candidate.failedTransactionHash.toLowerCase()}:${candidate.successfulTransactionHash.toLowerCase()}`;
+}
+
+function comparePairCandidates(left, right) {
+  return right.successBlock - left.successBlock
+    || right.failureBlock - left.failureBlock
+    || left.successfulTransactionHash.toLowerCase().localeCompare(right.successfulTransactionHash.toLowerCase())
+    || left.failedTransactionHash.toLowerCase().localeCompare(right.failedTransactionHash.toLowerCase());
 }
 
 function withRequiredAttribution(result, usesRouteScan) {
@@ -254,7 +313,7 @@ export async function fetchWalletTransactions({
         && Array.isArray(body.result)
         && body.result.length === 0
       ) break;
-      if (body?.status !== "1" || !Array.isArray(body.result)) {
+      if (body?.status !== "1" || body?.message !== "OK" || !Array.isArray(body.result)) {
         throw new Error("wallet history provider returned an invalid transaction response");
       }
       pages = page;

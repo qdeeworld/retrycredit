@@ -402,6 +402,33 @@ test("default resilient discovery handles both keyless rate-limit response forms
   }
 });
 
+test("a status-one non-OK primary envelope hard-fails into the resilient fallback", async () => {
+  for (const message of ["NOTOK", "ok", "OK "]) {
+    const hosts = [];
+    const result = await discoverWalletSeaDropPairsResilient({
+      ...config(),
+      fetchImpl: async (url) => {
+        const host = new URL(url).hostname;
+        hosts.push(host);
+        if (host === "api.routescan.io") {
+          return {
+            ok: true,
+            json: async () => ({ status: "1", message, result: [] }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({ items: [], next_page_params: null }),
+        };
+      },
+    });
+
+    assert.deepEqual(hosts, ["api.routescan.io", "eth.blockscout.com"]);
+    assert.equal(result.truncated, false);
+    assert.deepEqual(result.transactions, []);
+  }
+});
+
 test("canonical empty primary histories do not call the fallback", async () => {
   for (const body of [
     { status: "0", message: "No transactions found", result: [] },
@@ -837,6 +864,109 @@ test("merged fallback ranks a qualifying pair above a larger irrelevant history"
   assert.equal(result.transactions.length, 22);
   assert.equal(result.pairs.length, 1);
   assert.equal(result.pairs[0].failedTransactionHash, `0x${"39".repeat(32)}`);
+});
+
+test("same-hash conflicts retain the canonical fallback variant without duplicate candidates", async () => {
+  const failedInput = mintInput(21n, `0x${"3b".repeat(65)}`);
+  const successfulInput = mintInput(22n, `0x${"3c".repeat(65)}`);
+  const failed = transaction({ hashByte: "47", nonce: 25, block: 174, status: 0, input: failedInput });
+  const successful = transaction({ hashByte: "48", nonce: 26, block: 175, status: 1, input: successfulInput });
+  const conflictingFailed = { ...failed, txreceipt_status: "1", isError: "0" };
+  const conflictingSuccessful = { ...successful, txreceipt_status: "0", isError: "1" };
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      async () => ({
+        transactions: [conflictingFailed, conflictingSuccessful],
+        truncated: true,
+        pages: 2,
+      }),
+      async () => ({
+        transactions: [failed, successful, { ...successful }],
+        truncated: false,
+        pages: 1,
+      }),
+    ],
+  });
+
+  assert.equal(result.transactions.length, 4);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].failedTransactionHash, failed.hash);
+  assert.equal(result.pairs[0].successfulTransactionHash, successful.hash);
+});
+
+test("complete fallback candidates survive newer truncated-primary decoys in the first two slots", async () => {
+  const failedInput = mintInput(23n, `0x${"3d".repeat(65)}`);
+  const successfulInput = mintInput(24n, `0x${"3e".repeat(65)}`);
+  const primaryRows = [
+    transaction({ hashByte: "49", nonce: 36, block: 186, status: 0, input: failedInput }),
+    transaction({ hashByte: "4a", nonce: 37, block: 187, status: 1, input: successfulInput }),
+    transaction({ hashByte: "4b", nonce: 34, block: 182, status: 0, input: failedInput }),
+    transaction({ hashByte: "4c", nonce: 35, block: 183, status: 1, input: successfulInput }),
+    transaction({ hashByte: "4d", nonce: 32, block: 178, status: 0, input: failedInput }),
+    transaction({ hashByte: "4e", nonce: 33, block: 179, status: 1, input: successfulInput }),
+  ];
+  const fallbackRows = [
+    transaction({ hashByte: "4f", nonce: 5, block: 124, status: 0, input: failedInput }),
+    transaction({ hashByte: "50", nonce: 6, block: 125, status: 1, input: successfulInput }),
+  ];
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      async () => ({ transactions: primaryRows, truncated: true, pages: 6 }),
+      async () => ({ transactions: fallbackRows, truncated: false, pages: 1 }),
+    ],
+  });
+
+  assert.deepEqual(result.pairs.slice(0, 2).map(({ failedTransactionHash }) => failedTransactionHash), [
+    fallbackRows[0].hash,
+    primaryRows[0].hash,
+  ]);
+});
+
+test("provider queues dedupe an identical pair identity case-insensitively", async () => {
+  const failedInput = mintInput(25n, `0x${"3f".repeat(65)}`);
+  const successfulInput = mintInput(26n, `0x${"40".repeat(65)}`);
+  const failed = transaction({ hashByte: "ab", nonce: 27, block: 176, status: 0, input: failedInput });
+  const successful = transaction({ hashByte: "cd", nonce: 28, block: 177, status: 1, input: successfulInput });
+  const uppercaseRows = [failed, successful].map((row) => ({
+    ...row,
+    hash: `0x${row.hash.slice(2).toUpperCase()}`,
+  }));
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      async () => ({ transactions: uppercaseRows, truncated: true, pages: 2 }),
+      async () => ({ transactions: [failed, successful], truncated: false, pages: 1 }),
+    ],
+  });
+
+  assert.equal(result.transactions.length, 2);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].failedTransactionHash, failed.hash);
+  assert.equal(result.pairs[0].successfulTransactionHash, successful.hash);
+});
+
+test("provider-local queues never synthesize a cross-provider half-pair", async () => {
+  const failedInput = mintInput(27n, `0x${"41".repeat(65)}`);
+  const successfulInput = mintInput(28n, `0x${"42".repeat(65)}`);
+  const failed = transaction({ hashByte: "51", nonce: 29, block: 178, status: 0, input: failedInput });
+  const successful = transaction({ hashByte: "52", nonce: 30, block: 179, status: 1, input: successfulInput });
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      async () => ({ transactions: [failed], truncated: true, pages: 1 }),
+      async () => ({ transactions: [successful], truncated: false, pages: 1 }),
+    ],
+  });
+
+  assert.equal(result.transactions.length, 2);
+  assert.equal(result.truncated, true);
+  assert.deepEqual(result.pairs, []);
 });
 
 test("two hung default history providers remain inside their combined deadline", async () => {
