@@ -2007,7 +2007,9 @@ function formatCapacity(capacity) {
 }
 
 function formatWindow(rule) {
-  if (!rule?.startBlock || !rule?.endBlock) return "Block window pending";
+  if (rule?.startBlock === undefined || rule?.startBlock === null || !rule?.endBlock) {
+    return "Block window pending";
+  }
   return `${Number(rule.startBlock).toLocaleString()}–${Number(rule.endBlock).toLocaleString()}`;
 }
 
