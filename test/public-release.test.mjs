@@ -30,6 +30,8 @@ test("the public shell is a multi-route Recovery Dispatch, not the old cockpit",
   assert.match(app, /window\.history\.pushState/);
   assert.match(app, /aria-current=\{route === path \? "page"/);
   assert.match(redirects, /^\/\* \/index\.html 200$/m);
+  assert.match(app, /https:\/\/github\.com\/qdeeworld\/retrycredit/);
+  assert.doesNotMatch(app, /github\.com\/dolepee\/retrycredit/);
 
   assert.doesNotMatch(app, /recovery-cockpit|route-spine|action-bay|app-rail|Five checks\. One release\./);
   assert.doesNotMatch(app, /The retry pays for the failure/);

@@ -51,6 +51,7 @@ export const RECOVERY_V2_RUNTIME_MODE = Object.freeze({
 export const RECOVERY_V2_PRIMARY_RPC = "https://rpc.cc3-testnet.creditcoin.network";
 export const RECOVERY_V2_AUDIT_RPC = "https://creditcoin-testnet.blockscout.com/api/eth-rpc";
 export const RECOVERY_V2_RPC_TIMEOUT_MS = 12_000;
+export const RECOVERY_V2_RUNTIME_REPO_SLUG = "qdeeworld/retrycredit";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const LEGACY_CAMPAIGN_NUMBER = 1;
@@ -416,7 +417,6 @@ export async function createRecoveryV2DeploymentController({
     async prepare() { throw runtimeFault("RECOVERY_V2_PREPARE_MODE_REQUIRED"); },
     async run() {
       if (armedReadiness(lastResult, manifest).ready) return lastResult;
-      const wallet = resolveWallet(injectedWallet, privateKey);
       const providers = resolveProviders(injectedProviders, providerFactory, boundedTimeout);
       const verification = createRecoveryV2VerificationHooks({
         primaryProvider: providers.primary,
@@ -432,7 +432,7 @@ export async function createRecoveryV2DeploymentController({
         artifact,
         env,
         provider: providers.primary,
-        wallet,
+        runtimeRepoSlug: RECOVERY_V2_RUNTIME_REPO_SLUG,
         verification,
         clock,
         externalTimeoutMs: boundedTimeout,
@@ -1277,12 +1277,15 @@ function requirePrepareIdentity(env) {
 function requireRenderIdentity(env, mode, modeError) {
   if (env[RECOVERY_V2_RUNTIME_ENV.mode] !== mode) throw runtimeFault(modeError);
   const frozen = RECOVERY_V2_FROZEN_DEPLOYMENT;
+  const repoSlug = mode === RECOVERY_V2_RUNTIME_MODE.PREPARE
+    ? frozen.render.repoSlug
+    : RECOVERY_V2_RUNTIME_REPO_SLUG;
   const expected = {
     RENDER: "true",
     RENDER_SERVICE_ID: frozen.render.serviceId,
     RENDER_SERVICE_NAME: frozen.render.serviceName,
     RENDER_SERVICE_TYPE: frozen.render.serviceType,
-    RENDER_GIT_REPO_SLUG: frozen.render.repoSlug,
+    RENDER_GIT_REPO_SLUG: repoSlug,
     RENDER_EXTERNAL_HOSTNAME: frozen.render.hostname,
     RENDER_GIT_BRANCH: frozen.render.branch,
     IS_PULL_REQUEST: "false",

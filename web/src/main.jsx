@@ -57,7 +57,7 @@ import "./styles.css";
 
 const ETHEREUM_EXPLORER = "https://etherscan.io";
 const CREDITCOIN_EXPLORER = "https://creditcoin-testnet.blockscout.com";
-const REPOSITORY = "https://github.com/dolepee/retrycredit";
+const REPOSITORY = "https://github.com/qdeeworld/retrycredit";
 const API_ORIGIN = (import.meta.env.VITE_RETRYCREDIT_API_ORIGIN ?? "").replace(/\/+$/, "");
 const OPEN_SEA_ATTRIBUTION_SUFFIX = "0x3d958fe2";
 const CONFIG_REFRESH_INTERVAL_MS = 30_000;
