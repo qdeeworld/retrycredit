@@ -136,6 +136,46 @@ test("Blockscout V2 history rejects an oversized response before parsing", async
   );
 });
 
+test("Blockscout V2 preserves earlier rows after an oversized later page", async () => {
+  let page = 0;
+  let parsedOversize = 0;
+  let cancellations = 0;
+  const result = await fetchWalletTransactionsV2({
+    wallet,
+    startBlock: 100,
+    endBlock: 200,
+    maximumResponseBytes: 20,
+    fetchImpl: async () => {
+      page += 1;
+      if (page === 1) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [v2Transaction({ hashByte: "26", nonce: 4, block: 150, status: "ok" })],
+            next_page_params: { block_number: 150, index: 1, filter: "from" },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        headers: { get: () => "21" },
+        body: { cancel: async () => { cancellations += 1; } },
+        json: async () => {
+          parsedOversize += 1;
+          return { items: [], next_page_params: null };
+        },
+      };
+    },
+  });
+
+  assert.equal(page, 2);
+  assert.equal(parsedOversize, 0);
+  assert.equal(cancellations, 1);
+  assert.equal(result.transactions.length, 1);
+  assert.equal(result.pages, 1);
+  assert.equal(result.truncated, true);
+});
+
 test("Blockscout V2 history rejects unknown statuses and pagination keys", async () => {
   await assert.rejects(
     fetchWalletTransactionsV2({
@@ -233,6 +273,38 @@ test("Etherscan-compatible history rejects an oversized response before parsing"
     /response is too large/,
   );
   assert.equal(cancellations, 1);
+});
+
+test("a declared oversized first page falls back without parsing it", async () => {
+  let parsed = 0;
+  let fallbacks = 0;
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    historyFetchers: [
+      (options) => fetchWalletTransactions({
+        ...options,
+        maximumResponseBytes: 20,
+        fetchImpl: async () => ({
+          ok: true,
+          headers: { get: () => "21" },
+          body: { cancel: async () => {} },
+          json: async () => {
+            parsed += 1;
+            return { status: "1", message: "OK", result: [] };
+          },
+        }),
+      }),
+      async () => {
+        fallbacks += 1;
+        return { transactions: [], truncated: false, pages: 1 };
+      },
+    ],
+  });
+
+  assert.equal(parsed, 0);
+  assert.equal(fallbacks, 1);
+  assert.equal(result.truncated, false);
+  assert.deepEqual(result.transactions, []);
 });
 
 test("history providers cancel unread rate-limit responses before fallback", async () => {
@@ -454,6 +526,134 @@ test("a later-page HTTP-200 rate-limit envelope preserves normalized rows as par
   assert.equal(result.truncated, true);
   assert.equal(result.pairs.length, 1);
   assert.equal(result.pairs[0].successfulTransactionHash, `0x${"3c".repeat(32)}`);
+});
+
+test("a declared oversized later page preserves earlier rows as truncated without parsing", async () => {
+  let page = 0;
+  let parsedOversize = 0;
+  let cancellations = 0;
+  const result = await fetchWalletTransactions({
+    ...config(),
+    pageSize: 2,
+    maxPages: 3,
+    maximumResponseBytes: 200,
+    fetchImpl: async () => {
+      page += 1;
+      if (page === 1) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: "1",
+            message: "OK",
+            result: [
+              transaction({ hashByte: "41", nonce: 19, block: 168, status: 0 }),
+              transaction({ hashByte: "42", nonce: 20, block: 169, status: 1 }),
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        headers: { get: () => "201" },
+        body: { cancel: async () => { cancellations += 1; } },
+        json: async () => {
+          parsedOversize += 1;
+          return { status: "1", message: "OK", result: [] };
+        },
+      };
+    },
+  });
+
+  assert.equal(page, 2);
+  assert.equal(parsedOversize, 0);
+  assert.equal(cancellations, 1);
+  assert.equal(result.truncated, true);
+  assert.equal(result.transactions.length, 2);
+});
+
+test("a streamed oversized later page cancels its reader and preserves earlier rows", async () => {
+  let page = 0;
+  let reads = 0;
+  let cancellations = 0;
+  let releases = 0;
+  const chunks = [new Uint8Array(12), new Uint8Array(12)];
+  const result = await fetchWalletTransactions({
+    ...config(),
+    pageSize: 2,
+    maxPages: 3,
+    maximumResponseBytes: 20,
+    fetchImpl: async () => {
+      page += 1;
+      if (page === 1) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: "1",
+            message: "OK",
+            result: [
+              transaction({ hashByte: "43", nonce: 21, block: 170, status: 0 }),
+              transaction({ hashByte: "44", nonce: 22, block: 171, status: 1 }),
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        headers: { get: () => null },
+        body: {
+          getReader: () => ({
+            read: async () => {
+              const value = chunks[reads];
+              reads += 1;
+              return value ? { done: false, value } : { done: true };
+            },
+            cancel: async () => {
+              cancellations += 1;
+              throw new Error("synthetic cancellation failure");
+            },
+            releaseLock: () => { releases += 1; },
+          }),
+        },
+      };
+    },
+  });
+
+  assert.equal(page, 2);
+  assert.equal(reads, 2);
+  assert.equal(cancellations, 1);
+  assert.equal(releases, 1);
+  assert.equal(result.truncated, true);
+  assert.equal(result.transactions.length, 2);
+});
+
+test("malformed JSON on a later page remains a hard provider failure", async () => {
+  let page = 0;
+  await assert.rejects(
+    fetchWalletTransactions({
+      ...config(),
+      pageSize: 2,
+      maxPages: 3,
+      fetchImpl: async () => {
+        page += 1;
+        if (page === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              status: "1",
+              message: "OK",
+              result: [
+                transaction({ hashByte: "45", nonce: 23, block: 172, status: 0 }),
+                transaction({ hashByte: "46", nonce: 24, block: 173, status: 1 }),
+              ],
+            }),
+          };
+        }
+        return { ok: true, text: async () => "{" };
+      },
+    }),
+    SyntaxError,
+  );
+  assert.equal(page, 2);
 });
 
 test("a stalled later-page body is aborted, cancelled, and retained as partial history", async () => {

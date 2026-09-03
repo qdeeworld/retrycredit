@@ -489,7 +489,7 @@ async function readBoundedJson(response, maximumBytes, signal) {
   const declared = Number(response.headers?.get?.("content-length"));
   if (Number.isFinite(declared) && declared > maximumBytes) {
     await cancelUnreadBody(response);
-    throw new Error("wallet history provider response is too large");
+    throw new HistoryAvailabilityError("wallet history provider response is too large");
   }
   if (response.body?.getReader) {
     const reader = response.body.getReader();
@@ -514,8 +514,12 @@ async function readBoundedJson(response, maximumBytes, signal) {
         if (done) break;
         total += value.byteLength;
         if (total > maximumBytes) {
-          await reader.cancel();
-          throw new Error("wallet history provider response is too large");
+          try {
+            await reader.cancel();
+          } catch {
+            // Size classification must not depend on best-effort stream cleanup.
+          }
+          throw new HistoryAvailabilityError("wallet history provider response is too large");
         }
         chunks.push(value);
       }
@@ -536,7 +540,7 @@ async function readBoundedJson(response, maximumBytes, signal) {
     const text = await response.text();
     if (signal.aborted) throw signal.reason;
     if (new TextEncoder().encode(text).byteLength > maximumBytes) {
-      throw new Error("wallet history provider response is too large");
+      throw new HistoryAvailabilityError("wallet history provider response is too large");
     }
     return JSON.parse(text);
   }
