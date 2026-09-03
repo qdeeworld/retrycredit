@@ -255,6 +255,9 @@ export async function fetchWalletTransactions({
         throw new HistoryAvailabilityError(`wallet history provider returned HTTP ${response.status}`);
       }
       const body = await readBoundedJson(response, maximumResponseBytes);
+      if (isHistoryRateLimitEnvelope(body)) {
+        throw new HistoryAvailabilityError("wallet history provider reported a rate limit");
+      }
       if (body?.status === "0" && body?.message === "No transactions found") break;
       if (body?.status !== "1" || !Array.isArray(body.result)) {
         throw new Error("wallet history provider returned an invalid transaction response");
@@ -275,6 +278,16 @@ export async function fetchWalletTransactions({
     pages,
     ...(String(apiUrl) === ROUTESCAN_ETHEREUM_API ? { attribution: ROUTESCAN_ATTRIBUTION } : {}),
   });
+}
+
+function isHistoryRateLimitEnvelope(body) {
+  return body !== null
+    && typeof body === "object"
+    && !Array.isArray(body)
+    && body.status === "0"
+    && body.message === "NOTOK"
+    && typeof body.result === "string"
+    && /^max rate limit reached(?:$|[,.:;!]\s)/i.test(body.result.trim());
 }
 
 async function fetchHistoryPage(fetchImpl, url, timeoutMs) {

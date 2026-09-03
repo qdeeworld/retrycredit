@@ -409,6 +409,90 @@ test("a later-page rate limit preserves normalized rows as a marked partial hist
   assert.equal(result.pairs[0].successfulTransactionHash, `0x${"38".repeat(32)}`);
 });
 
+test("a later-page HTTP-200 rate-limit envelope preserves normalized rows as partial", async () => {
+  const failedInput = mintInput(17n, `0x${"37".repeat(65)}`);
+  const successfulInput = mintInput(18n, `0x${"38".repeat(65)}`);
+  let page = 0;
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      (options) => fetchWalletTransactions({
+        ...options,
+        pageSize: 2,
+        maxPages: 3,
+        fetchImpl: async () => {
+          page += 1;
+          if (page === 1) {
+            return {
+              ok: true,
+              json: async () => ({
+                status: "1",
+                message: "OK",
+                result: [
+                  transaction({ hashByte: "3b", nonce: 13, block: 162, status: 0, input: failedInput }),
+                  transaction({ hashByte: "3c", nonce: 14, block: 163, status: 1, input: successfulInput }),
+                ],
+              }),
+            };
+          }
+          return {
+            ok: true,
+            json: async () => ({
+              status: "0",
+              message: "NOTOK",
+              result: "Max rate limit reached, please use API Key for higher rate limit",
+            }),
+          };
+        },
+      }),
+      async () => ({ transactions: [], truncated: false, pages: 1 }),
+    ],
+  });
+
+  assert.equal(page, 2);
+  assert.equal(result.truncated, true);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].successfulTransactionHash, `0x${"3c".repeat(32)}`);
+});
+
+test("an arbitrary later-page NOTOK envelope remains a hard provider failure", async () => {
+  let page = 0;
+  await assert.rejects(
+    fetchWalletTransactions({
+      ...config(),
+      pageSize: 2,
+      maxPages: 3,
+      fetchImpl: async () => {
+        page += 1;
+        if (page === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              status: "1",
+              message: "OK",
+              result: [
+                transaction({ hashByte: "3d", nonce: 15, block: 164, status: 0 }),
+                transaction({ hashByte: "3e", nonce: 16, block: 165, status: 1 }),
+              ],
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            status: "0",
+            message: "NOTOK",
+            result: "Invalid API Key",
+          }),
+        };
+      },
+    }),
+    /invalid transaction response/,
+  );
+  assert.equal(page, 2);
+});
+
 test("merged fallback ranks a qualifying pair above a larger irrelevant history", async () => {
   const failedInput = mintInput(15n, `0x${"35".repeat(65)}`);
   const successfulInput = mintInput(16n, `0x${"36".repeat(65)}`);
