@@ -278,10 +278,17 @@ export async function fetchWalletTransactions({
 }
 
 async function fetchHistoryPage(fetchImpl, url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error("wallet history provider request timed out")),
+    timeoutMs,
+  );
   try {
-    return await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+    return await fetchImpl(url, { signal: controller.signal });
   } catch (error) {
     throw new HistoryAvailabilityError("wallet history provider request failed", error);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
