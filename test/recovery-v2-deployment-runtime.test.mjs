@@ -4,9 +4,12 @@ import test from "node:test";
 
 import { Interface, keccak256, toUtf8Bytes } from "ethers";
 
+import { createRecoveryV2DeploymentSupervisor } from "../src/recovery-v2-deployment-supervisor.mjs";
+
 import {
   RECOVERY_V2_FROZEN_DEPLOYMENT,
   RECOVERY_V2_RUNTIME_ENV,
+  RECOVERY_V2_RUNTIME_REPO_SLUG,
   buildRecoveryV2DeploymentManifest,
   buildRecoveryV2InitCode,
   createRecoveryV2DeploymentController,
@@ -33,9 +36,12 @@ test("the runtime maps the real embedded artifact and exact production construct
   assert.equal(artifact.bytecodeHash, RECOVERY_V2_FROZEN_DEPLOYMENT.artifact.creationBytecodeHash);
   assert.equal(artifact.runtimeCodeHash, "0xd0770affc097e8922811def99af7cda6ac7f863f2eaae09eea684e2af737ce07");
   assert.equal(keccak256(initCode), "0xd069ba5cc3a80251a47b9915c9692e97d9a61d72e903bf590c28a42d4a2b33a6");
+  assert.equal(RECOVERY_V2_FROZEN_DEPLOYMENT.render.repoSlug, "dolepee/retrycredit");
+  assert.equal(RECOVERY_V2_RUNTIME_REPO_SLUG, "qdeeworld/retrycredit");
 
   const env = await exactArmedEnvironment(HASH_A, artifact);
   const manifest = buildRecoveryV2DeploymentManifest({ env, artifact });
+  assert.equal(manifest.render.repoSlug, RECOVERY_V2_FROZEN_DEPLOYMENT.render.repoSlug);
   assert.equal(manifest.constructorArgs[4].rule.startBlock, 15_527_904);
   assert.equal(manifest.constructorArgs[4].rule.endBlock, 25_836_490);
   assert.equal(manifest.constructorArgs[4].creditAmount, "100000000000000000");
@@ -189,6 +195,10 @@ test("prepare requires an exact revision-bound signing authorization before wall
       { ...exact, [RECOVERY_V2_RUNTIME_ENV.revision]: "34".repeat(20) },
       "RECOVERY_V2_REVISION_MISMATCH",
     ],
+    [
+      { ...exact, RENDER_GIT_REPO_SLUG: RECOVERY_V2_RUNTIME_REPO_SLUG },
+      "RECOVERY_V2_RENDER_IDENTITY_MISMATCH",
+    ],
   ];
   for (const [env, code] of cases) {
     await assert.rejects(
@@ -206,6 +216,7 @@ test("arming is deterministic from public prepare data and named env only", asyn
   const first = await deriveRecoveryV2DeploymentArmDigest({ env, artifact });
   const second = await deriveRecoveryV2DeploymentArmDigest({ env, artifact });
   assert.equal(first, second);
+  assert.equal(first, "0xc9f32e8c5610300ee8204d1cb9c17f61d34ec70f0ca98d4d15ec2ea66432015f");
   assert.match(first, /^0x[0-9a-f]{64}$/);
   assert.doesNotMatch(JSON.stringify(env), /private|signature|raw/i);
 
@@ -232,7 +243,10 @@ test("arming is deterministic from public prepare data and named env only", asyn
   assert.equal(controller.readiness().statusCode, 503);
   assert.equal(walletSigns, 0);
   assert.equal(lifecycleInput.provider, providers.primary);
+  assert.equal(lifecycleInput.wallet, undefined);
+  assert.equal(lifecycleInput.runtimeRepoSlug, RECOVERY_V2_RUNTIME_REPO_SLUG);
   assert.equal(lifecycleInput.manifest.expectedTransactionHash, HASH_A);
+  assert.equal(lifecycleInput.manifest.render.repoSlug, "dolepee/retrycredit");
   assert.equal(lifecycleInput.manifest.render.revision, env.RENDER_GIT_COMMIT);
   assert.equal(lifecycleInput.manifest.chainCheckpoint.blockNumber, 5_375_351);
   assert.equal(lifecycleInput.manifest.chainCheckpoint.blockHash, RECOVERY_V2_FROZEN_DEPLOYMENT.checkpoint.blockHash);
@@ -288,12 +302,51 @@ test("armed readiness is 200 only for the exact sanitized finalized-plus-two res
   assert.equal(wrongHash.readiness().statusCode, 503);
 });
 
+test("the migrated runtime reaches finalized supervisor readiness without wallet authority", async () => {
+  const artifact = await loadRecoveryV2DeploymentArtifact();
+  const env = await exactArmedEnvironment(HASH_A, artifact);
+  const controller = await createRecoveryV2DeploymentController({
+    env,
+    artifact,
+    providers: providerPair(),
+    lifecycleRunner: async ({ manifest, runtimeRepoSlug, wallet }) => {
+      assert.equal(manifest.render.repoSlug, "dolepee/retrycredit");
+      assert.equal(runtimeRepoSlug, RECOVERY_V2_RUNTIME_REPO_SLUG);
+      assert.equal(wallet, undefined);
+      return {
+        status: "finalized",
+        reason: "FINALIZED_PLUS_TWO_VERIFIED",
+        chainId: 102031,
+        nonce: 55,
+        transactionHash: HASH_A,
+        contractAddress: RECOVERY_V2_FROZEN_DEPLOYMENT.contractAddress,
+        receiptBlockNumber: 200,
+        finalizedBlockNumber: 202,
+      };
+    },
+  });
+  const supervisor = createRecoveryV2DeploymentSupervisor({ controller });
+
+  await supervisor.start();
+  assert.deepEqual(supervisor.readiness(), {
+    ready: true,
+    statusCode: 200,
+    mode: "armed",
+    deploymentState: "finalized",
+    publicProfile: "v1",
+    reason: "FINALIZED_PLUS_TWO_VERIFIED",
+  });
+});
+
 test("armed mode rejects stale revision, identity drift, malformed window, or absent arm before RPC", async () => {
   const artifact = await loadRecoveryV2DeploymentArtifact();
   const exact = await exactArmedEnvironment(HASH_A, artifact);
   const cases = [
     [without(exact, RECOVERY_V2_RUNTIME_ENV.arm), "RECOVERY_V2_ARM_INVALID"],
     [{ ...exact, RENDER_SERVICE_ID: "srv-wrong" }, "RECOVERY_V2_RENDER_IDENTITY_MISMATCH"],
+    [{ ...exact, RENDER_GIT_REPO_SLUG: "dolepee/retrycredit" }, "RECOVERY_V2_RENDER_IDENTITY_MISMATCH"],
+    [{ ...exact, RENDER_GIT_REPO_SLUG: "attacker/retrycredit" }, "RECOVERY_V2_RENDER_IDENTITY_MISMATCH"],
+    [{ ...exact, RENDER_GIT_REPO_SLUG: "QdeeWorld/retrycredit" }, "RECOVERY_V2_RENDER_IDENTITY_MISMATCH"],
     [{ ...exact, [RECOVERY_V2_RUNTIME_ENV.revision]: "22".repeat(20) }, "RECOVERY_V2_REVISION_MISMATCH"],
     [{ ...exact, [RECOVERY_V2_RUNTIME_ENV.notAfter]: String(Number(exact[RECOVERY_V2_RUNTIME_ENV.notBefore]) + 901) }, "RECOVERY_V2_BROADCAST_WINDOW_INVALID"],
     [{ ...exact, [RECOVERY_V2_RUNTIME_ENV.transactionHash]: HASH_A.toUpperCase() }, "RECOVERY_V2_TRANSACTION_HASH_INVALID"],
@@ -500,7 +553,7 @@ function baseArmedEnvironment(transactionHash) {
     RENDER_SERVICE_ID: "srv-da5n322jobas73f8tp70",
     RENDER_SERVICE_NAME: "retrycredit-api",
     RENDER_SERVICE_TYPE: "web",
-    RENDER_GIT_REPO_SLUG: "dolepee/retrycredit",
+    RENDER_GIT_REPO_SLUG: RECOVERY_V2_RUNTIME_REPO_SLUG,
     RENDER_EXTERNAL_HOSTNAME: "retrycredit-api.onrender.com",
     RENDER_GIT_BRANCH: "main",
     RENDER_GIT_COMMIT: revision,
@@ -525,6 +578,7 @@ async function exactArmedEnvironment(transactionHash, artifact) {
 async function exactPrepareEnvironment(artifact) {
   const env = baseArmedEnvironment(HASH_A);
   env[RECOVERY_V2_RUNTIME_ENV.mode] = "prepare";
+  env.RENDER_GIT_REPO_SLUG = RECOVERY_V2_FROZEN_DEPLOYMENT.render.repoSlug;
   delete env[RECOVERY_V2_RUNTIME_ENV.transactionHash];
   delete env[RECOVERY_V2_RUNTIME_ENV.notBefore];
   delete env[RECOVERY_V2_RUNTIME_ENV.notAfter];

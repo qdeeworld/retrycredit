@@ -141,6 +141,7 @@ export async function runRecoveryV2DeploymentLifecycle({
   env = {},
   provider,
   wallet,
+  runtimeRepoSlug,
   verification = {},
   clock = () => Math.floor(Date.now() / 1000),
   externalTimeoutMs = RECOVERY_V2_EXTERNAL_TIMEOUT_MS,
@@ -151,32 +152,42 @@ export async function runRecoveryV2DeploymentLifecycle({
     manifest = validateManifest(manifestInput);
     artifact = validateArtifact(artifactInput);
     requireArtifactMatch(manifest, artifact);
-    requireDependencies(provider, wallet);
+    const effectiveRuntimeRepoSlug = runtimeRepoSlug === undefined
+      ? manifest.render.repoSlug
+      : exactPatternString(
+        runtimeRepoSlug,
+        /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
+        "RUNTIME_REPOSITORY_INVALID",
+      );
+    const reconciliationOnly = effectiveRuntimeRepoSlug !== manifest.render.repoSlug;
+    requireDependencies(provider, wallet, { mutationAllowed: !reconciliationOnly });
     const timeoutMs = requireExternalTimeout(externalTimeoutMs);
-    requireExactRuntimeIdentity(env, manifest);
+    requireExactRuntimeIdentity(env, manifest, effectiveRuntimeRepoSlug);
 
     const armDigest = recoveryV2DeploymentArmDigest({ manifest, artifact });
     requireExactArm(env, armDigest);
 
     const initCode = buildInitCode(manifest, artifact);
     const transaction = buildFrozenTransaction(manifest, initCode);
-    let signerAddress;
-    try {
-      signerAddress = await bounded(resolveWalletAddress(wallet), timeoutMs);
-    } catch (error) {
-      if (error instanceof DeploymentLifecycleFault) throw error;
-      throw fault("WALLET_IDENTITY_UNAVAILABLE", RECOVERY_V2_DEPLOYMENT_STATUS.BLOCKED);
-    }
-    if (signerAddress !== manifest.signerAddress) {
-      throw fault("WALLET_IDENTITY_MISMATCH", RECOVERY_V2_DEPLOYMENT_STATUS.BLOCKED);
-    }
+    if (!reconciliationOnly) {
+      let signerAddress;
+      try {
+        signerAddress = await bounded(resolveWalletAddress(wallet), timeoutMs);
+      } catch (error) {
+        if (error instanceof DeploymentLifecycleFault) throw error;
+        throw fault("WALLET_IDENTITY_UNAVAILABLE", RECOVERY_V2_DEPLOYMENT_STATUS.BLOCKED);
+      }
+      if (signerAddress !== manifest.signerAddress) {
+        throw fault("WALLET_IDENTITY_MISMATCH", RECOVERY_V2_DEPLOYMENT_STATUS.BLOCKED);
+      }
 
-    const predictedAddress = getCreateAddress({
-      from: signerAddress,
-      nonce: RECOVERY_V2_DEPLOYMENT_NONCE,
-    });
-    if (predictedAddress !== manifest.expectedContractAddress) {
-      throw fault("CONTRACT_ADDRESS_MISMATCH", RECOVERY_V2_DEPLOYMENT_STATUS.BLOCKED);
+      const predictedAddress = getCreateAddress({
+        from: signerAddress,
+        nonce: RECOVERY_V2_DEPLOYMENT_NONCE,
+      });
+      if (predictedAddress !== manifest.expectedContractAddress) {
+        throw fault("CONTRACT_ADDRESS_MISMATCH", RECOVERY_V2_DEPLOYMENT_STATUS.BLOCKED);
+      }
     }
 
     let state;
@@ -196,6 +207,17 @@ export async function runRecoveryV2DeploymentLifecycle({
       timeoutMs,
     });
     if (reconciled) return reconciled;
+
+    // A successor repository may observe the exact historical deployment but
+    // can never inherit its signing or broadcast authority.
+    if (reconciliationOnly) {
+      return safeResult(
+        RECOVERY_V2_DEPLOYMENT_STATUS.BLOCKED,
+        "RUNTIME_REPOSITORY_MIGRATION_RECONCILIATION_ONLY",
+        manifest,
+        state,
+      );
+    }
 
     // This is the sole mutation boundary. Never send a replacement, a cancel,
     // or nonce 56. A rolling duplicate can only produce these identical bytes.
@@ -563,7 +585,7 @@ function requireArtifactMatch(manifest, artifact) {
   }
 }
 
-function requireDependencies(provider, wallet) {
+function requireDependencies(provider, wallet, { mutationAllowed = true } = {}) {
   const providerMethods = [
     "getNetwork",
     "getBlock",
@@ -572,23 +594,27 @@ function requireDependencies(provider, wallet) {
     "getTransaction",
     "getTransactionCount",
     "getCode",
-    "broadcastTransaction",
   ];
+  if (mutationAllowed) providerMethods.push("broadcastTransaction");
   if (!provider || providerMethods.some((method) => typeof provider[method] !== "function")) {
     throw fault("PROVIDER_DEPENDENCY_INVALID", RECOVERY_V2_DEPLOYMENT_STATUS.BLOCKED);
   }
-  if (!wallet || typeof wallet.signTransaction !== "function") {
+  if (mutationAllowed && (!wallet || typeof wallet.signTransaction !== "function")) {
     throw fault("WALLET_DEPENDENCY_INVALID", RECOVERY_V2_DEPLOYMENT_STATUS.BLOCKED);
   }
 }
 
-function requireExactRuntimeIdentity(env, manifest) {
+function requireExactRuntimeIdentity(env, manifest, runtimeRepoSlug = manifest.render.repoSlug) {
   if (!env || typeof env !== "object") {
     throw fault("RENDER_IDENTITY_INCOMPLETE", RECOVERY_V2_DEPLOYMENT_STATUS.BLOCKED);
   }
   const expected = {};
   for (const [environmentKey, manifestKey] of Object.entries(RENDER_ENVIRONMENT)) {
-    expected[environmentKey] = manifestKey === "render" ? "true" : manifest.render[manifestKey];
+    expected[environmentKey] = environmentKey === "RENDER_GIT_REPO_SLUG"
+      ? runtimeRepoSlug
+      : manifestKey === "render"
+        ? "true"
+        : manifest.render[manifestKey];
   }
   expected.IS_PULL_REQUEST = "false";
   for (const [environmentKey, profileKey] of Object.entries(V1_ENVIRONMENT)) {

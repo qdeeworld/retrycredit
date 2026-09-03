@@ -626,6 +626,47 @@ test("a successful receipt becomes finalized only after finality, two later bloc
   assert.equal(provider.broadcasts.length, 0);
 });
 
+test("a successor repository can reconcile the exact finalized deployment without wallet authority", async () => {
+  const fixture = await deploymentFixture();
+  const provider = minedProvider(fixture, {
+    receiptBlock: 100,
+    latestBlock: 102,
+    finalizedBlock: 102,
+  });
+  const result = await run(fixture, provider, {
+    env: { ...fixture.env, RENDER_GIT_REPO_SLUG: "qdeeworld/retrycredit" },
+    runtimeRepoSlug: "qdeeworld/retrycredit",
+    wallet: undefined,
+    verification: truthChecks(),
+  });
+
+  assert.equal(result.status, "finalized");
+  assert.equal(result.reason, "FINALIZED_PLUS_TWO_VERIFIED");
+  assert.equal(provider.broadcasts.length, 0);
+});
+
+test("a successor repository is reconciliation-only before every signing or broadcast path", async () => {
+  const fixture = await deploymentFixture();
+  const provider = new DeploymentProvider(fixture);
+  let preflightCalls = 0;
+  const result = await run(fixture, provider, {
+    env: { ...fixture.env, RENDER_GIT_REPO_SLUG: "qdeeworld/retrycredit" },
+    runtimeRepoSlug: "qdeeworld/retrycredit",
+    wallet: undefined,
+    verification: {
+      async verifyPreBroadcast() {
+        preflightCalls += 1;
+        return true;
+      },
+    },
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, "RUNTIME_REPOSITORY_MIGRATION_RECONCILIATION_ONLY");
+  assert.equal(preflightCalls, 0);
+  assert.equal(provider.broadcasts.length, 0);
+});
+
 test("finality and post-finality verification remain fail closed", async () => {
   const fixture = await deploymentFixture();
   const scenarios = [
@@ -1085,7 +1126,10 @@ async function run(fixture, provider, overrides = {}) {
       : fixture.artifact,
     env: overrides.env ?? fixture.env,
     provider,
-    wallet: overrides.wallet ?? fixture.wallet,
+    wallet: Object.prototype.hasOwnProperty.call(overrides, "wallet")
+      ? overrides.wallet
+      : fixture.wallet,
+    runtimeRepoSlug: overrides.runtimeRepoSlug,
     verification: Object.prototype.hasOwnProperty.call(overrides, "verification")
       ? overrides.verification
       : { async verifyPreBroadcast(context) { return verifiedPreflight(context); } },
