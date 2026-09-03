@@ -161,6 +161,22 @@ test("wallet-native discovery revalidates advisory hashes through live pair auth
   ]);
 });
 
+test("wallet discovery provider failures expose only the manual-entry fallback", async () => {
+  const fixture = serviceFixture({
+    walletDiscovery: async () => {
+      throw new Error("provider secret at https://internal.example/token");
+    },
+  });
+  await assert.rejects(
+    fixture.service.discover(source.address),
+    (error) => error instanceof WorkerError
+      && error.code === "RECOVERY_DISCOVERY_UNAVAILABLE"
+      && error.status === 503
+      && error.message === "Wallet history discovery is temporarily unavailable; transaction hashes can still be entered manually."
+      && !error.message.includes("internal.example"),
+  );
+});
+
 test("recovery ABI selection is explicit and defaults existing callers to V1", () => {
   assert.equal(selectRecoveryCampaignAbi(), recoveryCampaignAbiV1);
   assert.equal(selectRecoveryCampaignAbi("v1"), recoveryCampaignAbiV1);
@@ -349,12 +365,20 @@ test("release receipt scans reject unsafe provider ranges", () => {
     { releaseLogChunkBlocks: 50_001 },
     { releaseLogChunkBlocks: 500, releaseLogLookbackBlocks: 499 },
     { releaseLogLookbackBlocks: 1_000_001 },
+    { releaseLogConcurrency: 0 },
+    { releaseLogConcurrency: 7 },
     { sourceLookupConcurrency: 0 },
     { sourceLookupQueueLimit: 257 },
     { sourceLookupTimeoutMs: 121_000 },
     { intakeTimeoutMs: 999 },
     { intakeTimeoutMs: 120_001 },
     { sourceProviderAttempts: 4 },
+    { sourceRpcBatchMaxCount: 0 },
+    { sourceRpcBatchMaxCount: 101 },
+    { settlementRpcBatchMaxCount: 0 },
+    { settlementRpcBatchMaxCount: 101 },
+    { releaseRpcBatchMaxCount: 0 },
+    { releaseRpcBatchMaxCount: 101 },
     { sourcePairCacheMaxEntries: 0 },
     { sourcePairCacheTtlSeconds: 3_601 },
     { sourcePairNegativeCacheTtlSeconds: 301 },
@@ -390,6 +414,23 @@ test("the production factory gives every Ethereum RPC request a finite deadline 
     assert.equal(provider._getConnection().timeout, 6_000);
     assert.ok(provider._getConnection().timeout * 3 < 20_000);
   }
+});
+
+test("the read-only factory authenticates the public relayer identity without constructing a signer", () => {
+  const service = RecoveryCampaignService.fromReadOnly({
+    relayerAddress: relayer.address,
+    poolAddress,
+    campaignNumber: 7,
+    creditcoinRpc: "https://creditcoin.example",
+    proofBuilderUrl: "https://proof-builder.example",
+    ethereumRpcUrls: ["https://ethereum-one.example"],
+    publicOrigin: "https://retrycredit.example",
+  });
+
+  assert.equal(service.relayerWallet.address, relayer.address);
+  assert.equal(service.relayerWallet.signingKey, undefined);
+  assert.equal(service.relayerWallet.sendTransaction, undefined);
+  assert.equal(service.pool.runner, service.ccProvider);
 });
 
 test("a discovery miss never invokes live-pair authority", async () => {

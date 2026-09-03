@@ -1,0 +1,44 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "retrycredit-api-staging",
+  "main": "src/cloudflare-worker.mjs",
+  "compatibility_date": "2026-09-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "vars": {
+    "RETRYCREDIT_ENVIRONMENT": "staging",
+    "ALLOWED_ORIGIN": "https://f4948438.retrycredit.pages.dev",
+    "PUBLIC_ORIGIN": "https://f4948438.retrycredit.pages.dev",
+    "CREDITCOIN_RPC": "https://rpc.cc3-testnet.creditcoin.network",
+    "CREDITCOIN_LOG_RPC": "https://creditcoin-testnet.blockscout.com/api/eth-rpc",
+    "ATTESTCOIN_PROOF_BUILDER": "https://prover.cc3-testnet.creditcoin.network",
+    "ETHEREUM_RPC_URLS": "https://ethereum-rpc.publicnode.com,https://1rpc.io/eth,https://eth.drpc.org",
+    "RETRYCREDIT_RECOVERY_ENABLED": "true",
+    "RETRYCREDIT_RECOVERY_CONTRACT_VERSION": "v1",
+    "RETRYCREDIT_RECOVERY_POOL_ADDRESS": "0x646c5c766Ce3B6058B44F41e89fE716f54E3dF66",
+    "RETRYCREDIT_RECOVERY_RELAYER_ADDRESS": "0x15f3C7E126C9b4968dcC8cf00e7DCb74CC13D4Ae",
+    "RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER": "1"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RECOVERY_CAMPAIGN",
+        "class_name": "RecoveryCampaignCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RecoveryCampaignCoordinator"]
+    }
+  ]
+}

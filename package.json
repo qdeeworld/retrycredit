@@ -16,7 +16,10 @@
     "discover:seadrop-wallet": "node scripts/discover-seadrop-wallet-pairs.mjs",
     "artifact:recovery-v2": "forge build && node scripts/generate-recovery-v2-artifact.mjs --write",
     "verify:recovery-v2-artifact": "node scripts/generate-recovery-v2-artifact.mjs --check",
-    "worker": "node src/server.mjs"
+    "worker": "node src/server.mjs",
+    "worker:cloudflare:check": "wrangler deploy --dry-run --config wrangler.staging.jsonc",
+    "worker:cloudflare:dev": "wrangler dev --config wrangler.staging.jsonc --remote",
+    "worker:cloudflare:deploy:staging": "wrangler deploy --config wrangler.staging.jsonc"
   },
   "keywords": [],
   "author": "",
@@ -33,8 +36,10 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "5.20260903.1",
     "@vitejs/plugin-react": "^6.0.5",
     "playwright-core": "^1.62.1",
-    "vite": "^8.2.1"
+    "vite": "^8.2.1",
+    "wrangler": "4.129.0"
   }
 }
