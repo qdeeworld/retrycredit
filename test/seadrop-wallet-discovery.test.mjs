@@ -326,6 +326,7 @@ test("default resilient discovery handles both keyless rate-limit response forms
     assert.equal(urls[0].searchParams.has("apikey"), false);
     assert.equal(urls[1].hostname, "eth.blockscout.com");
     assert.equal(result.truncated, false);
+    assert.deepEqual(result.attribution, ROUTESCAN_ATTRIBUTION);
   }
 });
 
@@ -346,27 +347,94 @@ test("a complete empty primary history does not call the fallback", async () => 
   assert.deepEqual(result.pairs, []);
 });
 
-test("a truncated primary tries for completeness and remains a marked fallback of last resort", async () => {
-  const histories = [
-    { transactions: [{ hash: "primary" }], truncated: true, pages: 10 },
-    { transactions: [], truncated: false, pages: 1 },
+test("a complete-empty fallback cannot erase a valid pair from a truncated primary", async () => {
+  const failedInput = mintInput(11n, `0x${"31".repeat(65)}`);
+  const successfulInput = mintInput(12n, `0x${"32".repeat(65)}`);
+  const validPair = [
+    transaction({ hashByte: "35", nonce: 7, block: 140, status: 0, input: failedInput }),
+    transaction({ hashByte: "36", nonce: 8, block: 141, status: 1, input: successfulInput }),
   ];
-  const complete = await discoverWalletSeaDropPairsResilient({
+  const result = await discoverWalletSeaDropPairsResilient({
     ...config(),
-    historyFetchers: histories.map((history) => async () => history),
-  });
-  assert.equal(complete.truncated, false);
-  assert.deepEqual(complete.transactions, []);
-
-  const partial = await discoverWalletSeaDropPairsResilient({
-    ...config(),
+    feeRecipient,
     historyFetchers: [
-      async () => ({ transactions: [{ hash: "kept" }], truncated: true, pages: 10 }),
-      async () => { throw new Error("fallback unavailable"); },
+      async () => ({ transactions: validPair, truncated: true, pages: 10 }),
+      async () => ({ transactions: [], truncated: false, pages: 1 }),
     ],
   });
-  assert.equal(partial.truncated, true);
-  assert.equal(partial.transactions[0].hash, "kept");
+
+  assert.equal(result.truncated, true);
+  assert.equal(result.transactions.length, 2);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].failedTransactionHash, `0x${"35".repeat(32)}`);
+});
+
+test("a later-page rate limit preserves normalized rows as a marked partial history", async () => {
+  const failedInput = mintInput(13n, `0x${"33".repeat(65)}`);
+  const successfulInput = mintInput(14n, `0x${"34".repeat(65)}`);
+  let page = 0;
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      (options) => fetchWalletTransactions({
+        ...options,
+        pageSize: 2,
+        maxPages: 3,
+        fetchImpl: async () => {
+          page += 1;
+          if (page === 1) {
+            return {
+              ok: true,
+              json: async () => ({
+                status: "1",
+                message: "OK",
+                result: [
+                  transaction({ hashByte: "37", nonce: 9, block: 150, status: 0, input: failedInput }),
+                  transaction({ hashByte: "38", nonce: 10, block: 151, status: 1, input: successfulInput }),
+                ],
+              }),
+            };
+          }
+          return { ok: false, status: 429, body: { cancel: async () => {} } };
+        },
+      }),
+      async () => ({ transactions: [], truncated: false, pages: 1 }),
+    ],
+  });
+
+  assert.equal(page, 2);
+  assert.equal(result.truncated, true);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].successfulTransactionHash, `0x${"38".repeat(32)}`);
+});
+
+test("merged fallback ranks a qualifying pair above a larger irrelevant history", async () => {
+  const failedInput = mintInput(15n, `0x${"35".repeat(65)}`);
+  const successfulInput = mintInput(16n, `0x${"36".repeat(65)}`);
+  const pairRows = [
+    transaction({ hashByte: "39", nonce: 11, block: 160, status: 0, input: failedInput }),
+    transaction({ hashByte: "3a", nonce: 12, block: 161, status: 1, input: successfulInput }),
+  ];
+  const irrelevantRows = Array.from({ length: 20 }, (_, index) => transaction({
+    hashByte: (64 + index).toString(16),
+    nonce: 30 + index,
+    block: 170 + index,
+    status: 1,
+    input: "0x",
+  }));
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      async () => ({ transactions: pairRows, truncated: true, pages: 2 }),
+      async () => ({ transactions: irrelevantRows, truncated: true, pages: 6 }),
+    ],
+  });
+
+  assert.equal(result.transactions.length, 22);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].failedTransactionHash, `0x${"39".repeat(32)}`);
 });
 
 test("two hung default history providers remain inside their combined deadline", async () => {

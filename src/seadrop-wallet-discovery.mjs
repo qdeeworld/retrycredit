@@ -27,6 +27,13 @@ const BLOCKSCOUT_V2_CURSOR_KEYS = Object.freeze(new Set([
   "value",
 ]));
 
+class HistoryAvailabilityError extends Error {
+  constructor(message, cause) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "HistoryAvailabilityError";
+  }
+}
+
 const DEFAULT_HISTORY_FETCHERS = Object.freeze([
   (options) => fetchWalletTransactions({ ...options, apiUrl: ROUTESCAN_ETHEREUM_API }),
   (options) => fetchWalletTransactionsV2({ ...options, apiUrl: BLOCKSCOUT_ETHEREUM_V2_API }),
@@ -62,7 +69,8 @@ export async function discoverWalletSeaDropPairsResilient({
   }
 
   const failures = [];
-  let bestPartial = null;
+  const successes = [];
+  const usesRouteScan = historyFetchers === DEFAULT_HISTORY_FETCHERS;
   for (const fetchHistory of historyFetchers) {
     try {
       const history = await fetchHistory(options);
@@ -70,16 +78,51 @@ export async function discoverWalletSeaDropPairsResilient({
         ...history,
         pairs: discoverSeaDropPairs(history.transactions, options),
       });
-      if (!history.truncated) return result;
-      if (!bestPartial || result.transactions.length > bestPartial.transactions.length) {
-        bestPartial = result;
+      successes.push(result);
+      if (!history.truncated && successes.length === 1) {
+        return withRequiredAttribution(result, usesRouteScan);
       }
+      if (!history.truncated) break;
     } catch (error) {
       failures.push(error);
     }
   }
-  if (bestPartial) return bestPartial;
+  if (successes.length > 0) {
+    return mergeHistoryResults(successes, options, { usesRouteScan });
+  }
   throw new AggregateError(failures, "wallet history providers are unavailable");
+}
+
+function mergeHistoryResults(histories, options, { usesRouteScan }) {
+  const transactions = [];
+  const hashes = new Set();
+  for (const history of histories) {
+    for (const transaction of history.transactions) {
+      const hash = typeof transaction?.hash === "string" ? transaction.hash.toLowerCase() : null;
+      if (hash && hashes.has(hash)) continue;
+      if (hash) hashes.add(hash);
+      transactions.push(transaction);
+    }
+  }
+  const merged = Object.freeze({
+    transactions: Object.freeze(transactions),
+    // Once any provider reports a partial history, preserve that uncertainty
+    // even if another provider reports an empty complete view. Discovery is
+    // advisory, so retaining live-revalidated candidates is safer than a false
+    // empty result while the manual pair entry remains available.
+    truncated: histories.some(({ truncated }) => truncated),
+    pages: histories.reduce((total, { pages }) => total + pages, 0),
+    pairs: discoverSeaDropPairs(transactions, options),
+  });
+  return withRequiredAttribution(
+    merged,
+    usesRouteScan || histories.some(({ attribution }) => attribution?.url === ROUTESCAN_ATTRIBUTION.url),
+  );
+}
+
+function withRequiredAttribution(result, usesRouteScan) {
+  if (!usesRouteScan || result.attribution) return result;
+  return Object.freeze({ ...result, attribution: ROUTESCAN_ATTRIBUTION });
 }
 
 export async function fetchWalletTransactionsV2({
@@ -112,42 +155,48 @@ export async function fetchWalletTransactionsV2({
   let truncated = false;
   const cursorKeys = new Set();
   for (let page = 1; page <= maxPages; page += 1) {
-    const url = new URL(endpoint);
-    if (cursor) {
-      for (const [key, value] of Object.entries(cursor)) {
-        if (value !== null && ["string", "number", "boolean"].includes(typeof value)) {
-          url.searchParams.set(key, String(value));
+    try {
+      const url = new URL(endpoint);
+      if (cursor) {
+        for (const [key, value] of Object.entries(cursor)) {
+          if (value !== null && ["string", "number", "boolean"].includes(typeof value)) {
+            url.searchParams.set(key, String(value));
+          }
         }
       }
+      url.searchParams.set("filter", "from");
+      const remainingMs = timeoutMs - (Date.now() - startedAt);
+      if (remainingMs <= 0) throw new HistoryAvailabilityError("wallet history discovery timed out");
+      const response = await fetchHistoryPage(fetchImpl, url, remainingMs);
+      if (!response.ok) {
+        await cancelUnreadBody(response);
+        throw new HistoryAvailabilityError(`wallet history provider returned HTTP ${response.status}`);
+      }
+      const body = await readBoundedJson(response, maximumResponseBytes);
+      if (!body || !Array.isArray(body.items)) {
+        throw new Error("wallet history provider returned an invalid transaction response");
+      }
+      const normalized = body.items.map(normalizeV2Transaction);
+      transactions.push(...normalized.filter(({ blockNumber }) => {
+        const block = Number(blockNumber);
+        return block >= firstBlock && block <= lastBlock;
+      }));
+      const reachedStart = normalized.length > 0
+        && normalized.every(({ blockNumber }) => Number(blockNumber) < firstBlock);
+      cursor = normalizeV2Cursor(body.next_page_params);
+      pages = page;
+      if (!cursor || reachedStart) break;
+      const cursorKey = JSON.stringify(Object.entries(cursor).sort(([left], [right]) => left.localeCompare(right)));
+      if (cursorKeys.has(cursorKey)) {
+        throw new Error("wallet history provider repeated its pagination cursor");
+      }
+      cursorKeys.add(cursorKey);
+      if (page === maxPages) truncated = true;
+    } catch (error) {
+      if (pages === 0 || !(error instanceof HistoryAvailabilityError)) throw error;
+      truncated = true;
+      break;
     }
-    url.searchParams.set("filter", "from");
-    const remainingMs = timeoutMs - (Date.now() - startedAt);
-    if (remainingMs <= 0) throw new Error("wallet history discovery timed out");
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(remainingMs) });
-    if (!response.ok) {
-      await cancelUnreadBody(response);
-      throw new Error(`wallet history provider returned HTTP ${response.status}`);
-    }
-    const body = await readBoundedJson(response, maximumResponseBytes);
-    if (!body || !Array.isArray(body.items)) {
-      throw new Error("wallet history provider returned an invalid transaction response");
-    }
-    pages = page;
-    const normalized = body.items.map(normalizeV2Transaction);
-    transactions.push(...normalized.filter(({ blockNumber }) => {
-      const block = Number(blockNumber);
-      return block >= firstBlock && block <= lastBlock;
-    }));
-    const reachedStart = normalized.length > 0
-      && normalized.every(({ blockNumber }) => Number(blockNumber) < firstBlock);
-    cursor = normalizeV2Cursor(body.next_page_params);
-    if (!cursor || reachedStart) break;
-    const cursorKey = JSON.stringify(Object.entries(cursor).sort(([left], [right]) => left.localeCompare(right)));
-    if (cursorKeys.has(cursorKey)) {
-      throw new Error("wallet history provider repeated its pagination cursor");
-    }
-    cursorKeys.add(cursorKey);
-    if (page === maxPages) truncated = true;
   }
   return Object.freeze({
     transactions: Object.freeze(transactions.map(Object.freeze)),
@@ -186,33 +235,39 @@ export async function fetchWalletTransactions({
   let truncated = false;
   let pages = 0;
   for (let page = 1; page <= maxPages; page += 1) {
-    const url = new URL(apiUrl);
-    url.search = new URLSearchParams({
-      module: "account",
-      action: "txlist",
-      address: sourceWallet,
-      startblock: String(firstBlock),
-      endblock: String(lastBlock),
-      page: String(page),
-      offset: String(pageSize),
-      sort: "desc",
-    }).toString();
-    const remainingMs = timeoutMs - (Date.now() - startedAt);
-    if (remainingMs <= 0) throw new Error("wallet history discovery timed out");
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(remainingMs) });
-    if (!response.ok) {
-      await cancelUnreadBody(response);
-      throw new Error(`wallet history provider returned HTTP ${response.status}`);
+    try {
+      const url = new URL(apiUrl);
+      url.search = new URLSearchParams({
+        module: "account",
+        action: "txlist",
+        address: sourceWallet,
+        startblock: String(firstBlock),
+        endblock: String(lastBlock),
+        page: String(page),
+        offset: String(pageSize),
+        sort: "desc",
+      }).toString();
+      const remainingMs = timeoutMs - (Date.now() - startedAt);
+      if (remainingMs <= 0) throw new HistoryAvailabilityError("wallet history discovery timed out");
+      const response = await fetchHistoryPage(fetchImpl, url, remainingMs);
+      if (!response.ok) {
+        await cancelUnreadBody(response);
+        throw new HistoryAvailabilityError(`wallet history provider returned HTTP ${response.status}`);
+      }
+      const body = await readBoundedJson(response, maximumResponseBytes);
+      if (body?.status === "0" && body?.message === "No transactions found") break;
+      if (body?.status !== "1" || !Array.isArray(body.result)) {
+        throw new Error("wallet history provider returned an invalid transaction response");
+      }
+      pages = page;
+      transactions.push(...body.result);
+      if (body.result.length < pageSize) break;
+      if (page === maxPages) truncated = true;
+    } catch (error) {
+      if (pages === 0 || !(error instanceof HistoryAvailabilityError)) throw error;
+      truncated = true;
+      break;
     }
-    const body = await readBoundedJson(response, maximumResponseBytes);
-    if (body?.status === "0" && body?.message === "No transactions found") break;
-    if (body?.status !== "1" || !Array.isArray(body.result)) {
-      throw new Error("wallet history provider returned an invalid transaction response");
-    }
-    pages = page;
-    transactions.push(...body.result);
-    if (body.result.length < pageSize) break;
-    if (page === maxPages) truncated = true;
   }
   return Object.freeze({
     transactions: Object.freeze(transactions.map(Object.freeze)),
@@ -220,6 +275,14 @@ export async function fetchWalletTransactions({
     pages,
     ...(String(apiUrl) === ROUTESCAN_ETHEREUM_API ? { attribution: ROUTESCAN_ATTRIBUTION } : {}),
   });
+}
+
+async function fetchHistoryPage(fetchImpl, url, timeoutMs) {
+  try {
+    return await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+  } catch (error) {
+    throw new HistoryAvailabilityError("wallet history provider request failed", error);
+  }
 }
 
 export function discoverSeaDropPairs(transactions, {

@@ -161,6 +161,46 @@ test("wallet-native discovery revalidates advisory hashes through live pair auth
   ]);
 });
 
+test("the Cloudflare discovery profile caps two sequential candidates at twenty source RPC calls", async () => {
+  let calls = 0;
+  let active = 0;
+  let maximumActive = 0;
+  const measured = async (value) => {
+    calls += 1;
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    await nextTurn();
+    active -= 1;
+    return value;
+  };
+  const ethereumProviders = Array.from({ length: 3 }, () => ({
+    getNetwork: () => measured({ chainId: 1n }),
+    getTransaction: () => measured(null),
+    getTransactionReceipt: () => measured(null),
+  }));
+  const secondPair = pairIdentity(`0x${"81".repeat(32)}`, `0x${"82".repeat(32)}`);
+  const fixture = serviceFixture({
+    useEthereumResolver: true,
+    ethereumProviders,
+    walletDiscovery: async () => ({
+      transactions: [],
+      truncated: true,
+      pages: 12,
+      pairs: [pairIdentity(), secondPair],
+    }),
+    configOverride: {
+      discoveryCandidateLimit: 2,
+      discoverySourceLookupConcurrency: 1,
+      sourceProviderAttempts: 2,
+    },
+  });
+
+  const result = await fixture.service.discover(source.address);
+  assert.deepEqual(result.matches, []);
+  assert.equal(calls, 20);
+  assert.ok(maximumActive <= 4);
+});
+
 test("wallet discovery provider failures expose only the manual-entry fallback", async () => {
   const fixture = serviceFixture({
     walletDiscovery: async () => {
@@ -385,6 +425,8 @@ test("release receipt scans reject unsafe provider ranges", () => {
     { campaignStateCacheTtlSeconds: 0 },
     { campaignStateCacheTtlSeconds: 11 },
     { releaseQueueLimit: 0 },
+    { discoverySourceLookupConcurrency: 0 },
+    { discoverySourceLookupConcurrency: 5 },
   ]) {
     assert.throws(
       () => serviceFixture({ configOverride }),

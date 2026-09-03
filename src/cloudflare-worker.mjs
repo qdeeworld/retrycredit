@@ -80,6 +80,7 @@ function createRecoveryService(env) {
       // Two bounded history attempts plus one 20-second live-validation budget
       // must remain inside the service's 35-second discovery deadline.
       timeoutMs: 6_000,
+      maxPages: 6,
     }),
     config: {
       contractVersion: requiredString(
@@ -90,6 +91,12 @@ function createRecoveryService(env) {
       settlementRpcBatchMaxCount: 3,
       releaseRpcBatchMaxCount: 1,
       releaseLogConcurrency: 4,
+      // Two sequential candidates across two providers keep the worst-case
+      // read path below Workers Free's 50-subrequest ceiling and four-open-
+      // connection peak. A user can always enter the exact pair manually.
+      discoveryCandidateLimit: 2,
+      discoverySourceLookupConcurrency: 1,
+      sourceProviderAttempts: 2,
     },
   });
 }

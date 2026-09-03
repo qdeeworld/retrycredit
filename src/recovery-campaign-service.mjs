@@ -83,6 +83,7 @@ export const RECOVERY_DEFAULTS = Object.freeze({
   releaseQueueLimit: 8,
   discoveryTimeoutMs: 35_000,
   discoveryCandidateLimit: 4,
+  discoverySourceLookupConcurrency: 4,
 });
 
 const DEFAULT_CREDITCOIN_RPC = "https://rpc.cc3-testnet.creditcoin.network";
@@ -437,6 +438,11 @@ export class RecoveryCampaignService {
       "wallet discovery candidate limit",
       { minimum: 1, maximum: 8 },
     );
+    const discoverySourceLookupConcurrency = requireBoundedInteger(
+      mergedConfig.discoverySourceLookupConcurrency,
+      "wallet discovery source concurrency",
+      { minimum: 1, maximum: 4 },
+    );
     const sourceProviderAttempts = requireBoundedInteger(
       mergedConfig.sourceProviderAttempts,
       "source provider attempts",
@@ -494,6 +500,7 @@ export class RecoveryCampaignService {
       intakeTimeoutMs,
       discoveryTimeoutMs,
       discoveryCandidateLimit,
+      discoverySourceLookupConcurrency,
       sourceProviderAttempts,
       sourceRpcBatchMaxCount,
       settlementRpcBatchMaxCount,
@@ -553,7 +560,7 @@ export class RecoveryCampaignService {
       ),
     });
     this.discoverySourceLookupPool = new BoundedWorkPool({
-      concurrency: 4,
+      concurrency: discoverySourceLookupConcurrency,
       queueLimit: 4,
       timeoutMs: sourceLookupTimeoutMs,
       busyError: () => new WorkerError(
