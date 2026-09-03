@@ -456,6 +456,86 @@ test("a later-page HTTP-200 rate-limit envelope preserves normalized rows as par
   assert.equal(result.pairs[0].successfulTransactionHash, `0x${"3c".repeat(32)}`);
 });
 
+test("a stalled later-page body is aborted, cancelled, and retained as partial history", async () => {
+  const failedInput = mintInput(19n, `0x${"39".repeat(65)}`);
+  const successfulInput = mintInput(20n, `0x${"3a".repeat(65)}`);
+  let page = 0;
+  let aborts = 0;
+  let cancellations = 0;
+  let releases = 0;
+  let finishRead;
+  const started = performance.now();
+  const result = await fetchWalletTransactions({
+    ...config(),
+    pageSize: 2,
+    maxPages: 3,
+    timeoutMs: 30,
+    fetchImpl: async (_url, { signal }) => {
+      page += 1;
+      if (page === 1) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: "1",
+            message: "OK",
+            result: [
+              transaction({ hashByte: "3f", nonce: 17, block: 166, status: 0, input: failedInput }),
+              transaction({ hashByte: "40", nonce: 18, block: 167, status: 1, input: successfulInput }),
+            ],
+          }),
+        };
+      }
+      signal.addEventListener("abort", () => { aborts += 1; }, { once: true });
+      return {
+        ok: true,
+        headers: { get: () => null },
+        body: {
+          getReader: () => ({
+            read: () => new Promise((resolve) => { finishRead = resolve; }),
+            cancel: async () => {
+              cancellations += 1;
+              finishRead?.({ done: true });
+            },
+            releaseLock: () => { releases += 1; },
+          }),
+        },
+      };
+    },
+  });
+  const elapsed = performance.now() - started;
+
+  assert.equal(page, 2);
+  assert.equal(result.truncated, true);
+  assert.equal(result.transactions.length, 2);
+  assert.equal(aborts, 1);
+  assert.equal(cancellations, 1);
+  assert.equal(releases, 1);
+  assert.ok(elapsed >= 20, `body deadline ended too early: ${elapsed}ms`);
+  assert.ok(elapsed < 200, `body deadline exceeded bound: ${elapsed}ms`);
+});
+
+test("a completed history body clears its page timer", async () => {
+  let observedSignal;
+  let aborts = 0;
+  const result = await fetchWalletTransactions({
+    ...config(),
+    timeoutMs: 20,
+    fetchImpl: async (_url, { signal }) => {
+      observedSignal = signal;
+      signal.addEventListener("abort", () => { aborts += 1; }, { once: true });
+      return {
+        ok: true,
+        json: async () => ({ status: "1", message: "OK", result: [] }),
+      };
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(result.truncated, false);
+  assert.equal(observedSignal.aborted, false);
+  assert.equal(aborts, 0);
+});
+
 test("an arbitrary later-page NOTOK envelope remains a hard provider failure", async () => {
   let page = 0;
   await assert.rejects(

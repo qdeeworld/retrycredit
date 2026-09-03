@@ -167,12 +167,7 @@ export async function fetchWalletTransactionsV2({
       url.searchParams.set("filter", "from");
       const remainingMs = timeoutMs - (Date.now() - startedAt);
       if (remainingMs <= 0) throw new HistoryAvailabilityError("wallet history discovery timed out");
-      const response = await fetchHistoryPage(fetchImpl, url, remainingMs);
-      if (!response.ok) {
-        await cancelUnreadBody(response);
-        throw new HistoryAvailabilityError(`wallet history provider returned HTTP ${response.status}`);
-      }
-      const body = await readBoundedJson(response, maximumResponseBytes);
+      const body = await fetchHistoryPage(fetchImpl, url, remainingMs, maximumResponseBytes);
       if (!body || !Array.isArray(body.items)) {
         throw new Error("wallet history provider returned an invalid transaction response");
       }
@@ -249,12 +244,7 @@ export async function fetchWalletTransactions({
       }).toString();
       const remainingMs = timeoutMs - (Date.now() - startedAt);
       if (remainingMs <= 0) throw new HistoryAvailabilityError("wallet history discovery timed out");
-      const response = await fetchHistoryPage(fetchImpl, url, remainingMs);
-      if (!response.ok) {
-        await cancelUnreadBody(response);
-        throw new HistoryAvailabilityError(`wallet history provider returned HTTP ${response.status}`);
-      }
-      const body = await readBoundedJson(response, maximumResponseBytes);
+      const body = await fetchHistoryPage(fetchImpl, url, remainingMs, maximumResponseBytes);
       if (isHistoryRateLimitEnvelope(body)) {
         throw new HistoryAvailabilityError("wallet history provider reported a rate limit");
       }
@@ -290,16 +280,40 @@ function isHistoryRateLimitEnvelope(body) {
     && /^max rate limit reached(?:$|[,.:;!]\s)/i.test(body.result.trim());
 }
 
-async function fetchHistoryPage(fetchImpl, url, timeoutMs) {
+async function fetchHistoryPage(fetchImpl, url, timeoutMs, maximumResponseBytes) {
   const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(new Error("wallet history provider request timed out")),
-    timeoutMs,
-  );
+  const timeoutError = new HistoryAvailabilityError("wallet history provider request timed out");
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort(timeoutError);
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+  const operation = (async () => {
+    let response;
+    try {
+      response = await fetchImpl(url, { signal: controller.signal });
+    } catch (error) {
+      throw new HistoryAvailabilityError("wallet history provider request failed", error);
+    }
+    if (controller.signal.aborted) {
+      await cancelUnreadBody(response);
+      throw timeoutError;
+    }
+    if (!response.ok) {
+      await cancelUnreadBody(response);
+      throw new HistoryAvailabilityError(`wallet history provider returned HTTP ${response.status}`);
+    }
+    try {
+      return await readBoundedJson(response, maximumResponseBytes, controller.signal);
+    } catch (error) {
+      if (controller.signal.aborted) throw timeoutError;
+      throw error;
+    }
+  })();
   try {
-    return await fetchImpl(url, { signal: controller.signal });
-  } catch (error) {
-    throw new HistoryAvailabilityError("wallet history provider request failed", error);
+    return await Promise.race([operation, deadline]);
   } finally {
     clearTimeout(timer);
   }
@@ -471,7 +485,7 @@ function normalizeV2Cursor(value) {
   return Object.freeze(normalized);
 }
 
-async function readBoundedJson(response, maximumBytes) {
+async function readBoundedJson(response, maximumBytes, signal) {
   const declared = Number(response.headers?.get?.("content-length"));
   if (Number.isFinite(declared) && declared > maximumBytes) {
     await cancelUnreadBody(response);
@@ -481,9 +495,22 @@ async function readBoundedJson(response, maximumBytes) {
     const reader = response.body.getReader();
     const chunks = [];
     let total = 0;
+    const cancelReader = () => {
+      try {
+        Promise.resolve(reader.cancel(signal.reason)).catch(() => undefined);
+      } catch {
+        // The stream already failed or closed while the deadline fired.
+      }
+    };
+    if (signal.aborted) {
+      cancelReader();
+      throw signal.reason;
+    }
+    signal.addEventListener("abort", cancelReader, { once: true });
     try {
       while (true) {
         const { done, value } = await reader.read();
+        if (signal.aborted) throw signal.reason;
         if (done) break;
         total += value.byteLength;
         if (total > maximumBytes) {
@@ -493,6 +520,7 @@ async function readBoundedJson(response, maximumBytes) {
         chunks.push(value);
       }
     } finally {
+      signal.removeEventListener("abort", cancelReader);
       reader.releaseLock();
     }
     const bytes = new Uint8Array(total);
@@ -501,16 +529,20 @@ async function readBoundedJson(response, maximumBytes) {
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
+    if (signal.aborted) throw signal.reason;
     return JSON.parse(new TextDecoder().decode(bytes));
   }
   if (typeof response.text === "function") {
     const text = await response.text();
+    if (signal.aborted) throw signal.reason;
     if (new TextEncoder().encode(text).byteLength > maximumBytes) {
       throw new Error("wallet history provider response is too large");
     }
     return JSON.parse(text);
   }
-  return response.json();
+  const body = await response.json();
+  if (signal.aborted) throw signal.reason;
+  return body;
 }
 
 async function cancelUnreadBody(response) {
