@@ -49,7 +49,7 @@ export function buildRecoveryCampaignManifest(config) {
       name: requireText(config.source.name, "source network name"),
       chainId: requirePositiveInteger(config.source.chainId, "source chain ID"),
       chainKey: requirePositiveInteger(config.source.chainKey, "Attestcoin source chain key"),
-      startBlock: requirePositiveInteger(config.rule.startBlock, "source start block"),
+      startBlock: requireNonnegativeInteger(config.rule.startBlock, "source start block"),
       endBlock: requirePositiveInteger(config.rule.endBlock, "source end block"),
     },
     settlement: {

@@ -53,6 +53,14 @@ test("builds one immutable manifest from authenticated recovery configuration", 
   assert.equal(Object.isFrozen(manifest.authority), true);
 });
 
+test("accepts a canonical source window beginning at genesis", () => {
+  const manifest = buildRecoveryCampaignManifest(config({
+    rule: { startBlock: 0, endBlock: 1 },
+  }));
+  assert.equal(manifest.source.startBlock, 0);
+  assert.equal(manifest.source.endBlock, 1);
+});
+
 test("keeps the organic adapter and controlled lab evidence distinct", () => {
   assert.deepEqual(RECOVERY_ADAPTERS.map(({ role }) => role), ["primary", "reference-only"]);
   assert.match(RECOVERY_ADAPTERS[0].evidence, /Organic mainnet/);
@@ -83,6 +91,7 @@ test("refuses incomplete or mutable-looking authority fields", () => {
     config({ campaign: { termsHash: `0x${"0".repeat(64)}` } }),
     config({ campaign: { creditAmount: "0" } }),
     config({ campaign: { releaseState: "unknown" } }),
+    config({ rule: { startBlock: -1 } }),
     config({ rule: { endBlock: 0 } }),
   ]) assert.throws(() => buildRecoveryCampaignManifest(invalid));
 });
