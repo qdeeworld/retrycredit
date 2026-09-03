@@ -248,7 +248,12 @@ export async function fetchWalletTransactions({
       if (isHistoryRateLimitEnvelope(body)) {
         throw new HistoryAvailabilityError("wallet history provider reported a rate limit");
       }
-      if (body?.status === "0" && body?.message === "No transactions found") break;
+      if (
+        body?.status === "0"
+        && body?.message === "No transactions found"
+        && Array.isArray(body.result)
+        && body.result.length === 0
+      ) break;
       if (body?.status !== "1" || !Array.isArray(body.result)) {
         throw new Error("wallet history provider returned an invalid transaction response");
       }

@@ -402,21 +402,59 @@ test("default resilient discovery handles both keyless rate-limit response forms
   }
 });
 
-test("a complete empty primary history does not call the fallback", async () => {
-  let calls = 0;
-  const result = await discoverWalletSeaDropPairsResilient({
-    ...config(),
-    fetchImpl: async () => {
-      calls += 1;
-      return {
-        ok: true,
-        json: async () => ({ status: "1", message: "OK", result: [] }),
-      };
-    },
-  });
-  assert.equal(calls, 1);
-  assert.equal(result.truncated, false);
-  assert.deepEqual(result.pairs, []);
+test("canonical empty primary histories do not call the fallback", async () => {
+  for (const body of [
+    { status: "0", message: "No transactions found", result: [] },
+    { status: "1", message: "OK", result: [] },
+  ]) {
+    let calls = 0;
+    const result = await discoverWalletSeaDropPairsResilient({
+      ...config(),
+      fetchImpl: async () => {
+        calls += 1;
+        return { ok: true, json: async () => body };
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.truncated, false);
+    assert.deepEqual(result.pairs, []);
+  }
+});
+
+test("malformed or non-empty no-transactions envelopes force the resilient fallback", async () => {
+  for (const malformedResult of [
+    undefined,
+    null,
+    "No transactions found",
+    { unexpected: true },
+    [{ unexpected: true }],
+  ]) {
+    const hosts = [];
+    const result = await discoverWalletSeaDropPairsResilient({
+      ...config(),
+      fetchImpl: async (url) => {
+        hosts.push(new URL(url).hostname);
+        if (new URL(url).hostname === "api.routescan.io") {
+          return {
+            ok: true,
+            json: async () => ({
+              status: "0",
+              message: "No transactions found",
+              result: malformedResult,
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({ items: [], next_page_params: null }),
+        };
+      },
+    });
+
+    assert.deepEqual(hosts, ["api.routescan.io", "eth.blockscout.com"]);
+    assert.equal(result.truncated, false);
+    assert.deepEqual(result.transactions, []);
+  }
 });
 
 test("a complete-empty fallback cannot erase a valid pair from a truncated primary", async () => {
