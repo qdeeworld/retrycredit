@@ -2,13 +2,22 @@ import { DurableObject } from "cloudflare:workers";
 
 import { RecoveryCampaignService } from "./recovery-campaign-service.mjs";
 import { discoverWalletSeaDropPairsResilient } from "./seadrop-wallet-discovery.mjs";
-import { observeRecoveryV2 } from "./recovery-v2-observer.mjs";
+import {
+  RECOVERY_V2_OBSERVATION,
+  observeRecoveryV2 as observeRecoveryV2FromProviders,
+} from "./recovery-v2-observer.mjs";
 import { createSignedFreshReadControl } from "./cloudflare-fresh-read-admission.mjs";
+import {
+  createRecoveryV2ObservationCache,
+  recoveryV2ObservationCacheIdentity,
+} from "./cloudflare-v2-observation-cache.mjs";
 import {
   CloudflareApiError,
   createCloudflareApiHandler,
   createCoordinatorRuntime,
 } from "./cloudflare-worker-core.mjs";
+
+const RECOVERY_V2_OBSERVATION_COORDINATOR_NAME = "recovery-v2-observation:v1";
 
 export class RecoveryCampaignCoordinator extends DurableObject {
   constructor(ctx, env) {
@@ -24,6 +33,22 @@ export class RecoveryCampaignCoordinator extends DurableObject {
         campaignNumber: env.RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER,
       }),
     });
+    this.v2ObservationCache = createRecoveryV2ObservationCache({
+      storage: ctx.storage,
+      identity: recoveryV2ObservationCacheIdentity({
+        primaryRpc: env.CREDITCOIN_RPC,
+        auditRpc: env.CREDITCOIN_LOG_RPC,
+        observation: RECOVERY_V2_OBSERVATION,
+        deploymentRevision: env.RETRYCREDIT_DEPLOYMENT_REVISION,
+        workerVersionId: env.CF_VERSION_METADATA?.id,
+      }),
+      revision: env.RETRYCREDIT_DEPLOYMENT_REVISION,
+      observe: () => observeRecoveryV2FromProviders(env),
+      onRefresh: () => console.log(JSON.stringify({
+        level: "info",
+        event: "recovery_v2_observation_refresh",
+      })),
+    });
   }
 
   async health() {
@@ -33,19 +58,32 @@ export class RecoveryCampaignCoordinator extends DurableObject {
   async execute(input) {
     return this.runtime.execute(input);
   }
+
+  async observeRecoveryV2() {
+    return this.v2ObservationCache.read();
+  }
 }
 
 function coordinatorFor(env) {
-  if (!env?.RECOVERY_CAMPAIGN?.getByName) {
-    throw new CloudflareApiError(
-      "RECOVERY_MISCONFIGURED",
-      "The recovery coordinator binding is unavailable",
-      503,
-    );
-  }
+  const binding = coordinatorBinding(env);
   const pool = requiredString(env.RETRYCREDIT_RECOVERY_POOL_ADDRESS, "recovery pool").toLowerCase();
   const campaign = requiredString(env.RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER, "recovery campaign");
-  return env.RECOVERY_CAMPAIGN.getByName(`${pool}:${campaign}`);
+  return binding.getByName(`${pool}:${campaign}`);
+}
+
+function observeRecoveryV2(env) {
+  return coordinatorBinding(env)
+    .getByName(RECOVERY_V2_OBSERVATION_COORDINATOR_NAME)
+    .observeRecoveryV2();
+}
+
+function coordinatorBinding(env) {
+  if (env?.RECOVERY_CAMPAIGN?.getByName) return env.RECOVERY_CAMPAIGN;
+  throw new CloudflareApiError(
+    "RECOVERY_MISCONFIGURED",
+    "The recovery coordinator binding is unavailable",
+    503,
+  );
 }
 
 function createRecoveryService(env) {

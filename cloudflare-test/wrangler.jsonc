@@ -8,7 +8,9 @@
     "TEST_NOW_MS": "1800000000000",
     "TEST_PUBLIC_ORIGIN": "https://retrycredit.example",
     "TEST_POOL_ADDRESS": "0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa",
-    "TEST_CAMPAIGN_NUMBER": "7"
+    "TEST_CAMPAIGN_NUMBER": "7",
+    "TEST_OBSERVATION_IDENTITY": "recovery-v2-observer-test:v1",
+    "TEST_REVISION": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "durable_objects": {
     "bindings": [

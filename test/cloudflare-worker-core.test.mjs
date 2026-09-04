@@ -51,6 +51,76 @@ test("Cloudflare handler preserves exact CORS, revision, and read-only health", 
   assert.equal(preflight.headers.get("access-control-allow-headers"), "authorization, content-type");
 });
 
+test("V2 observation health keeps current per-request metadata outside its provider snapshot", async () => {
+  let observationCalls = 0;
+  const handler = createCloudflareApiHandler({
+    coordinatorFor: () => { throw new Error("campaign coordinator must not be used"); },
+    observeRecoveryV2: async () => {
+      observationCalls += 1;
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          service: "retrycredit",
+          network: 102031,
+          recoveryV2: {
+            mode: "observation-only",
+            state: "observed",
+            publicProfile: "v1",
+            reason: "CANONICAL_DEPLOYMENT_OBSERVED_PLUS_TWO",
+            observers: 2,
+          },
+          revision: ENV.RETRYCREDIT_DEPLOYMENT_REVISION,
+        },
+      };
+    },
+  });
+  const first = await handler(new Request("https://api.example/health/recovery-v2"), ENV);
+  const second = await handler(new Request("https://api.example/health/recovery-v2"), ENV);
+  const firstBody = await first.json();
+
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get("cache-control"), "no-store");
+  assert.equal(first.headers.get("access-control-allow-origin"), ENV.ALLOWED_ORIGIN);
+  assert.notEqual(first.headers.get("x-request-id"), second.headers.get("x-request-id"));
+  assert.equal(firstBody.revision, ENV.RETRYCREDIT_DEPLOYMENT_REVISION);
+  assert.deepEqual(firstBody.workerVersion, {
+    id: ENV.CF_VERSION_METADATA.id,
+    tag: ENV.CF_VERSION_METADATA.tag,
+  });
+  assert.equal(observationCalls, 2);
+});
+
+test("V2 observation health preserves its fail-closed contract when the object RPC rejects", async () => {
+  const handler = createCloudflareApiHandler({
+    coordinatorFor: () => { throw new Error("campaign coordinator must not be used"); },
+    observeRecoveryV2: async () => { throw new Error("private object failure"); },
+  });
+  const response = await handler(new Request("https://api.example/health/recovery-v2"), ENV);
+  const body = await response.json();
+
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("access-control-allow-origin"), ENV.ALLOWED_ORIGIN);
+  assert.match(response.headers.get("x-request-id"), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(body, {
+    ok: false,
+    service: "retrycredit",
+    network: 102031,
+    recoveryV2: {
+      mode: "observation-only",
+      state: "blocked",
+      publicProfile: "v1",
+      reason: "RECOVERY_V2_OBSERVATION_FAILED",
+    },
+    revision: ENV.RETRYCREDIT_DEPLOYMENT_REVISION,
+    workerVersion: {
+      id: ENV.CF_VERSION_METADATA.id,
+      tag: ENV.CF_VERSION_METADATA.tag,
+    },
+  });
+});
+
 test("Cloudflare handler rejects unsupported routes without invoking the coordinator", async () => {
   let called = false;
   const handler = createCloudflareApiHandler({

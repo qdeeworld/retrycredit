@@ -133,7 +133,13 @@ export function createCloudflareApiHandler({
         return responseWithHeaders(null, 204, { requestId, allowedOrigin });
       }
       if (request.method === "GET" && url.pathname === "/health/recovery-v2") {
-        const observation = await observeRecoveryV2(env);
+        let observation;
+        try {
+          observation = await observeRecoveryV2(env);
+        } catch (error) {
+          logSafeFailure("recovery_v2_observation_unavailable", error);
+          observation = unavailableRecoveryV2Observation(env);
+        }
         return responseWithHeaders({
           ...observation.body,
           workerVersion: workerVersionMetadata(env),
@@ -463,6 +469,24 @@ function requireOrigin(value, name) {
 
 function normalizeRevision(value) {
   return typeof value === "string" && /^[0-9a-f]{40}$/.test(value) ? value : null;
+}
+
+function unavailableRecoveryV2Observation(env) {
+  return {
+    status: 503,
+    body: {
+      ok: false,
+      service: "retrycredit",
+      network: 102031,
+      recoveryV2: {
+        mode: "observation-only",
+        state: "blocked",
+        publicProfile: "v1",
+        reason: "RECOVERY_V2_OBSERVATION_FAILED",
+      },
+      revision: normalizeRevision(env?.RETRYCREDIT_DEPLOYMENT_REVISION),
+    },
+  };
 }
 
 function workerVersionMetadata(env) {
