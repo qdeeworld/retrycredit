@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY vite.config.mjs ./
+COPY scripts/cloudflare-headers.mjs scripts/verify-web-build-origin.mjs ./scripts/
 COPY web ./web
 RUN npm run build:web
 

@@ -9,7 +9,7 @@ import {
 } from "../scripts/cloudflare-headers.mjs";
 
 const root = new URL("../", import.meta.url);
-const [html, app, styles, api, uiState, resumeState, gitignore, redirects, headers, license, readme, viteConfig] = await Promise.all([
+const [html, app, styles, api, uiState, resumeState, gitignore, redirects, headers, license, readme, viteConfig, dockerfile] = await Promise.all([
   readFile(new URL("web/index.html", root), "utf8"),
   readFile(new URL("web/src/main.jsx", root), "utf8"),
   readFile(new URL("web/src/styles.css", root), "utf8"),
@@ -22,6 +22,7 @@ const [html, app, styles, api, uiState, resumeState, gitignore, redirects, heade
   readFile(new URL("LICENSE", root), "utf8"),
   readFile(new URL("README.md", root), "utf8"),
   readFile(new URL("vite.config.mjs", root), "utf8"),
+  readFile(new URL("Dockerfile", root), "utf8"),
 ]);
 
 test("the public shell is a multi-route Recovery Dispatch, not the old cockpit", () => {
@@ -287,6 +288,10 @@ test("the public release carries a license and Cloudflare security policy", () =
   assert.match(viteConfig, /process\.env\.VITE_RETRYCREDIT_API_ORIGIN[\s\S]*\?\? fileEnv\.VITE_RETRYCREDIT_API_ORIGIN[\s\S]*\?\? SAME_ORIGIN_API_ORIGIN/);
   assert.match(viteConfig, /cloudflareHeadersPlugin\(apiOrigin\)/);
   assert.match(viteConfig, /"import\.meta\.env\.VITE_RETRYCREDIT_API_ORIGIN": JSON\.stringify\(apiOrigin\)/);
+  const dockerOriginScripts = dockerfile.indexOf("COPY scripts/cloudflare-headers.mjs scripts/verify-web-build-origin.mjs ./scripts/");
+  const dockerWebBuild = dockerfile.indexOf("RUN npm run build:web");
+  assert.ok(dockerOriginScripts >= 0);
+  assert.ok(dockerWebBuild > dockerOriginScripts);
   assert.match(headers, /frame-ancestors 'none'/);
   assert.match(headers, /X-Frame-Options: DENY/);
   assert.match(headers, /X-Content-Type-Options: nosniff/);
