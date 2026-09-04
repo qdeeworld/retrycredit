@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
+import {
+  cloudflareHeadersForApiOrigin,
+  PRODUCTION_API_ORIGIN,
+  SAME_ORIGIN_API_ORIGIN,
+  STAGING_API_ORIGIN,
+} from "../scripts/cloudflare-headers.mjs";
 
 const root = new URL("../", import.meta.url);
-const [html, app, styles, api, uiState, resumeState, gitignore, redirects, headers, license, readme] = await Promise.all([
+const [html, app, styles, api, uiState, resumeState, gitignore, redirects, headers, license, readme, viteConfig] = await Promise.all([
   readFile(new URL("web/index.html", root), "utf8"),
   readFile(new URL("web/src/main.jsx", root), "utf8"),
   readFile(new URL("web/src/styles.css", root), "utf8"),
@@ -15,6 +21,7 @@ const [html, app, styles, api, uiState, resumeState, gitignore, redirects, heade
   readFile(new URL("web/public/_headers", root), "utf8"),
   readFile(new URL("LICENSE", root), "utf8"),
   readFile(new URL("README.md", root), "utf8"),
+  readFile(new URL("vite.config.mjs", root), "utf8"),
 ]);
 
 test("the public shell is a multi-route Recovery Dispatch, not the old cockpit", () => {
@@ -263,7 +270,23 @@ test("the public release carries a license and Cloudflare security policy", () =
   assert.match(readme, /npm run verify:recovery-gate/);
   assert.match(headers, /Content-Security-Policy:/);
   assert.match(headers, /connect-src 'self' https:\/\/retrycredit-api\.onrender\.com/);
-  assert.match(headers, /https:\/\/retrycredit-api-staging\.qdworld001\.workers\.dev/);
+  assert.doesNotMatch(headers, /https:\/\/retrycredit-api-staging\.qdworld001\.workers\.dev/);
+  const productionHeaders = cloudflareHeadersForApiOrigin(PRODUCTION_API_ORIGIN);
+  const sameOriginHeaders = cloudflareHeadersForApiOrigin(SAME_ORIGIN_API_ORIGIN);
+  const stagingHeaders = cloudflareHeadersForApiOrigin(STAGING_API_ORIGIN);
+  assert.equal(headers, productionHeaders);
+  assert.match(productionHeaders, new RegExp(PRODUCTION_API_ORIGIN.replaceAll(".", "\\.")));
+  assert.doesNotMatch(productionHeaders, new RegExp(STAGING_API_ORIGIN.replaceAll(".", "\\.")));
+  assert.match(stagingHeaders, new RegExp(STAGING_API_ORIGIN.replaceAll(".", "\\.")));
+  assert.doesNotMatch(stagingHeaders, new RegExp(PRODUCTION_API_ORIGIN.replaceAll(".", "\\.")));
+  assert.match(sameOriginHeaders, /connect-src 'self';/);
+  assert.doesNotMatch(sameOriginHeaders, /https:\/\/retrycredit-api/);
+  assert.throws(() => cloudflareHeadersForApiOrigin("https://example.invalid"), /unapproved API origin/);
+  assert.match(viteConfig, /const headers = cloudflareHeadersForApiOrigin\(apiOrigin\)/);
+  assert.match(viteConfig, /loadEnv\(mode, WEB_ROOT, "VITE_"\)/);
+  assert.match(viteConfig, /process\.env\.VITE_RETRYCREDIT_API_ORIGIN[\s\S]*\?\? fileEnv\.VITE_RETRYCREDIT_API_ORIGIN[\s\S]*\?\? SAME_ORIGIN_API_ORIGIN/);
+  assert.match(viteConfig, /cloudflareHeadersPlugin\(apiOrigin\)/);
+  assert.match(viteConfig, /"import\.meta\.env\.VITE_RETRYCREDIT_API_ORIGIN": JSON\.stringify\(apiOrigin\)/);
   assert.match(headers, /frame-ancestors 'none'/);
   assert.match(headers, /X-Frame-Options: DENY/);
   assert.match(headers, /X-Content-Type-Options: nosniff/);
