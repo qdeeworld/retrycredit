@@ -173,11 +173,17 @@ function App() {
     clearRecoveryResumeState();
   }
 
-  function fetchRecoveryConfig() {
-    if (configFlight.current) return configFlight.current;
+  function fetchRecoveryConfig({ forceFresh = false } = {}) {
+    if (!forceFresh && configFlight.current) return configFlight.current;
+    const previousFlight = configFlight.current;
+    const requestConfig = () => wakeRecoveryConfig({
+      apiOrigin: API_ORIGIN,
+      fresh: forceFresh,
+    }).then((next) => validateRecoveryConfigResponse(next));
     let flight;
-    flight = wakeRecoveryConfig({ apiOrigin: API_ORIGIN })
-      .then((next) => validateRecoveryConfigResponse(next))
+    flight = (forceFresh && previousFlight
+      ? previousFlight.catch(() => undefined).then(requestConfig)
+      : requestConfig())
       .finally(() => {
         if (configFlight.current === flight) configFlight.current = null;
       });
@@ -838,7 +844,22 @@ function App() {
         method: "personal_sign",
         params: [hexlify(toUtf8Bytes(challenge.message)), wallet],
       });
-      const postSignatureConfig = configRef.current;
+      let postSignatureConfig;
+      try {
+        postSignatureConfig = await fetchRecoveryConfig({ forceFresh: true });
+      } catch (nextError) {
+        if (operationIsCurrent(operation, walletOperation)) {
+          setConfigState("unavailable");
+          setError(cleanError(nextError));
+          updateFlow("service-unavailable");
+        }
+        return;
+      }
+      const postSignatureOperationWasCurrent = operationIsCurrent(operation, walletOperation);
+      if (postSignatureOperationWasCurrent) {
+        applyRecoveryConfig(postSignatureConfig);
+        setConfigState(isRecoveryConfigReadable(postSignatureConfig) ? "ready" : "unavailable");
+      }
       const postSignatureOperationCurrent = operationIsCurrent(operation, walletOperation);
       if (!canContinueRecoveryAuthorization({
         operationCurrent: postSignatureOperationCurrent,
@@ -846,7 +867,7 @@ function App() {
         currentConfig: postSignatureConfig,
       })) {
         const interruptionFlow = recoveryAuthorizationInterruptionFlow({
-          operationCurrent: postSignatureOperationCurrent,
+          operationCurrent: postSignatureOperationWasCurrent,
           currentConfig: postSignatureConfig,
         });
         if (interruptionFlow) {
@@ -858,10 +879,6 @@ function App() {
         }
         return;
       }
-      submittedRecoveryStartedAt.current = Date.now();
-      updateFlow("proof-queued");
-      releaseSubmitted = true;
-      persistSubmittedRecovery("proof-queued", liveEligibility);
       const releaseResponse = await releaseRecoveryPairWhenReady({
         apiOrigin: API_ORIGIN,
         authorizationStartedAtMs,
@@ -871,6 +888,12 @@ function App() {
         issuedAt: challenge.issuedAt,
         expiresAt: challenge.expiresAt,
         signature,
+        onSubmitting: () => {
+          submittedRecoveryStartedAt.current = Date.now();
+          updateFlow("proof-queued");
+          releaseSubmitted = true;
+          persistSubmittedRecovery("proof-queued", liveEligibility);
+        },
         onPending: () => {
           if (operationIsCurrent(operation, walletOperation)) {
             updateFlow("proof-building");

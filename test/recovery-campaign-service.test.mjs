@@ -461,6 +461,7 @@ test("the production factory gives every Ethereum RPC request a finite deadline 
     new Wallet(deriveRoleKey(relayer.privateKey, RECOVERY_RELAYER_ROLE)).address,
   );
   assert.notEqual(service.relayerWallet.address, relayer.address);
+  assert.equal(service.ccProvider._getOption("cacheTimeout"), -1);
   for (const provider of service.ethereumProviders) {
     assert.equal(provider._getConnection().timeout, 6_000);
     assert.ok(provider._getConnection().timeout * 3 < 20_000);
@@ -482,6 +483,7 @@ test("the read-only factory authenticates the public relayer identity without co
   assert.equal(service.relayerWallet.signingKey, undefined);
   assert.equal(service.relayerWallet.sendTransaction, undefined);
   assert.equal(service.pool.runner, service.ccProvider);
+  assert.equal(service.ccProvider._getOption("cacheTimeout"), -1);
 });
 
 test("a discovery miss never invokes live-pair authority", async () => {
@@ -1032,6 +1034,178 @@ test("fresh release reads never join or recache an older normal campaign-state f
   const current = await fixture.service.configuration();
   assert.deepEqual(current.capacity, { total: 1, claimed: 1, remaining: 0 });
   assert.equal(current.campaign.open, false);
+});
+
+test("fresh configuration bypasses cached campaign truth", async () => {
+  const fixture = serviceFixture();
+  const initial = await fixture.service.configuration();
+  assert.deepEqual(initial.capacity, { total: 3, claimed: 0, remaining: 3 });
+  assert.equal(fixture.campaignReads, 1);
+
+  fixture.setCampaign({ claimCount: 1n });
+  const cached = await fixture.service.configuration();
+  assert.deepEqual(cached.capacity, { total: 3, claimed: 0, remaining: 3 });
+  assert.equal(fixture.campaignReads, 1);
+
+  const fresh = await fixture.service.configuration({ fresh: true });
+  assert.deepEqual(fresh.capacity, { total: 3, claimed: 1, remaining: 2 });
+  assert.equal(fixture.campaignReads, 2);
+});
+
+test("a fresh configuration request queues a new read behind an older fresh flight", async () => {
+  const olderReadStarted = deferred();
+  const olderReadGate = deferred();
+  let readNumber = 0;
+  const fixture = serviceFixture({
+    campaignReaderOverride: async ({ campaign }) => {
+      readNumber += 1;
+      const snapshot = { ...campaign };
+      if (readNumber === 1) {
+        olderReadStarted.resolve();
+        await olderReadGate.promise;
+      }
+      return snapshot;
+    },
+  });
+
+  const olderFresh = fixture.service.configuration({ fresh: true });
+  await olderReadStarted.promise;
+  fixture.setCampaign({ claimCount: 1n });
+  const postBarrierFresh = fixture.service.configuration({ fresh: true });
+
+  await nextTurn();
+  assert.equal(fixture.campaignReads, 1);
+  olderReadGate.resolve();
+  assert.deepEqual((await olderFresh).capacity, { total: 3, claimed: 0, remaining: 3 });
+  assert.deepEqual((await postBarrierFresh).capacity, { total: 3, claimed: 1, remaining: 2 });
+  assert.deepEqual((await fixture.service.configuration()).capacity, { total: 3, claimed: 1, remaining: 2 });
+});
+
+test("a burst of fresh configuration requests creates only one trailing chain read", async () => {
+  const firstReadStarted = deferred();
+  const firstReadGate = deferred();
+  const trailingReadStarted = deferred();
+  const trailingReadGate = deferred();
+  let readNumber = 0;
+  const fixture = serviceFixture({
+    campaignReaderOverride: async ({ campaign }) => {
+      readNumber += 1;
+      const snapshot = { ...campaign };
+      if (readNumber === 1) {
+        firstReadStarted.resolve();
+        await firstReadGate.promise;
+      } else if (readNumber === 2) {
+        trailingReadStarted.resolve();
+        await trailingReadGate.promise;
+      }
+      return snapshot;
+    },
+  });
+
+  const first = fixture.service.configuration({ fresh: true });
+  await firstReadStarted.promise;
+  const burst = Array.from({ length: 100 }, () => fixture.service.configuration({ fresh: true }));
+  await nextTurn();
+  assert.equal(fixture.campaignReads, 1);
+
+  firstReadGate.resolve();
+  await first;
+  await trailingReadStarted.promise;
+  assert.equal(fixture.campaignReads, 2);
+  trailingReadGate.resolve();
+  await Promise.all(burst);
+  assert.equal(fixture.campaignReads, 2);
+});
+
+test("a fresh caller arriving after the trailing read starts gets the next read", async () => {
+  const starts = Array.from({ length: 3 }, () => deferred());
+  const gates = Array.from({ length: 3 }, () => deferred());
+  let readNumber = 0;
+  const fixture = serviceFixture({
+    campaignReaderOverride: async ({ campaign }) => {
+      const index = readNumber;
+      readNumber += 1;
+      const snapshot = { ...campaign };
+      starts[index]?.resolve();
+      if (gates[index]) await gates[index].promise;
+      return snapshot;
+    },
+  });
+
+  const first = fixture.service.configuration({ fresh: true });
+  await starts[0].promise;
+  const trailing = fixture.service.configuration({ fresh: true });
+  gates[0].resolve();
+  await first;
+  await starts[1].promise;
+
+  const afterStart = fixture.service.configuration({ fresh: true });
+  await nextTurn();
+  assert.equal(fixture.campaignReads, 2);
+  gates[1].resolve();
+  await trailing;
+  await starts[2].promise;
+  assert.equal(fixture.campaignReads, 3);
+  gates[2].resolve();
+  await afterStart;
+});
+
+test("a failed active fresh read still promotes its trailing freshness barrier", async () => {
+  const failedReadStarted = deferred();
+  const failedReadGate = deferred();
+  let readNumber = 0;
+  const fixture = serviceFixture({
+    campaignReaderOverride: async ({ campaign }) => {
+      readNumber += 1;
+      if (readNumber === 1) {
+        failedReadStarted.resolve();
+        await failedReadGate.promise;
+        throw new Error("stale provider failed");
+      }
+      return { ...campaign };
+    },
+  });
+
+  const failed = fixture.service.configuration({ fresh: true });
+  await failedReadStarted.promise;
+  fixture.setCampaign({ claimCount: 1n });
+  const promoted = fixture.service.configuration({ fresh: true });
+  failedReadGate.resolve();
+
+  await assert.rejects(
+    failed,
+    (error) => error instanceof WorkerError && error.code === "RECOVERY_STATE_UNAVAILABLE",
+  );
+  assert.deepEqual((await promoted).capacity, { total: 3, claimed: 1, remaining: 2 });
+  assert.equal(fixture.campaignReads, 2);
+});
+
+test("an older normal flight cannot overwrite a newer fresh configuration cache", async () => {
+  const olderReadStarted = deferred();
+  const olderReadGate = deferred();
+  let readNumber = 0;
+  const fixture = serviceFixture({
+    campaignReaderOverride: async ({ campaign }) => {
+      readNumber += 1;
+      const snapshot = { ...campaign };
+      if (readNumber === 1) {
+        olderReadStarted.resolve();
+        await olderReadGate.promise;
+      }
+      return snapshot;
+    },
+  });
+
+  const olderNormal = fixture.service.configuration();
+  await olderReadStarted.promise;
+  fixture.setCampaign({ claimCount: 1n });
+  const fresh = await fixture.service.configuration({ fresh: true });
+  assert.deepEqual(fresh.capacity, { total: 3, claimed: 1, remaining: 2 });
+
+  olderReadGate.resolve();
+  assert.deepEqual((await olderNormal).capacity, { total: 3, claimed: 0, remaining: 3 });
+  assert.deepEqual((await fixture.service.configuration()).capacity, { total: 3, claimed: 1, remaining: 2 });
+  assert.equal(fixture.campaignReads, 2);
 });
 
 test("open-pair release rejects closed and full campaigns before source or proof work", async (t) => {

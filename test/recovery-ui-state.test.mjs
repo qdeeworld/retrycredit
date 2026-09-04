@@ -634,44 +634,91 @@ test("a mode or availability switch stops a deferred authorization before signin
     }), expectedFlow);
   }
 
-  for (const [label, expectedFlow, transitionedConfig] of transitions) {
-    let currentConfig = initialConfig;
+  const postSignatureCases = [
+    ["unchanged", null, initialConfig, true, true, true],
+    ...transitions.map(([label, expectedFlow, transitionedConfig]) => [
+      label,
+      expectedFlow,
+      transitionedConfig,
+      true,
+      false,
+      false,
+    ]),
+    ["account changed", null, initialConfig, false, false, false],
+    ["authorization expired after fresh fetch", null, initialConfig, true, true, false],
+  ];
+  for (const [
+    label,
+    expectedFlow,
+    freshConfig,
+    operationCurrent,
+    authorizationContinues,
+    submissionStarts,
+  ] of postSignatureCases) {
     let resolveSignature;
     const signature = new Promise((resolve) => {
       resolveSignature = resolve;
     });
     let personalSignCalls = 0;
+    let freshConfigCalls = 0;
+    let submittedAtWrites = 0;
+    let proofQueuedWrites = 0;
+    let releaseSubmittedWrites = 0;
+    let persistenceCalls = 0;
     let releaseCalls = 0;
     let interruptionFlow = null;
+    const fetchFreshConfig = async () => {
+      freshConfigCalls += 1;
+      return freshConfig;
+    };
 
     const authorization = (async () => {
       if (!canContinueRecoveryAuthorization({
         operationCurrent: true,
         initialConfig,
-        currentConfig,
+        currentConfig: initialConfig,
       })) return;
       personalSignCalls += 1;
       await signature;
+      const currentConfig = await fetchFreshConfig();
       if (!canContinueRecoveryAuthorization({
-        operationCurrent: true,
+        operationCurrent,
         initialConfig,
         currentConfig,
       })) {
         interruptionFlow = recoveryAuthorizationInterruptionFlow({
-          operationCurrent: true,
+          operationCurrent,
           currentConfig,
         });
         return;
       }
+      if (!submissionStarts) return;
+      const onSubmitting = () => {
+        submittedAtWrites += 1;
+        proofQueuedWrites += 1;
+        releaseSubmittedWrites += 1;
+        persistenceCalls += 1;
+      };
+      onSubmitting();
       releaseCalls += 1;
     })();
 
-    currentConfig = transitionedConfig;
     resolveSignature();
     await authorization;
 
     assert.equal(personalSignCalls, 1, `${label} transition occurs while personal_sign is pending`);
-    assert.equal(releaseCalls, 0, `${label} transition must not request release after personal_sign`);
+    assert.equal(freshConfigCalls, 1, `${label} transition must fetch fresh post-sign campaign truth`);
+    assert.equal(
+      canContinueRecoveryAuthorization({ operationCurrent, initialConfig, currentConfig: freshConfig }),
+      authorizationContinues,
+      `${label} post-sign authorization gate`,
+    );
+    const expectedWrites = submissionStarts ? 1 : 0;
+    assert.equal(submittedAtWrites, expectedWrites, `${label} submitted-at marker`);
+    assert.equal(proofQueuedWrites, expectedWrites, `${label} proof-queued marker`);
+    assert.equal(releaseSubmittedWrites, expectedWrites, `${label} release-submitted marker`);
+    assert.equal(persistenceCalls, expectedWrites, `${label} persistence`);
+    assert.equal(releaseCalls, expectedWrites, `${label} release request`);
     assert.equal(interruptionFlow, expectedFlow, `${label} transition must leave the busy flow`);
   }
   assert.equal(recoveryAuthorizationInterruptionFlow({
