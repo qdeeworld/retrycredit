@@ -573,8 +573,20 @@ test("read-only staging preserves authenticated inspection without enabling rele
 
 test("a mode or availability switch stops a deferred authorization before signing or release", async () => {
   const initialConfig = validateRecoveryConfigResponse(config());
+  assert.equal(canContinueRecoveryAuthorization({
+    operationCurrent: true,
+    initialConfig,
+    currentConfig: validateRecoveryConfigResponse(config()),
+  }), true);
   const transitions = [
     ["read-only", validateRecoveryConfigResponse(readOnlyConfig())],
+    ["capacity changed", validateRecoveryConfigResponse(config({
+      campaign: { claimCount: 1, remainingClaims: 2 },
+      capacity: { claimed: 1, remaining: 2 },
+    }))],
+    ["deadline changed", validateRecoveryConfigResponse(config({
+      campaign: { deadline: 2_000_000_100 },
+    }))],
     ["closed", validateRecoveryConfigResponse(config({
       campaign: { open: false, releaseState: "closed" },
     }))],

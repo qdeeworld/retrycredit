@@ -140,11 +140,15 @@ export function isRecoveryConfigReadable(config) {
 }
 
 export function canContinueRecoveryAuthorization({ operationCurrent, initialConfig, currentConfig } = {}) {
-  return operationCurrent === true
+  const initialState = recoveryAuthorizationStateIdentity(initialConfig);
+  const currentState = recoveryAuthorizationStateIdentity(currentConfig);
+  return Boolean(operationCurrent === true
     && currentConfig?.enabled === true
     && currentConfig?.readOnly !== true
     && recoveryCampaignsMatch(initialConfig, currentConfig)
-    && recoveryCampaignAvailability(currentConfig) === "open";
+    && recoveryCampaignAvailability(currentConfig) === "open"
+    && initialState
+    && initialState === currentState);
 }
 
 export function selectDiscoveryAttribution(value) {
@@ -790,6 +794,36 @@ function recoveryCampaignIdentity(config) {
           Number(predecessor.endBlock),
         ]
       : null,
+  ]);
+}
+
+function recoveryAuthorizationStateIdentity(config) {
+  const campaignIdentity = recoveryCampaignIdentity(config);
+  const campaign = config?.campaign;
+  const rule = config?.rule;
+  const capacity = config?.capacity;
+  if (!campaignIdentity || !campaign || !rule || !capacity) return "";
+  return JSON.stringify([
+    campaignIdentity,
+    normalizeWallet(config.verifierAddress),
+    normalizeWallet(config.predicateAddress),
+    normalizeWallet(campaign.sponsor),
+    String(campaign.maxClaims),
+    String(campaign.claimCount),
+    String(campaign.remainingClaims),
+    String(campaign.deadline),
+    String(campaign.fundedAmount),
+    normalizeHash(campaign.termsHash),
+    campaign.releaseState,
+    campaign.open,
+    normalizeWallet(rule.feeRecipient),
+    String(rule.startBlock),
+    String(rule.endBlock),
+    String(rule.maxBlockGap),
+    String(rule.maxQuantity),
+    String(capacity.total),
+    String(capacity.claimed),
+    String(capacity.remaining),
   ]);
 }
 
