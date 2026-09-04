@@ -174,12 +174,13 @@ function App() {
     clearRecoveryResumeState();
   }
 
-  function fetchRecoveryConfig({ forceFresh = false } = {}) {
+  function fetchRecoveryConfig({ forceFresh = false, canAttempt } = {}) {
     if (!forceFresh && configFlight.current) return configFlight.current;
     const previousFlight = configFlight.current;
     const requestConfig = () => wakeRecoveryConfig({
       apiOrigin: API_ORIGIN,
       fresh: forceFresh,
+      canAttempt,
     }).then((next) => validateRecoveryConfigResponse(next));
     let flight;
     flight = (forceFresh && previousFlight
@@ -847,12 +848,14 @@ function App() {
       });
       let postSignatureConfig;
       try {
-        postSignatureConfig = await fetchRecoveryConfig({ forceFresh: true });
+        postSignatureConfig = await fetchRecoveryConfig({ forceFresh: true, canAttempt: () => operationIsCurrent(operation, walletOperation) });
       } catch (nextError) {
         if (operationIsCurrent(operation, walletOperation)) {
           setConfigState("unavailable");
           setError(cleanError(nextError));
-          updateFlow("service-unavailable");
+          updateEligibility(null);
+          setReleaseResult(null);
+          updateFlow(isRecoveryRateLimited(nextError) ? "rate-limited" : "service-unavailable");
         }
         return;
       }
@@ -1036,7 +1039,7 @@ function App() {
     ? "offline"
     : configState === "loading" && !terminal && !preserveSubmittedFlow
       ? "loading-config"
-      : configState === "unavailable" && !terminal && !preserveSubmittedFlow
+      : configState === "unavailable" && flow !== "rate-limited" && !terminal && !preserveSubmittedFlow
         ? "service-unavailable"
         : campaignUnavailable
           ? campaignAvailability === "full"
@@ -1826,7 +1829,7 @@ function deskCopy(flow, eligibility, releaseResult, config) {
     "account-changed": ["The connected account changed", "The wallet request is still settling, so actions remain locked. When it closes, connect the source wallet derived from this pair to continue."],
     "campaign-changed": ["The live campaign changed", "The previous pair verdict was discarded against the new pool or campaign boundary. Check the pair again."],
     "service-unavailable": ["The recovery service is unavailable", "The submitted pair is preserved. Retry the service without connecting a wallet."],
-    "rate-limited": ["Pair intake is busy", "The submitted pair is preserved. Wait briefly, then retry the same check."],
+    "rate-limited": ["Recovery checks are busy", "Your pair is still here. Wait briefly, then retry the same check."],
     "retryable-error": ["The action did not finish", "The submitted pair and any still-valid live verdict are preserved. Read the notice, then retry the same step."],
     offline: ["You are offline", "Reconnect to the internet, then retry. No release request was sent while this browser was offline."],
   };

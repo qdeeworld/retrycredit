@@ -7,6 +7,7 @@ import {
   CloudflareApiError,
   createCloudflareApiHandler,
   createCoordinatorRuntime,
+  createFreshReadDutyCycle,
 } from "./cloudflare-worker-core.mjs";
 
 export class RecoveryCampaignCoordinator extends DurableObject {
@@ -16,6 +17,7 @@ export class RecoveryCampaignCoordinator extends DurableObject {
     this.runtime = createCoordinatorRuntime({
       env,
       serviceFactory: createRecoveryService,
+      freshReadAdmission: createFreshReadDutyCycle({ storage: ctx.storage }),
     });
   }
 

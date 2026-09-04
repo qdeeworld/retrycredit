@@ -13,6 +13,7 @@ export const RECOVERY_INTAKE_RELEASE_PATH = "/api/recovery/intake/release";
 export const RECOVERY_DISCOVERY_PATH = "/api/recovery/discover";
 
 const RECOVERY_RELEASE_PENDING_MESSAGE = "Attestcoin is still finalizing. Check the wallet again before signing a fresh authorization.";
+const RATE_LIMIT_RETRY_JITTER_MAX_MS = 250;
 export const LEGACY_RELEASE_PENDING_MESSAGE = "The archived RetryCredit release is still finalizing. Retry the archived flow shortly.";
 export const RECOVERY_AUTHORIZATION_EXPIRED_MESSAGE = "The signed authorization window ended. Authorize again with a fresh signature.";
 
@@ -49,6 +50,7 @@ export async function wakeRecoveryConfig({ fresh = false, ...options } = {}) {
     ...options,
     path: fresh === true ? "/api/recovery/config?fresh=1" : "/api/recovery/config",
     shouldRetry: (value) => value?.waking === true,
+    retryRateLimits: fresh === true,
   });
 }
 
@@ -453,13 +455,24 @@ async function wakeEndpoint({
   now = Date.now,
   sleep = delay,
   shouldRetry = () => false,
+  retryRateLimits = false,
+  canAttempt = () => true,
+  random = Math.random,
 } = {}) {
+  if (typeof canAttempt !== "function") throw new TypeError("canAttempt must be a function");
+  if (typeof random !== "function") throw new TypeError("random must be a function");
   const startedAt = now();
   let lastError = new TemporaryUnavailableError();
+  let nextAttemptAtMs = startedAt;
 
   for (const offsetMs of attemptOffsetsMs) {
-    const waitMs = offsetMs - (now() - startedAt);
+    if (!canAttempt()) throw new TemporaryUnavailableError();
+    const plannedAttemptAtMs = startedAt + offsetMs;
+    const waitMs = Math.max(plannedAttemptAtMs, nextAttemptAtMs) - now();
+    const remainingBeforeWaitMs = totalTimeoutMs - (now() - startedAt);
+    if (waitMs >= remainingBeforeWaitMs) break;
     if (waitMs > 0) await sleep(waitMs);
+    if (!canAttempt()) throw new TemporaryUnavailableError();
 
     const remainingMs = totalTimeoutMs - (now() - startedAt);
     if (remainingMs <= 0) break;
@@ -474,12 +487,43 @@ async function wakeEndpoint({
       if (!shouldRetry(value)) return value;
       lastError = new TemporaryUnavailableError();
     } catch (error) {
-      if (!error?.temporaryUnavailable) throw error;
-      lastError = error;
+      if (error?.temporaryUnavailable) {
+        lastError = error;
+        continue;
+      }
+      if (
+        retryRateLimits
+        && error?.rateLimited
+        && error.code === "RECOVERY_FRESH_READ_THROTTLED"
+      ) {
+        const retryDelayMs = rateLimitRetryDelayMs(error.retryAfter);
+        if (retryDelayMs === null) throw error;
+        lastError = error;
+        nextAttemptAtMs = Math.max(
+          nextAttemptAtMs,
+          now() + retryDelayMs + rateLimitRetryJitterMs(random),
+        );
+        continue;
+      }
+      throw error;
     }
   }
 
+  if (lastError?.rateLimited) throw lastError;
   throw new TemporaryUnavailableError(lastError.message);
+}
+
+function rateLimitRetryDelayMs(value) {
+  if (typeof value !== "string" || !/^[1-9][0-9]{0,2}$/.test(value)) return null;
+  const seconds = Number(value);
+  return seconds <= 300 ? seconds * 1_000 : null;
+}
+
+function rateLimitRetryJitterMs(random) {
+  const sample = random();
+  return Number.isFinite(sample) && sample >= 0 && sample < 1
+    ? Math.floor(sample * (RATE_LIMIT_RETRY_JITTER_MAX_MS + 1))
+    : 0;
 }
 
 function postRecoveryJson({ apiOrigin, path, body, fetchImpl, timeoutMs }) {

@@ -340,7 +340,7 @@ test("open tabs refresh campaign truth and never overstate unfinished browser ch
   const challengeRequest = app.indexOf("await requestRecoveryIntakeChallenge");
   const liveModeRecheck = app.indexOf("canContinueRecoveryAuthorization", challengeRequest);
   const signatureRequest = app.indexOf('method: "personal_sign"', challengeRequest);
-  const postSignatureRefresh = app.indexOf("fetchRecoveryConfig({ forceFresh: true })", signatureRequest);
+  const postSignatureRefresh = app.indexOf("fetchRecoveryConfig({ forceFresh: true,", signatureRequest);
   const postSignatureApply = app.indexOf("applyRecoveryConfig(postSignatureConfig)", postSignatureRefresh);
   const postApplyOperationRecheck = app.indexOf("const postSignatureOperationCurrent", postSignatureApply);
   const postSignatureRecheck = app.indexOf("canContinueRecoveryAuthorization", postSignatureRefresh);
@@ -372,9 +372,13 @@ test("open tabs refresh campaign truth and never overstate unfinished browser ch
   assert.match(postChallengeGuard, /updateFlow\(interruptionFlow\)/);
   const postSignatureFetch = app.slice(postSignatureRefresh, postSignatureApply);
   assert.match(postSignatureFetch, /catch \(nextError\)[\s\S]*operationIsCurrent\(operation, walletOperation\)/);
+  assert.match(postSignatureFetch, /canAttempt: \(\) => operationIsCurrent\(operation, walletOperation\)/);
   assert.match(postSignatureFetch, /setConfigState\("unavailable"\)/);
-  assert.match(postSignatureFetch, /updateFlow\("service-unavailable"\)/);
+  assert.match(postSignatureFetch, /updateEligibility\(null\)/);
+  assert.match(postSignatureFetch, /setReleaseResult\(null\)/);
+  assert.match(postSignatureFetch, /updateFlow\(isRecoveryRateLimited\(nextError\) \? "rate-limited" : "service-unavailable"\)/);
   assert.match(postSignatureFetch, /return/);
+  assert.match(app, /configState === "unavailable" && flow !== "rate-limited"/);
   const postSignatureGuard = app.slice(postSignatureRecheck, releaseRequest);
   assert.match(postSignatureGuard, /initialConfig: liveConfig/);
   assert.match(postSignatureGuard, /currentConfig: postSignatureConfig/);

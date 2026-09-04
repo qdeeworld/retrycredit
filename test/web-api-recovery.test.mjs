@@ -5,6 +5,7 @@ import {
   discoverRecoveryWallet,
   LEGACY_RELEASE_PENDING_MESSAGE,
   RECOVERY_AUTHORIZATION_EXPIRED_MESSAGE,
+  RateLimitedError,
   recoveryAuthorizationDeadlines,
   releaseRecoveryWhenReady,
   releaseWhenReady,
@@ -71,6 +72,169 @@ test("the recovery config wake uses the V2 route and retries transient starts", 
     attemptOffsetsMs: [0],
   });
   assert.deepEqual(freshSeen, ["https://api.example/api/recovery/config?fresh=1"]);
+});
+
+test("a fresh config wake honors Retry-After and never treats a throttled body as fresh truth", async () => {
+  let nowMs = 10_000;
+  const waits = [];
+  const seen = [];
+  const responses = [
+    new Response(JSON.stringify({
+      enabled: true,
+      campaignNumber: 1,
+      error: {
+        code: "RECOVERY_FRESH_READ_THROTTLED",
+        message: "Fresh campaign data was just checked. Try again in a few seconds.",
+        requestId: "request-one",
+      },
+    }), {
+      status: 429,
+      headers: { "retry-after": "5" },
+    }),
+    new Response(JSON.stringify({ enabled: true, campaignNumber: 2 }), { status: 200 }),
+  ];
+  const config = await wakeRecoveryConfig({
+    apiOrigin: "https://api.example",
+    fresh: true,
+    fetchImpl: async (url) => {
+      seen.push(url);
+      return responses.shift();
+    },
+    totalTimeoutMs: 10_000,
+    requestTimeoutMs: 1_000,
+    attemptOffsetsMs: [0, 0],
+    now: () => nowMs,
+    random: () => 0,
+    sleep: async (milliseconds) => {
+      waits.push(milliseconds);
+      nowMs += milliseconds;
+    },
+  });
+
+  assert.equal(config.campaignNumber, 2);
+  assert.deepEqual(seen, Array(2).fill("https://api.example/api/recovery/config?fresh=1"));
+  assert.deepEqual(waits, [5_000]);
+});
+
+test("fresh config retries stay bounded and ordinary config never retries a rate limit", async () => {
+  let freshNowMs = 20_000;
+  let freshCalls = 0;
+  const throttled = () => new Response(JSON.stringify({
+    error: {
+      code: "RECOVERY_FRESH_READ_THROTTLED",
+      message: "Fresh campaign data was just checked. Try again in a few seconds.",
+      requestId: `request-${freshCalls}`,
+    },
+  }), { status: 429, headers: { "retry-after": "5" } });
+
+  await assert.rejects(wakeRecoveryConfig({
+    fresh: true,
+    fetchImpl: async () => {
+      freshCalls += 1;
+      return throttled();
+    },
+    totalTimeoutMs: 12_000,
+    requestTimeoutMs: 1_000,
+    attemptOffsetsMs: [0, 0, 0],
+    now: () => freshNowMs,
+    random: () => 0,
+    sleep: async (milliseconds) => { freshNowMs += milliseconds; },
+  }), (error) => {
+    assert.ok(error instanceof RateLimitedError);
+    assert.equal(error.code, "RECOVERY_FRESH_READ_THROTTLED");
+    assert.equal(error.retryAfter, "5");
+    return true;
+  });
+  assert.equal(freshCalls, 3);
+
+  let ordinaryCalls = 0;
+  await assert.rejects(wakeRecoveryConfig({
+    fetchImpl: async () => {
+      ordinaryCalls += 1;
+      return throttled();
+    },
+    totalTimeoutMs: 10_000,
+    requestTimeoutMs: 1_000,
+    attemptOffsetsMs: [0, 0, 0],
+  }), (error) => error instanceof RateLimitedError);
+  assert.equal(ordinaryCalls, 1);
+
+  let unrelatedRateLimitCalls = 0;
+  await assert.rejects(wakeRecoveryConfig({
+    fresh: true,
+    fetchImpl: async () => {
+      unrelatedRateLimitCalls += 1;
+      return new Response(JSON.stringify({
+        error: {
+          code: "RECOVERY_BUSY",
+          message: "Recovery intake is busy.",
+          requestId: "unrelated-rate-limit",
+        },
+      }), { status: 429, headers: { "retry-after": "5" } });
+    },
+    totalTimeoutMs: 10_000,
+    requestTimeoutMs: 1_000,
+    attemptOffsetsMs: [0, 0, 0],
+  }), (error) => {
+    assert.ok(error instanceof RateLimitedError);
+    assert.equal(error.code, "RECOVERY_BUSY");
+    return true;
+  });
+  assert.equal(unrelatedRateLimitCalls, 1);
+
+  let untrustedRetryCalls = 0;
+  await assert.rejects(wakeRecoveryConfig({
+    fresh: true,
+    fetchImpl: async () => {
+      untrustedRetryCalls += 1;
+      return new Response(JSON.stringify({
+        error: {
+          code: "RECOVERY_FRESH_READ_THROTTLED",
+          message: "Fresh campaign data was just checked. Try again in a few seconds.",
+          requestId: "missing-retry-after",
+        },
+      }), { status: 429 });
+    },
+    totalTimeoutMs: 10_000,
+    requestTimeoutMs: 1_000,
+    attemptOffsetsMs: [0, 0, 0],
+  }), (error) => error instanceof RateLimitedError);
+  assert.equal(untrustedRetryCalls, 1);
+});
+
+test("a stale signed operation cannot consume a later fresh-read admission", async () => {
+  let nowMs = 30_000;
+  let current = true;
+  let calls = 0;
+  const waits = [];
+
+  await assert.rejects(wakeRecoveryConfig({
+    fresh: true,
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response(JSON.stringify({
+        error: {
+          code: "RECOVERY_FRESH_READ_THROTTLED",
+          message: "Fresh campaign data was just checked. Try again in a few seconds.",
+          requestId: "stale-operation",
+        },
+      }), { status: 429, headers: { "retry-after": "5" } });
+    },
+    totalTimeoutMs: 10_000,
+    requestTimeoutMs: 1_000,
+    attemptOffsetsMs: [0, 0, 0],
+    now: () => nowMs,
+    random: () => 0.5,
+    canAttempt: () => current,
+    sleep: async (milliseconds) => {
+      waits.push(milliseconds);
+      nowMs += milliseconds;
+      current = false;
+    },
+  }), (error) => error instanceof TemporaryUnavailableError);
+
+  assert.equal(calls, 1);
+  assert.deepEqual(waits, [5_125]);
 });
 
 test("eligibility posts only the source wallet to the V2 endpoint", async () => {

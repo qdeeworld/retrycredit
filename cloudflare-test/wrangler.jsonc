@@ -1,0 +1,23 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "retrycredit-fresh-read-test",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-09-03",
+  "vars": {
+    "TEST_NOW_MS": "4000000"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "FRESH_READ_TEST",
+        "class_name": "FreshReadTestCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["FreshReadTestCoordinator"]
+    }
+  ]
+}
