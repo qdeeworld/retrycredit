@@ -3,11 +3,11 @@ import { DurableObject } from "cloudflare:workers";
 import { RecoveryCampaignService } from "./recovery-campaign-service.mjs";
 import { discoverWalletSeaDropPairsResilient } from "./seadrop-wallet-discovery.mjs";
 import { observeRecoveryV2 } from "./recovery-v2-observer.mjs";
+import { createSignedFreshReadControl } from "./cloudflare-fresh-read-admission.mjs";
 import {
   CloudflareApiError,
   createCloudflareApiHandler,
   createCoordinatorRuntime,
-  createFreshReadDutyCycle,
 } from "./cloudflare-worker-core.mjs";
 
 export class RecoveryCampaignCoordinator extends DurableObject {
@@ -17,7 +17,12 @@ export class RecoveryCampaignCoordinator extends DurableObject {
     this.runtime = createCoordinatorRuntime({
       env,
       serviceFactory: createRecoveryService,
-      freshReadAdmission: createFreshReadDutyCycle({ storage: ctx.storage }),
+      freshReadControl: createSignedFreshReadControl({
+        storage: ctx.storage,
+        publicOrigin: env.PUBLIC_ORIGIN,
+        poolAddress: env.RETRYCREDIT_RECOVERY_POOL_ADDRESS,
+        campaignNumber: env.RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER,
+      }),
     });
   }
 

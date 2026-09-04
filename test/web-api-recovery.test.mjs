@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   checkRecoveryEligibility,
+  createRecoveryFreshReadAuthorization,
   discoverRecoveryWallet,
   LEGACY_RELEASE_PENDING_MESSAGE,
   RECOVERY_AUTHORIZATION_EXPIRED_MESSAGE,
@@ -19,6 +20,12 @@ import {
 } from "../web/src/api.mjs";
 
 const WALLET = "0xbad35FA6e368e90fC4faf63507F2D0A2Fdf94BAF";
+const FRESH_PAIR = Object.freeze({
+  failedTransactionHash: "0x" + "11".repeat(32),
+  successfulTransactionHash: "0x" + "22".repeat(32),
+});
+const FRESH_SIGNATURE = "0x" + "33".repeat(65);
+const FRESH_RECEIPT = "v1." + "A".repeat(43);
 
 test("a timed JSON request bounds both the fetch and response body", async () => {
   const startedAt = Date.now();
@@ -72,6 +79,159 @@ test("the recovery config wake uses the V2 route and retries transient starts", 
     attemptOffsetsMs: [0],
   });
   assert.deepEqual(freshSeen, ["https://api.example/api/recovery/config?fresh=1"]);
+});
+
+test("signed fresh config retries reuse one exact canonical Authorization envelope", async () => {
+  const freshAuthorization = createRecoveryFreshReadAuthorization({
+    challenge: {
+      wallet: WALLET,
+      pair: FRESH_PAIR,
+      issuedAt: 1_800_000_000,
+      expiresAt: 1_800_000_300,
+      freshReadReceipt: FRESH_RECEIPT,
+      message: "must not be serialized",
+      destination: "must not be serialized",
+    },
+    signature: FRESH_SIGNATURE,
+  });
+  const [scheme, token] = freshAuthorization.split(" ");
+  const credential = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
+  assert.equal(scheme, "RetryCreditFresh");
+  assert.deepEqual(Object.keys(credential), [
+    "v", "wallet", "pair", "issuedAt", "expiresAt", "signature", "receipt",
+  ]);
+  assert.deepEqual(Object.keys(credential.pair), [
+    "failedTransactionHash", "successfulTransactionHash",
+  ]);
+  assert.deepEqual(credential, {
+    v: 1,
+    wallet: WALLET,
+    pair: FRESH_PAIR,
+    issuedAt: 1_800_000_000,
+    expiresAt: 1_800_000_300,
+    signature: FRESH_SIGNATURE,
+    receipt: FRESH_RECEIPT,
+  });
+  assert.equal("message" in credential, false);
+  assert.equal("destination" in credential, false);
+
+  let nowMs = 10_000;
+  const headers = [];
+  let calls = 0;
+  const result = await wakeRecoveryConfig({
+    fresh: true,
+    freshAuthorization,
+    fetchImpl: async (url, options) => {
+      assert.equal(url, "/api/recovery/config?fresh=1");
+      headers.push(options.headers.authorization);
+      calls += 1;
+      return calls === 1
+        ? new Response(JSON.stringify({
+          error: {
+            code: "RECOVERY_FRESH_READ_THROTTLED",
+            message: "wait",
+            requestId: "signed-throttle",
+          },
+        }), { status: 429, headers: { "retry-after": "5" } })
+        : new Response(JSON.stringify({ enabled: true }), { status: 200 });
+    },
+    totalTimeoutMs: 10_000,
+    requestTimeoutMs: 1_000,
+    attemptOffsetsMs: [0, 0],
+    now: () => nowMs,
+    random: () => 0,
+    sleep: async (milliseconds) => { nowMs += milliseconds; },
+  });
+
+  assert.equal(result.enabled, true);
+  assert.deepEqual(headers, [freshAuthorization, freshAuthorization]);
+});
+
+test("signed fresh config never retries or downgrades a rejected authorization", async () => {
+  const freshAuthorization = "RetryCreditFresh credential";
+  for (const [status, code] of [
+    [401, "RECOVERY_FRESH_AUTHORIZATION_INVALID"],
+    [409, "RECOVERY_FRESH_READ_AUTHORIZATION_USED"],
+  ]) {
+    let calls = 0;
+    await assert.rejects(wakeRecoveryConfig({
+      fresh: true,
+      freshAuthorization,
+      fetchImpl: async (url, options) => {
+        calls += 1;
+        assert.equal(url, "/api/recovery/config?fresh=1");
+        assert.equal(options.headers.authorization, freshAuthorization);
+        return new Response(JSON.stringify({
+          error: { code, message: "rejected", requestId: "signed-rejected" },
+        }), { status });
+      },
+      attemptOffsetsMs: [0, 0, 0],
+    }), (error) => error.status === status && error.code === code);
+    assert.equal(calls, 1);
+  }
+});
+
+test("fresh authorization is never attached to an ordinary or malformed request", async () => {
+  let fetchCalls = 0;
+  const fetchImpl = async () => {
+    fetchCalls += 1;
+    return new Response(JSON.stringify({ enabled: true }), { status: 200 });
+  };
+  await assert.rejects(
+    wakeRecoveryConfig({ freshAuthorization: "RetryCreditFresh credential", fetchImpl }),
+    (error) => error instanceof TypeError,
+  );
+  for (const freshAuthorization of [
+    "Bearer credential",
+    "RetryCreditFresh two credentials",
+    "RetryCreditFresh " + "a".repeat(2_049),
+  ]) {
+    await assert.rejects(
+      wakeRecoveryConfig({ fresh: true, freshAuthorization, fetchImpl }),
+      (error) => error instanceof TypeError,
+    );
+  }
+  assert.equal(fetchCalls, 0);
+
+  const seenOptions = [];
+  await wakeRecoveryConfig({
+    fresh: true,
+    fetchImpl: async (_url, options) => {
+      seenOptions.push(options);
+      return new Response(JSON.stringify({ enabled: true }), { status: 200 });
+    },
+    attemptOffsetsMs: [0],
+  });
+  assert.equal(seenOptions.length, 1);
+  assert.equal(seenOptions[0].headers, undefined);
+});
+
+test("a lost admitted response retries with the same credential and surfaces its used result", async () => {
+  const freshAuthorization = "RetryCreditFresh credential";
+  const headers = [];
+  let calls = 0;
+  await assert.rejects(wakeRecoveryConfig({
+    fresh: true,
+    freshAuthorization,
+    fetchImpl: async (url, options) => {
+      calls += 1;
+      headers.push(options.headers.authorization);
+      if (calls === 1) throw new TypeError("response lost after admission");
+      return new Response(JSON.stringify({
+        error: {
+          code: "RECOVERY_FRESH_READ_AUTHORIZATION_USED",
+          message: "used",
+          requestId: "used-after-loss",
+        },
+      }), { status: 409 });
+    },
+    totalTimeoutMs: 10_000,
+    requestTimeoutMs: 1_000,
+    attemptOffsetsMs: [0, 0],
+    sleep: async () => {},
+  }), (error) => error.status === 409
+    && error.code === "RECOVERY_FRESH_READ_AUTHORIZATION_USED");
+  assert.deepEqual(headers, [freshAuthorization, freshAuthorization]);
 });
 
 test("a fresh config wake honors Retry-After and never treats a throttled body as fresh truth", async () => {

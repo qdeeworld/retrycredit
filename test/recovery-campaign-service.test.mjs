@@ -101,7 +101,11 @@ test("configuration authenticates every binding and serializes campaign capacity
 
   assert.equal(config.enabled, true);
   assert.deepEqual(config.capabilities, { selfServePairIntake: true, walletNativeDiscovery: true });
-  assert.deepEqual(config.consent, { scope: "hosted-relayer", protocolEnforced: false });
+  assert.deepEqual(config.consent, {
+    scope: "hosted-relayer",
+    protocolEnforced: false,
+    freshReadAdmission: "anonymous-v1",
+  });
   assert.equal(config.poolAddress, poolAddress);
   assert.equal(config.verifierAddress, verifierAddress);
   assert.equal(config.predicateAddress, predicateAddress);

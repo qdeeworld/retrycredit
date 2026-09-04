@@ -527,6 +527,7 @@ function unavailableRecoveryConfig(waking, service = null) {
     consent: {
       scope: "hosted-relayer",
       protocolEnforced: false,
+      freshReadAdmission: "anonymous-v1",
     },
     source: {
       name: "Ethereum Mainnet",

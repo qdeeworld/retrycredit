@@ -31,6 +31,11 @@ import {
 } from "./seadrop-recovery.mjs";
 import { PUBLIC_CC3_RELAYER_ROLE, deriveRoleKey } from "./role-key.mjs";
 import { discoverWalletSeaDropPairs } from "./seadrop-wallet-discovery.mjs";
+import {
+  RECOVERY_CHALLENGE_LIFETIME_SECONDS,
+  RECOVERY_MAXIMUM_CLOCK_SKEW_SECONDS,
+  formatRecoveryChallengeMessage,
+} from "./recovery-consent.mjs";
 
 export const RECOVERY_RELAYER_ROLE = PUBLIC_CC3_RELAYER_ROLE;
 
@@ -61,8 +66,8 @@ export const RECOVERY_DEFAULTS = Object.freeze({
   sourceChainKey: 3,
   sourceChainId: 1,
   settlementChainId: 102_031,
-  challengeLifetimeSeconds: 5 * 60,
-  maximumClockSkewSeconds: 30,
+  challengeLifetimeSeconds: RECOVERY_CHALLENGE_LIFETIME_SECONDS,
+  maximumClockSkewSeconds: RECOVERY_MAXIMUM_CLOCK_SKEW_SECONDS,
   proofTimeoutMs: 120_000,
   releaseGasLimit: 6_000_000n,
   releaseLogChunkBlocks: 10_000,
@@ -612,6 +617,7 @@ export class RecoveryCampaignService {
       consent: {
         scope: "hosted-relayer",
         protocolEnforced: false,
+        freshReadAdmission: "anonymous-v1",
       },
       source: {
         name: "Ethereum Mainnet",
@@ -1868,19 +1874,17 @@ export function recoveryChallengeMessage({
   issuedAt,
   expiresAt,
 }) {
-  return [
-    "RetryCredit recovery consent",
-    `Origin: ${requireOrigin(origin)}`,
-    `Settlement: Creditcoin Testnet (${RECOVERY_DEFAULTS.settlementChainId})`,
-    `Recovery pool: ${requireNonzeroAddress(poolAddress, "recovery pool")}`,
-    `Campaign: ${requirePositiveInteger(campaignNumber, "recovery campaign number")}`,
-    `Source wallet and credit recipient: ${requireNonzeroAddress(wallet, "wallet")}`,
-    `Failed Ethereum transaction: ${requireHash(failedTransactionHash, "failed transaction hash")}`,
-    `Successful Ethereum transaction: ${requireHash(successfulTransactionHash, "successful transaction hash")}`,
-    `Issued at: ${requireTimestamp(issuedAt, "issuedAt")}`,
-    `Expires at: ${requireTimestamp(expiresAt, "expiresAt")}`,
-    "Authorize proof and relayer submission for this exact pair. The campaign contract derives the credit recipient from Ethereum; no destination can be substituted.",
-  ].join("\n");
+  return formatRecoveryChallengeMessage({
+    origin: requireOrigin(origin),
+    settlementChainId: RECOVERY_DEFAULTS.settlementChainId,
+    poolAddress: requireNonzeroAddress(poolAddress, "recovery pool"),
+    campaignNumber: requirePositiveInteger(campaignNumber, "recovery campaign number"),
+    wallet: requireNonzeroAddress(wallet, "wallet"),
+    failedTransactionHash: requireHash(failedTransactionHash, "failed transaction hash"),
+    successfulTransactionHash: requireHash(successfulTransactionHash, "successful transaction hash"),
+    issuedAt: requireTimestamp(issuedAt, "issuedAt"),
+    expiresAt: requireTimestamp(expiresAt, "expiresAt"),
+  });
 }
 
 function normalizeIntakePairRequest(request) {

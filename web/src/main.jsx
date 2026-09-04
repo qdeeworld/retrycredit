@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import {
   checkRecoveryPairEligibility,
+  createRecoveryFreshReadAuthorization,
   discoverRecoveryWallet,
   releaseRecoveryPairWhenReady,
   recoveryClockNow,
@@ -33,6 +34,8 @@ import {
   createWalletOperationGuard,
   isRecoveryConfigReadable,
   isRecoveryChallengeExpired,
+  isRecoveryFreshAuthorizationRejected,
+  isRecoveryFreshAuthorizationUsed,
   isRecoveryPairInvalid,
   isRecoveryRateLimited,
   isRecoveryResponseMismatch,
@@ -174,12 +177,13 @@ function App() {
     clearRecoveryResumeState();
   }
 
-  function fetchRecoveryConfig({ forceFresh = false, canAttempt } = {}) {
+  function fetchRecoveryConfig({ forceFresh = false, canAttempt, freshAuthorization } = {}) {
     if (!forceFresh && configFlight.current) return configFlight.current;
     const previousFlight = configFlight.current;
     const requestConfig = () => wakeRecoveryConfig({
       apiOrigin: API_ORIGIN,
       fresh: forceFresh,
+      freshAuthorization,
       canAttempt,
     }).then((next) => validateRecoveryConfigResponse(next));
     let flight;
@@ -846,10 +850,42 @@ function App() {
         method: "personal_sign",
         params: [hexlify(toUtf8Bytes(challenge.message)), wallet],
       });
+      const postSignatureAuthorizationConfig = configRef.current;
+      const postSignatureAuthorizationCurrent = operationIsCurrent(operation, walletOperation);
+      if (!canContinueRecoveryAuthorization({
+        operationCurrent: postSignatureAuthorizationCurrent,
+        initialConfig: liveConfig,
+        currentConfig: postSignatureAuthorizationConfig,
+      })) {
+        const interruptionFlow = recoveryAuthorizationInterruptionFlow({
+          operationCurrent: postSignatureAuthorizationCurrent,
+          currentConfig: postSignatureAuthorizationConfig,
+        });
+        if (interruptionFlow) {
+          if (["campaign-changed", "service-unavailable"].includes(interruptionFlow)) {
+            updateEligibility(null);
+            setReleaseResult(null);
+          }
+          updateFlow(interruptionFlow);
+        }
+        return;
+      }
+      const freshAuthorization = liveConfig.consent.freshReadAdmission === "pair-signature-v1"
+        ? createRecoveryFreshReadAuthorization({ challenge, signature })
+        : undefined;
       let postSignatureConfig;
       try {
-        postSignatureConfig = await fetchRecoveryConfig({ forceFresh: true, canAttempt: () => operationIsCurrent(operation, walletOperation) });
+        postSignatureConfig = await fetchRecoveryConfig({
+          forceFresh: true,
+          freshAuthorization,
+          canAttempt: () => operationIsCurrent(operation, walletOperation),
+        });
       } catch (nextError) {
+        if (
+          isRecoveryChallengeExpired(nextError)
+          || isRecoveryFreshAuthorizationUsed(nextError)
+          || isRecoveryFreshAuthorizationRejected(nextError)
+        ) throw nextError;
         if (operationIsCurrent(operation, walletOperation)) {
           setConfigState("unavailable");
           setError(cleanError(nextError));
@@ -959,6 +995,21 @@ function App() {
       } else if (isRecoveryChallengeExpired(nextError)) {
         setError(cleanError(nextError));
         updateFlow("qualifying");
+        return;
+      } else if (isRecoveryFreshAuthorizationUsed(nextError)) {
+        updateEligibility(null);
+        setReleaseResult(null);
+        setError("No release request was sent. Check the preserved pair before signing again.");
+        updateFlow("fresh-authorization-used");
+        requestAnimationFrame(() => {
+          document.getElementById("eligibility-heading")?.focus({ preventScroll: true });
+        });
+        return;
+      } else if (isRecoveryFreshAuthorizationRejected(nextError)) {
+        updateEligibility(null);
+        setReleaseResult(null);
+        setError(cleanError(nextError));
+        updateFlow("retryable-error");
         return;
       } else if (nextError?.code === 4001 || nextError?.code === "ACTION_REJECTED") {
         setError("The signature request was closed. Nothing was released; you can authorize again.");
@@ -1830,6 +1881,7 @@ function deskCopy(flow, eligibility, releaseResult, config) {
     "campaign-changed": ["The live campaign changed", "The previous pair verdict was discarded against the new pool or campaign boundary. Check the pair again."],
     "service-unavailable": ["The recovery service is unavailable", "The submitted pair is preserved. Retry the service without connecting a wallet."],
     "rate-limited": ["Recovery checks are busy", "Your pair is still here. Wait briefly, then retry the same check."],
+    "fresh-authorization-used": ["Check the pair before authorizing again", "The campaign refresh may have completed, but its response did not reach this browser. No release request was sent. Your pair is preserved—check it again, then sign a fresh authorization."],
     "retryable-error": ["The action did not finish", "The submitted pair and any still-valid live verdict are preserved. Read the notice, then retry the same step."],
     offline: ["You are offline", "Reconnect to the internet, then retry. No release request was sent while this browser was offline."],
   };
@@ -1855,6 +1907,7 @@ function pairCheckLabel(flow, configState) {
     "campaign-changed": "Check against new campaign",
     "service-unavailable": "Retry pair check",
     "rate-limited": "Retry after waiting",
+    "fresh-authorization-used": "Check same pair again",
     "retryable-error": "Try the same pair again",
     offline: "Offline",
   };
@@ -1879,7 +1932,7 @@ function stateIcon(flow) {
   if (flow === "released" || flow === "already-claimed") return <Check />;
   if (flow === "qualifying") return <ShieldCheck />;
   if (["checking", "discovering", "wallet-connecting", "authorization-requested", "proof-queued", "proof-building", "release-relaying", "loading-config"].includes(flow)) return <LoaderCircle className="spin" />;
-  if (["malformed", "semantic-mismatch", "discovery-empty", "discovery-unavailable", "retryable-error", "service-unavailable", "rate-limited", "offline", "campaign-changed", "campaign-closed", "campaign-full", "pair-changed", "release-uncertain"].includes(flow)) return <AlertCircle />;
+  if (["malformed", "semantic-mismatch", "discovery-empty", "discovery-unavailable", "retryable-error", "service-unavailable", "rate-limited", "fresh-authorization-used", "offline", "campaign-changed", "campaign-closed", "campaign-full", "pair-changed", "release-uncertain"].includes(flow)) return <AlertCircle />;
   if (flow === "continuation-waiting") return <LockKeyhole />;
   if (flow === "release-processing") return <LoaderCircle className="spin" />;
   if (["wrong-wallet", "account-changed"].includes(flow)) return <Wallet />;

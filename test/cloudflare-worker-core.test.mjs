@@ -38,6 +38,17 @@ test("Cloudflare handler preserves exact CORS, revision, and read-only health", 
   assert.equal(body.recoveryState, "ready");
   assert.equal(body.writesEnabled, false);
   assert.equal(body.hosting, "cloudflare-workers");
+
+  const preflight = await handler(new Request("https://api.example/api/recovery/config?fresh=1", {
+    method: "OPTIONS",
+    headers: {
+      origin: ENV.ALLOWED_ORIGIN,
+      "access-control-request-headers": "authorization",
+      "access-control-request-method": "GET",
+    },
+  }), ENV);
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-headers"), "authorization, content-type");
 });
 
 test("Cloudflare handler rejects unsupported routes without invoking the coordinator", async () => {
@@ -67,11 +78,37 @@ test("Cloudflare config forwards only the explicit fresh query to the coordinato
   const handler = createCloudflareApiHandler({ coordinatorFor: () => coordinator });
 
   assert.equal((await handler(new Request("https://api.example/api/recovery/config"), ENV)).status, 200);
-  assert.equal((await handler(new Request("https://api.example/api/recovery/config?fresh=1"), ENV)).status, 200);
+  assert.equal((await handler(new Request("https://api.example/api/recovery/config?fresh=1", {
+    headers: { authorization: "RetryCreditFresh credential" },
+  }), ENV)).status, 200);
   assert.deepEqual(inputs.map(({ operation, body }) => ({ operation, body })), [
     { operation: "configuration", body: { fresh: false } },
-    { operation: "configuration", body: { fresh: true } },
+    { operation: "configuration", body: { fresh: true, authorization: "credential" } },
   ]);
+});
+
+test("Cloudflare fresh config requires a bounded authorization header before coordinator lookup", async () => {
+  let coordinatorCalls = 0;
+  const handler = createCloudflareApiHandler({
+    coordinatorFor: () => {
+      coordinatorCalls += 1;
+      return { async execute() { throw new Error("must not execute"); } };
+    },
+  });
+
+  for (const authorization of [
+    null,
+    "Bearer credential",
+    "RetryCreditFresh ",
+    "RetryCreditFresh two credentials",
+    "RetryCreditFresh " + "a".repeat(2_100),
+  ]) {
+    const headers = authorization === null ? {} : { authorization };
+    const response = await handler(new Request("https://api.example/api/recovery/config?fresh=1", { headers }), ENV);
+    assert.equal(response.status, 401);
+    assert.equal((await response.json()).error.code, "RECOVERY_FRESH_AUTHORIZATION_REQUIRED");
+  }
+  assert.equal(coordinatorCalls, 0);
 });
 
 test("Cloudflare handler preserves a fresh-read throttle envelope and exact retry timing", async () => {
@@ -93,7 +130,9 @@ test("Cloudflare handler preserves a fresh-read throttle envelope and exact retr
     }),
   });
   const response = await handler(
-    new Request("https://api.example/api/recovery/config?fresh=1"),
+    new Request("https://api.example/api/recovery/config?fresh=1", {
+      headers: { authorization: "RetryCreditFresh credential" },
+    }),
     ENV,
   );
   const body = await response.json();
@@ -167,7 +206,7 @@ test("read-only coordinator exposes authenticated config but fails release close
   };
   const runtime = createCoordinatorRuntime({
     serviceFactory: () => service,
-    freshReadAdmission: async () => {},
+    freshReadControl: mockFreshReadControl(),
     env: ENV,
   });
 
@@ -175,10 +214,11 @@ test("read-only coordinator exposes authenticated config but fails release close
   assert.equal(config.status, 200);
   assert.equal(config.body.enabled, false);
   assert.equal(config.body.readOnly, true);
+  assert.equal(config.body.consent.freshReadAdmission, "pair-signature-v1");
   assert.equal(readinessCalls, 1);
   assert.deepEqual(configurationCalls, [{ fresh: false }]);
 
-  const freshConfig = await runtime.execute(input("configuration", { fresh: true }));
+  const freshConfig = await runtime.execute(input("configuration", { fresh: true, authorization: "credential" }));
   assert.equal(freshConfig.status, 200);
   assert.deepEqual(configurationCalls, [{ fresh: false }, { fresh: true }]);
 
@@ -196,7 +236,7 @@ test("the read plane cannot be switched into write mode through env or RPC input
   const env = { ...ENV, RETRYCREDIT_RECOVERY_WRITES_ENABLED: "true" };
   const runtime = createCoordinatorRuntime({
     env,
-    freshReadAdmission: async () => {},
+    freshReadControl: mockFreshReadControl(),
     serviceFactory: () => ({
       async readiness() {},
       async intakeRelease() {
@@ -248,7 +288,7 @@ test("a cold fresh configuration is itself the single readiness state read", asy
   let configurationCalls = 0;
   const runtime = createCoordinatorRuntime({
     env: ENV,
-    freshReadAdmission: async () => {},
+    freshReadControl: mockFreshReadControl(),
     serviceFactory: () => ({
       async readiness() { readinessCalls += 1; },
       async configuration(options) {
@@ -259,7 +299,7 @@ test("a cold fresh configuration is itself the single readiness state read", asy
     }),
   });
 
-  const fresh = await runtime.execute(input("configuration", { fresh: true }));
+  const fresh = await runtime.execute(input("configuration", { fresh: true, authorization: "credential" }));
   assert.equal(fresh.status, 200);
   assert.equal(readinessCalls, 0);
   assert.equal(configurationCalls, 1);
@@ -276,7 +316,9 @@ test("fresh-read admission precedes service work and provider failure consumes t
   const storage = memoryTransactionalStorage();
   const runtime = createCoordinatorRuntime({
     env: ENV,
-    freshReadAdmission: createFreshReadDutyCycle({ storage, now: () => nowMs }),
+    freshReadControl: mockFreshReadControl({
+      admit: createFreshReadDutyCycle({ storage, now: () => nowMs }),
+    }),
     serviceFactory: () => {
       serviceFactoryCalls += 1;
       return {
@@ -293,11 +335,11 @@ test("fresh-read admission precedes service work and provider failure consumes t
     },
   });
 
-  const failed = await runtime.execute(input("configuration", { fresh: true }));
+  const failed = await runtime.execute(input("configuration", { fresh: true, authorization: "credential" }));
   assert.equal(failed.status, 503);
   assert.equal(failed.body.error.code, "RECOVERY_UPSTREAM_UNAVAILABLE");
 
-  const throttled = await runtime.execute(input("configuration", { fresh: true }));
+  const throttled = await runtime.execute(input("configuration", { fresh: true, authorization: "credential" }));
   assert.equal(throttled.status, 429);
   assert.equal(throttled.body.error.code, "RECOVERY_FRESH_READ_THROTTLED");
   assert.equal(throttled.retryAfter, "5");
@@ -305,7 +347,7 @@ test("fresh-read admission precedes service work and provider failure consumes t
   assert.equal(configurationCalls, 1);
 
   nowMs += 5_000;
-  const failedAtBoundary = await runtime.execute(input("configuration", { fresh: true }));
+  const failedAtBoundary = await runtime.execute(input("configuration", { fresh: true, authorization: "credential" }));
   assert.equal(failedAtBoundary.status, 503);
   assert.equal(serviceFactoryCalls, 2);
   assert.equal(configurationCalls, 2);
@@ -316,7 +358,7 @@ test("normal reads and unrelated operations bypass the fresh-read duty cycle", a
   let configurationCalls = 0;
   const runtime = createCoordinatorRuntime({
     env: ENV,
-    freshReadAdmission: async () => { admissionCalls += 1; },
+    freshReadControl: mockFreshReadControl({ admit: async () => { admissionCalls += 1; } }),
     serviceFactory: () => ({
       async readiness() {},
       async configuration() {
@@ -332,7 +374,7 @@ test("normal reads and unrelated operations bypass the fresh-read duty cycle", a
   assert.equal(admissionCalls, 0);
   assert.equal(configurationCalls, 1);
 
-  assert.equal((await runtime.execute(input("configuration", { fresh: true }))).status, 200);
+  assert.equal((await runtime.execute(input("configuration", { fresh: true, authorization: "credential" }))).status, 200);
   assert.equal(admissionCalls, 1);
   assert.equal(configurationCalls, 2);
 });
@@ -349,13 +391,15 @@ test("fresh-read storage failure and corrupt state fail closed before service co
     let serviceFactoryCalls = 0;
     const runtime = createCoordinatorRuntime({
       env: ENV,
-      freshReadAdmission: createFreshReadDutyCycle({ storage, now: () => 3_000_000 }),
+      freshReadControl: mockFreshReadControl({
+        admit: createFreshReadDutyCycle({ storage, now: () => 3_000_000 }),
+      }),
       serviceFactory: () => {
         serviceFactoryCalls += 1;
         throw new Error("service must not be constructed");
       },
     });
-    const result = await runtime.execute(input("configuration", { fresh: true }));
+    const result = await runtime.execute(input("configuration", { fresh: true, authorization: "credential" }));
 
     assert.equal(result.status, 503, label);
     assert.equal(result.body.error.code, expectedCode, label);
@@ -365,6 +409,10 @@ test("fresh-read storage failure and corrupt state fail closed before service co
 
 function input(operation, body) {
   return { operation, body, requestId: crypto.randomUUID() };
+}
+
+function mockFreshReadControl({ admit = async () => {}, issueReceipt = async () => "v1.receipt" } = {}) {
+  return { admit, issueReceipt };
 }
 
 function memoryTransactionalStorage(entries = []) {

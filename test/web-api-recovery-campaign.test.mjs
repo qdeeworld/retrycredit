@@ -369,7 +369,11 @@ test("disabled recovery config is shape-stable and CORS applies to GET and prefl
     assert.equal(body.capacity, null);
     assert.equal(body.discoverySize, 3);
     assert.deepEqual(body.capabilities, { selfServePairIntake: true, walletNativeDiscovery: true });
-    assert.deepEqual(body.consent, { scope: "hosted-relayer", protocolEnforced: false });
+    assert.deepEqual(body.consent, {
+      scope: "hosted-relayer",
+      protocolEnforced: false,
+      freshReadAdmission: "anonymous-v1",
+    });
     assert.deepEqual(body.source, { name: "Ethereum Mainnet", chainId: 1, chainKey: 3 });
 
     const preflight = await fetch(`${base}/api/recovery/release`, { method: "OPTIONS" });

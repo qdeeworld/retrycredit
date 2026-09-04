@@ -1,7 +1,9 @@
 const MAX_BODY_BYTES = 16_384;
 export const FRESH_READ_MINIMUM_INTERVAL_MS = 5_000;
 
-const FRESH_READ_NOT_BEFORE_KEY = "fresh-config:not-before-ms:v1";
+export const FRESH_READ_NOT_BEFORE_KEY = "fresh-config:not-before-ms:v1";
+const FRESH_READ_AUTHORIZATION_SCHEME = "RetryCreditFresh";
+const MAX_FRESH_READ_AUTHORIZATION_HEADER_LENGTH = 2_080;
 
 const ROUTES = Object.freeze(new Map([
   ["GET /api/recovery/config", Object.freeze({ operation: "configuration", body: false })],
@@ -163,12 +165,12 @@ export function createCloudflareApiHandler({
       if (!route) {
         throw new CloudflareApiError("NOT_FOUND", "Route not found", 404);
       }
-      const coordinator = coordinatorFor(env);
       const body = route.body
         ? await readJson(request)
         : route.operation === "configuration"
-          ? { fresh: url.searchParams.get("fresh") === "1" }
+          ? configurationRequestBody(request, url)
           : {};
+      const coordinator = coordinatorFor(env);
       const result = await coordinator.execute({
         operation: route.operation,
         body,
@@ -198,12 +200,16 @@ export function createCloudflareApiHandler({
   };
 }
 
-export function createCoordinatorRuntime({ serviceFactory, freshReadAdmission, env } = {}) {
+export function createCoordinatorRuntime({ serviceFactory, freshReadControl, env } = {}) {
   if (typeof serviceFactory !== "function") {
     throw new TypeError("serviceFactory is required");
   }
-  if (typeof freshReadAdmission !== "function") {
-    throw new TypeError("freshReadAdmission is required");
+  if (
+    !freshReadControl
+    || typeof freshReadControl.admit !== "function"
+    || typeof freshReadControl.issueReceipt !== "function"
+  ) {
+    throw new TypeError("freshReadControl is required");
   }
   let servicePromise = null;
 
@@ -254,15 +260,21 @@ export function createCoordinatorRuntime({ serviceFactory, freshReadAdmission, e
       }
       const freshConfiguration = input.operation === "configuration" && input.body?.fresh === true;
       if (freshConfiguration) {
-        await freshReadAdmission();
+        await freshReadControl.admit(input.body?.authorization);
       }
       const initialization = initializeService(freshConfiguration
         ? (candidate) => callService(candidate, input.operation, input.body)
         : undefined);
       const initialized = await initialization.promise;
-      const value = initialization.started && freshConfiguration
+      let value = initialization.started && freshConfiguration
         ? initialized.initialValue
         : await callService(initialized.candidate, input.operation, input.body);
+      if (input.operation === "intakeChallenge") {
+        value = {
+          ...value,
+          freshReadReceipt: await freshReadControl.issueReceipt(value),
+        };
+      }
       return { status: 200, body: configurationForMode(value, input.operation) };
     } catch (error) {
       const handled = normalizeApiError(error);
@@ -300,10 +312,35 @@ function configurationForMode(value, operation) {
   if (operation !== "configuration") return value;
   return {
     ...value,
+    consent: {
+      ...value.consent,
+      freshReadAdmission: "pair-signature-v1",
+    },
     enabled: false,
     readOnly: true,
     readOnlyReason: "isolated-cloudflare-staging",
   };
+}
+
+function configurationRequestBody(request, url) {
+  const fresh = url.searchParams.get("fresh") === "1";
+  if (!fresh) return { fresh: false };
+  const authorization = request.headers.get("authorization");
+  const prefix = FRESH_READ_AUTHORIZATION_SCHEME + " ";
+  if (
+    typeof authorization !== "string"
+    || authorization.length <= prefix.length
+    || authorization.length > MAX_FRESH_READ_AUTHORIZATION_HEADER_LENGTH
+    || !authorization.startsWith(prefix)
+    || authorization.slice(prefix.length).includes(" ")
+  ) {
+    throw new CloudflareApiError(
+      "RECOVERY_FRESH_AUTHORIZATION_REQUIRED",
+      "A signed campaign-check authorization is required.",
+      401,
+    );
+  }
+  return { fresh: true, authorization: authorization.slice(prefix.length) };
 }
 
 async function readJson(request) {
@@ -360,7 +397,7 @@ function responseWithHeaders(body, status, { requestId, allowedOrigin, retryAfte
     "x-content-type-options": "nosniff",
     "x-request-id": requestId,
     "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-headers": "authorization, content-type",
     "access-control-expose-headers": "retry-after, x-request-id",
   });
   if (allowedOrigin) headers.set("access-control-allow-origin", allowedOrigin);
