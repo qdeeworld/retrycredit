@@ -38,6 +38,9 @@ import {
   isRecoveryResponseMismatch,
   recoveryCampaignAvailability,
   recoveryCampaignsMatch,
+  recoveryAuthorizationInterruptionFlow,
+  recoveryEligibleAccountUpdateFlow,
+  recoveryEligibleInspectionFlow,
   recoveryRecordMatchesConfig,
   recoveryConfigsMatch,
   selectDiscoveryAttribution,
@@ -522,14 +525,14 @@ function App() {
       persistSubmittedRecovery("release-uncertain", liveEligibility);
       return true;
     }
-    if (walletsMatch(next, liveEligibility.wallet)) {
-      updateFlow("qualifying");
-      return true;
-    }
-    const interrupted = externalChange && previous && [
-      "authorization-requested",
-    ].includes(flowRef.current);
-    updateFlow(interrupted ? "account-changed" : "wrong-wallet");
+    updateFlow(recoveryEligibleAccountUpdateFlow({
+      config: configRef.current,
+      connectedAccount: next,
+      sourceWallet: liveEligibility.wallet,
+      currentFlow,
+      externalChange,
+      previousAccount: previous,
+    }));
     return true;
   }
 
@@ -704,7 +707,11 @@ function App() {
           persistSubmittedRecovery("release-uncertain", result);
         } else {
           const currentAccount = walletOperations.current.currentAccount();
-          updateFlow(currentAccount && !walletsMatch(currentAccount, result.wallet) ? "wrong-wallet" : "qualifying");
+          updateFlow(recoveryEligibleInspectionFlow({
+            config: liveConfig,
+            connectedAccount: currentAccount,
+            sourceWallet: result.wallet,
+          }));
         }
       } else if (result.status === "processing") {
         setReleaseResult(null);
@@ -801,11 +808,25 @@ function App() {
       const authorizationStartedAtWallMs = recoveryWallClockNow();
       const challengeResponse = await requestRecoveryIntakeChallenge({ apiOrigin: API_ORIGIN, pair });
       const currentAuthorizationConfig = configRef.current;
+      const authorizationOperationCurrent = operationIsCurrent(operation, walletOperation);
       if (!canContinueRecoveryAuthorization({
-        operationCurrent: operationIsCurrent(operation, walletOperation),
+        operationCurrent: authorizationOperationCurrent,
         initialConfig: liveConfig,
         currentConfig: currentAuthorizationConfig,
-      })) return;
+      })) {
+        const interruptionFlow = recoveryAuthorizationInterruptionFlow({
+          operationCurrent: authorizationOperationCurrent,
+          currentConfig: currentAuthorizationConfig,
+        });
+        if (interruptionFlow) {
+          if (["campaign-changed", "service-unavailable"].includes(interruptionFlow)) {
+            updateEligibility(null);
+            setReleaseResult(null);
+          }
+          updateFlow(interruptionFlow);
+        }
+        return;
+      }
       const challenge = validateChallengeResponse({
         response: challengeResponse,
         wallet,

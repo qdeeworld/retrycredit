@@ -151,6 +151,41 @@ export function canContinueRecoveryAuthorization({ operationCurrent, initialConf
     && initialState === currentState);
 }
 
+export function recoveryAuthorizationInterruptionFlow({ operationCurrent, currentConfig } = {}) {
+  if (operationCurrent !== true) return null;
+  if (!isRecoveryConfigReadable(currentConfig)) return "service-unavailable";
+  const availability = recoveryCampaignAvailability(currentConfig);
+  if (availability === "full") return "campaign-full";
+  if (availability === "closed") return "campaign-closed";
+  return "campaign-changed";
+}
+
+export function recoveryEligibleInspectionFlow({ config, connectedAccount, sourceWallet } = {}) {
+  if (config?.readOnly === true && isRecoveryConfigReadable(config)) return "qualifying";
+  return connectedAccount && !walletsMatch(connectedAccount, sourceWallet)
+    ? "wrong-wallet"
+    : "qualifying";
+}
+
+export function recoveryEligibleAccountUpdateFlow({
+  config,
+  connectedAccount,
+  sourceWallet,
+  currentFlow,
+  externalChange = false,
+  previousAccount = "",
+} = {}) {
+  const authorizationWalletMismatch = !walletsMatch(connectedAccount, sourceWallet);
+  if (
+    config?.readOnly !== true
+    && authorizationWalletMismatch
+    && externalChange === true
+    && previousAccount
+    && currentFlow === "authorization-requested"
+  ) return "account-changed";
+  return recoveryEligibleInspectionFlow({ config, connectedAccount, sourceWallet });
+}
+
 export function selectDiscoveryAttribution(value) {
   if (
     value?.label !== ROUTESCAN_ATTRIBUTION.label

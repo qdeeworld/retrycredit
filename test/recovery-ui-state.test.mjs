@@ -12,8 +12,11 @@ import {
   isRecoveryRateLimited,
   isRecoveryResponseMismatch,
   normalizeEthereumTransactionReference,
+  recoveryAuthorizationInterruptionFlow,
   recoveryCampaignAvailability,
   recoveryCampaignsMatch,
+  recoveryEligibleAccountUpdateFlow,
+  recoveryEligibleInspectionFlow,
   recoveryRecordMatchesConfig,
   recoveryConfigsMatch,
   recoveryPairsMatch,
@@ -579,27 +582,27 @@ test("a mode or availability switch stops a deferred authorization before signin
     currentConfig: validateRecoveryConfigResponse(config()),
   }), true);
   const transitions = [
-    ["read-only", validateRecoveryConfigResponse(readOnlyConfig())],
-    ["capacity changed", validateRecoveryConfigResponse(config({
+    ["read-only", "campaign-changed", validateRecoveryConfigResponse(readOnlyConfig())],
+    ["capacity changed", "campaign-changed", validateRecoveryConfigResponse(config({
       campaign: { claimCount: 1, remainingClaims: 2 },
       capacity: { claimed: 1, remaining: 2 },
     }))],
-    ["deadline changed", validateRecoveryConfigResponse(config({
+    ["deadline changed", "campaign-changed", validateRecoveryConfigResponse(config({
       campaign: { deadline: 2_000_000_100 },
     }))],
-    ["closed", validateRecoveryConfigResponse(config({
+    ["closed", "campaign-closed", validateRecoveryConfigResponse(config({
       campaign: { open: false, releaseState: "closed" },
     }))],
-    ["full", validateRecoveryConfigResponse(config({
+    ["full", "campaign-full", validateRecoveryConfigResponse(config({
       campaign: { claimCount: 3, remainingClaims: 0, open: false, releaseState: "full" },
       capacity: { claimed: 3, remaining: 0 },
     }))],
-    ["expired", validateRecoveryConfigResponse(config({
+    ["expired", "campaign-closed", validateRecoveryConfigResponse(config({
       campaign: { deadline: 1 },
     }))],
   ];
 
-  for (const [label, transitionedConfig] of transitions) {
+  for (const [label, expectedFlow, transitionedConfig] of transitions) {
     let currentConfig = initialConfig;
     let resolveChallenge;
     const challenge = new Promise((resolve) => {
@@ -625,6 +628,89 @@ test("a mode or availability switch stops a deferred authorization before signin
 
     assert.equal(personalSignCalls, 0, `${label} transition must not request personal_sign`);
     assert.equal(releaseCalls, 0, `${label} transition must not request release`);
+    assert.equal(recoveryAuthorizationInterruptionFlow({
+      operationCurrent: true,
+      currentConfig: transitionedConfig,
+    }), expectedFlow);
+  }
+  assert.equal(recoveryAuthorizationInterruptionFlow({
+    operationCurrent: false,
+    currentConfig: initialConfig,
+  }), null);
+});
+
+test("read-only inspection never requires the source wallet while write mode does", () => {
+  assert.equal(recoveryEligibleInspectionFlow({
+    config: validateRecoveryConfigResponse(readOnlyConfig()),
+    connectedAccount: WALLET_B,
+    sourceWallet: WALLET_A,
+  }), "qualifying");
+  assert.equal(recoveryEligibleInspectionFlow({
+    config: validateRecoveryConfigResponse(config()),
+    connectedAccount: WALLET_B,
+    sourceWallet: WALLET_A,
+  }), "wrong-wallet");
+  assert.equal(recoveryEligibleInspectionFlow({
+    config: validateRecoveryConfigResponse(config()),
+    connectedAccount: "",
+    sourceWallet: WALLET_A,
+  }), "qualifying");
+});
+
+test("eligible account updates preserve inspection and interrupt only active write authorization", () => {
+  const cases = [
+    {
+      label: "delayed eth_accounts in read-only mode",
+      config: validateRecoveryConfigResponse(readOnlyConfig()),
+      currentFlow: "qualifying",
+      externalChange: false,
+      previousAccount: "",
+      expected: "qualifying",
+    },
+    {
+      label: "accountsChanged in read-only mode",
+      config: validateRecoveryConfigResponse(readOnlyConfig()),
+      currentFlow: "qualifying",
+      externalChange: true,
+      previousAccount: WALLET_A,
+      expected: "qualifying",
+    },
+    {
+      label: "accountsChanged during write authorization",
+      config: validateRecoveryConfigResponse(config()),
+      currentFlow: "authorization-requested",
+      externalChange: true,
+      previousAccount: WALLET_A,
+      expected: "account-changed",
+    },
+    {
+      label: "wallet disconnect during write authorization",
+      config: validateRecoveryConfigResponse(config()),
+      connectedAccount: "",
+      currentFlow: "authorization-requested",
+      externalChange: true,
+      previousAccount: WALLET_A,
+      expected: "account-changed",
+    },
+    {
+      label: "wrong wallet during ordinary write inspection",
+      config: validateRecoveryConfigResponse(config()),
+      currentFlow: "qualifying",
+      externalChange: true,
+      previousAccount: WALLET_A,
+      expected: "wrong-wallet",
+    },
+  ];
+
+  for (const row of cases) {
+    assert.equal(recoveryEligibleAccountUpdateFlow({
+      config: row.config,
+      connectedAccount: row.connectedAccount ?? WALLET_B,
+      sourceWallet: WALLET_A,
+      currentFlow: row.currentFlow,
+      externalChange: row.externalChange,
+      previousAccount: row.previousAccount,
+    }), row.expected, row.label);
   }
 });
 
