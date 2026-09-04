@@ -838,7 +838,26 @@ function App() {
         method: "personal_sign",
         params: [hexlify(toUtf8Bytes(challenge.message)), wallet],
       });
-      if (!operationIsCurrent(operation, walletOperation)) return;
+      const postSignatureConfig = configRef.current;
+      const postSignatureOperationCurrent = operationIsCurrent(operation, walletOperation);
+      if (!canContinueRecoveryAuthorization({
+        operationCurrent: postSignatureOperationCurrent,
+        initialConfig: liveConfig,
+        currentConfig: postSignatureConfig,
+      })) {
+        const interruptionFlow = recoveryAuthorizationInterruptionFlow({
+          operationCurrent: postSignatureOperationCurrent,
+          currentConfig: postSignatureConfig,
+        });
+        if (interruptionFlow) {
+          if (["campaign-changed", "service-unavailable"].includes(interruptionFlow)) {
+            updateEligibility(null);
+            setReleaseResult(null);
+          }
+          updateFlow(interruptionFlow);
+        }
+        return;
+      }
       submittedRecoveryStartedAt.current = Date.now();
       updateFlow("proof-queued");
       releaseSubmitted = true;

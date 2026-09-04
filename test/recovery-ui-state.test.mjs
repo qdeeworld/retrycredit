@@ -633,6 +633,47 @@ test("a mode or availability switch stops a deferred authorization before signin
       currentConfig: transitionedConfig,
     }), expectedFlow);
   }
+
+  for (const [label, expectedFlow, transitionedConfig] of transitions) {
+    let currentConfig = initialConfig;
+    let resolveSignature;
+    const signature = new Promise((resolve) => {
+      resolveSignature = resolve;
+    });
+    let personalSignCalls = 0;
+    let releaseCalls = 0;
+    let interruptionFlow = null;
+
+    const authorization = (async () => {
+      if (!canContinueRecoveryAuthorization({
+        operationCurrent: true,
+        initialConfig,
+        currentConfig,
+      })) return;
+      personalSignCalls += 1;
+      await signature;
+      if (!canContinueRecoveryAuthorization({
+        operationCurrent: true,
+        initialConfig,
+        currentConfig,
+      })) {
+        interruptionFlow = recoveryAuthorizationInterruptionFlow({
+          operationCurrent: true,
+          currentConfig,
+        });
+        return;
+      }
+      releaseCalls += 1;
+    })();
+
+    currentConfig = transitionedConfig;
+    resolveSignature();
+    await authorization;
+
+    assert.equal(personalSignCalls, 1, `${label} transition occurs while personal_sign is pending`);
+    assert.equal(releaseCalls, 0, `${label} transition must not request release after personal_sign`);
+    assert.equal(interruptionFlow, expectedFlow, `${label} transition must leave the busy flow`);
+  }
   assert.equal(recoveryAuthorizationInterruptionFlow({
     operationCurrent: false,
     currentConfig: initialConfig,
