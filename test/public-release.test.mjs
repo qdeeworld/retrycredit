@@ -59,6 +59,12 @@ test("Recovery leads with campaign truth and wallet-native discovery with pair f
   assert.match(app, /Completed retry/);
   assert.match(app, /Connection reveals only the selected public address/);
   assert.match(app, /independently rechecks any match before it can qualify/);
+  assert.match(app, /<DiscoveryReceipt result=\{discoveryResult\} \/>/);
+  assert.match(app, /selectDiscoveryAttribution\(result\?\.attribution\)/);
+  assert.match(app, /className="discovery-attribution"[\s\S]*target="_blank"[\s\S]*rel="noreferrer"/);
+  assert.match(uiState, /Powered by Routescan\.io APIs/);
+  assert.match(uiState, /https:\/\/routescan\.io\//);
+  assert.match(styles, /\.discovery-attribution \{[^}]*min-height:44px/s);
   assert.doesNotMatch(app, /Connect wallet and check/);
 
   assert.match(app, /One wallet\. One ordered source pair\. One fixed release\./);
@@ -117,6 +123,14 @@ test("the pair desk includes every required resilient state", () => {
   ]) assert.match(app, new RegExp(`"${state}"`));
 
   assert.match(app, /role="status" aria-live="polite" aria-atomic="true"/);
+  assert.match(app, /role="note"/);
+  assert.match(app, /Live checks, no signing/);
+  assert.match(app, /config\?\.readOnly[\s\S]*cannot request a signature or release credit/);
+  assert.match(app, /hasQualifyingResult && !needsStatusCheck && !config\?\.readOnly/);
+  assert.match(app, /Pair qualifies; release disabled here/);
+  assert.match(app, /Read-only staging stops before signing/);
+  assert.match(app, /Stop before signing/);
+  assert.match(app, /Release disabled here/);
   assert.match(app, /role="alert"/);
   assert.match(app, /pairOperations\.current\.invalidate\(\)/);
   assert.match(app, /operationIsCurrent\(operation, walletOperation\)/);
@@ -249,6 +263,7 @@ test("the public release carries a license and Cloudflare security policy", () =
   assert.match(readme, /npm run verify:recovery-gate/);
   assert.match(headers, /Content-Security-Policy:/);
   assert.match(headers, /connect-src 'self' https:\/\/retrycredit-api\.onrender\.com/);
+  assert.match(headers, /https:\/\/retrycredit-api-staging\.qdworld001\.workers\.dev/);
   assert.match(headers, /frame-ancestors 'none'/);
   assert.match(headers, /X-Frame-Options: DENY/);
   assert.match(headers, /X-Content-Type-Options: nosniff/);
@@ -277,6 +292,17 @@ test("open tabs refresh campaign truth and never overstate unfinished browser ch
   assert.match(app, /const busy = isBusyFlow\(flow\) \|\| authorizationPending/);
   assert.match(app, /setAuthorizationPending\(true\)/);
   assert.match(app, /setAuthorizationPending\(false\)/);
+  const challengeRequest = app.indexOf("await requestRecoveryIntakeChallenge");
+  const liveModeRecheck = app.indexOf("canContinueRecoveryAuthorization", challengeRequest);
+  const signatureRequest = app.indexOf('method: "personal_sign"', challengeRequest);
+  const releaseRequest = app.indexOf("await releaseRecoveryPairWhenReady", signatureRequest);
+  assert.ok(challengeRequest >= 0);
+  assert.ok(liveModeRecheck > challengeRequest);
+  assert.ok(signatureRequest > liveModeRecheck);
+  assert.ok(releaseRequest > signatureRequest);
+  const postChallengeGuard = app.slice(liveModeRecheck, signatureRequest);
+  assert.match(postChallengeGuard, /initialConfig: liveConfig/);
+  assert.match(postChallengeGuard, /currentConfig: currentAuthorizationConfig/);
   assert.match(app, /if \(flowRef\.current === "account-changed"\)/);
   assert.match(app, /featuredState === "ready"/);
   assert.match(app, /Verifying source pair/);

@@ -141,6 +141,10 @@ test("wallet-native discovery revalidates advisory hashes through live pair auth
         transactions: Array.from({ length: 12 }, () => ({})),
         truncated: false,
         pages: 1,
+        attribution: {
+          label: "Powered by Routescan.io APIs",
+          url: "https://routescan.io/",
+        },
         pairs: [{
           wallet: source.address,
           failedTransactionHash: failedHash,
@@ -156,6 +160,10 @@ test("wallet-native discovery revalidates advisory hashes through live pair auth
   assert.equal(result.historyRowsInspected, 12);
   assert.equal(result.historyTruncated, false);
   assert.equal(result.manualFallbackRecommended, false);
+  assert.deepEqual(result.attribution, {
+    label: "Powered by Routescan.io APIs",
+    url: "https://routescan.io/",
+  });
   assert.deepEqual(result.matches.map(({ eligible, status }) => ({ eligible, status })), [
     { eligible: true, status: "eligible" },
   ]);
@@ -197,6 +205,7 @@ test("the Cloudflare discovery profile caps two sequential candidates at twenty 
 
   const result = await fixture.service.discover(source.address);
   assert.deepEqual(result.matches, []);
+  assert.equal(Object.hasOwn(result, "attribution"), false);
   assert.equal(calls, 20);
   assert.ok(maximumActive <= 4);
 });

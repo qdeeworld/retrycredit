@@ -3,8 +3,10 @@ import test from "node:test";
 import { getAddress } from "ethers";
 import { recoveryChallengeMessage as serverRecoveryChallengeMessage } from "../src/recovery-campaign-service.mjs";
 import {
+  canContinueRecoveryAuthorization,
   createPairOperationGuard,
   createWalletOperationGuard,
+  isRecoveryConfigReadable,
   isRecoveryChallengeExpired,
   isRecoveryPairInvalid,
   isRecoveryRateLimited,
@@ -15,6 +17,7 @@ import {
   recoveryRecordMatchesConfig,
   recoveryConfigsMatch,
   recoveryPairsMatch,
+  selectDiscoveryAttribution,
   selectFeaturedRelease,
   selectRecoveryEvidence,
   selectVisibleRelease,
@@ -94,6 +97,15 @@ function config(overrides = {}) {
     campaign,
     rule: { ...base.rule, ...overrides.rule },
     capacity: { ...base.capacity, ...overrides.capacity },
+  };
+}
+
+function readOnlyConfig(overrides = {}) {
+  return {
+    ...config(overrides),
+    enabled: false,
+    readOnly: true,
+    readOnlyReason: "isolated-cloudflare-staging",
   };
 }
 
@@ -447,6 +459,173 @@ test("a fully claimed campaign remains a valid closed state after its deadline",
 
   assert.equal(closed.campaign.releaseState, "closed");
   assert.equal(recoveryCampaignAvailability(closed), "closed");
+});
+
+test("read-only staging preserves authenticated inspection without enabling release", () => {
+  const readOnly = validateRecoveryConfigResponse(readOnlyConfig());
+  const eligibilityResponse = {
+    eligible: true,
+    status: "eligible",
+    reason: "This pair qualifies.",
+    wallet: WALLET_A,
+    campaignNumber: 7,
+    creditAmount: "10",
+    pair: analyzedPair("1"),
+    release: null,
+    lineage: { scope: "campaign", status: "unused" },
+  };
+  const inspected = validatePairEligibilityResponse({
+    response: eligibilityResponse,
+    requestedPair: pair("1"),
+    config: readOnly,
+  });
+
+  assert.equal(readOnly.enabled, false);
+  assert.equal(readOnly.readOnly, true);
+  assert.equal(isRecoveryConfigReadable(readOnly), true);
+  assert.equal(recoveryCampaignAvailability(readOnly), "open");
+  assert.equal(isRecoveryConfigReadable({ enabled: false }), false);
+  assert.equal(inspected.eligible, true);
+  assert.equal(recoveryRecordMatchesConfig(inspected, readOnly), true);
+  assert.equal(recoveryCampaignsMatch(readOnly, validateRecoveryConfigResponse(config())), false);
+
+  const challenge = {
+    wallet: WALLET_A,
+    poolAddress: POOL_A,
+    campaignNumber: 7,
+    pair: inspected.pair,
+    issuedAt: 1_000,
+    expiresAt: 1_300,
+    message: challengeMessage({ liveConfig: readOnly, sourcePair: inspected.pair }),
+  };
+  const released = {
+    status: "released",
+    wallet: WALLET_A,
+    campaignNumber: 7,
+    creditAmount: "10",
+    pair: inspected.pair,
+    release: claimedResponse().release,
+    lineage: { scope: "campaign", status: "claimed-current" },
+  };
+  const live = validateRecoveryConfigResponse(config());
+  const liveInspected = validatePairEligibilityResponse({
+    response: eligibilityResponse,
+    requestedPair: pair("1"),
+    config: live,
+  });
+  assert.equal(validateChallengeResponse({
+    response: challenge,
+    wallet: WALLET_A,
+    eligibility: liveInspected,
+    config: live,
+    currentOrigin: live.publicOrigin,
+  }), challenge);
+  assert.equal(validateReleaseResponse({
+    response: released,
+    wallet: WALLET_A,
+    eligibility: liveInspected,
+    config: live,
+  }).status, "released");
+  assert.equal(validatePairReleaseResponse({
+    response: released,
+    wallet: WALLET_A,
+    eligibility: liveInspected,
+    config: live,
+  }).status, "released");
+  for (const validateWriteResponse of [
+    () => validateChallengeResponse({
+      response: challenge,
+      wallet: WALLET_A,
+      eligibility: inspected,
+      config: readOnly,
+      currentOrigin: readOnly.publicOrigin,
+    }),
+    () => validateReleaseResponse({
+      response: released,
+      wallet: WALLET_A,
+      eligibility: inspected,
+      config: readOnly,
+    }),
+    () => validatePairReleaseResponse({
+      response: released,
+      wallet: WALLET_A,
+      eligibility: inspected,
+      config: readOnly,
+    }),
+  ]) {
+    assert.throws(
+      validateWriteResponse,
+      (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
+    );
+  }
+
+  for (const invalid of [
+    { ...readOnlyConfig(), enabled: true },
+    { ...readOnlyConfig(), readOnly: "true" },
+    { ...readOnlyConfig(), readOnlyReason: "operator-preview" },
+  ]) {
+    assert.throws(
+      () => validateRecoveryConfigResponse(invalid),
+      (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
+    );
+  }
+});
+
+test("a mode or availability switch stops a deferred authorization before signing or release", async () => {
+  const initialConfig = validateRecoveryConfigResponse(config());
+  const transitions = [
+    ["read-only", validateRecoveryConfigResponse(readOnlyConfig())],
+    ["closed", validateRecoveryConfigResponse(config({
+      campaign: { open: false, releaseState: "closed" },
+    }))],
+    ["full", validateRecoveryConfigResponse(config({
+      campaign: { claimCount: 3, remainingClaims: 0, open: false, releaseState: "full" },
+      capacity: { claimed: 3, remaining: 0 },
+    }))],
+    ["expired", validateRecoveryConfigResponse(config({
+      campaign: { deadline: 1 },
+    }))],
+  ];
+
+  for (const [label, transitionedConfig] of transitions) {
+    let currentConfig = initialConfig;
+    let resolveChallenge;
+    const challenge = new Promise((resolve) => {
+      resolveChallenge = resolve;
+    });
+    let personalSignCalls = 0;
+    let releaseCalls = 0;
+
+    const authorization = (async () => {
+      await challenge;
+      if (!canContinueRecoveryAuthorization({
+        operationCurrent: true,
+        initialConfig,
+        currentConfig,
+      })) return;
+      personalSignCalls += 1;
+      releaseCalls += 1;
+    })();
+
+    currentConfig = transitionedConfig;
+    resolveChallenge();
+    await authorization;
+
+    assert.equal(personalSignCalls, 0, `${label} transition must not request personal_sign`);
+    assert.equal(releaseCalls, 0, `${label} transition must not request release`);
+  }
+});
+
+test("discovery attribution allows only the exact RouteScan identity", () => {
+  const exact = {
+    label: "Powered by Routescan.io APIs",
+    url: "https://routescan.io/",
+  };
+  assert.deepEqual(selectDiscoveryAttribution(exact), exact);
+  assert.equal(selectDiscoveryAttribution(null), null);
+  assert.equal(selectDiscoveryAttribution({ ...exact, label: "Explorer data" }), null);
+  assert.equal(selectDiscoveryAttribution({ ...exact, url: "javascript:alert(1)" }), null);
+  assert.equal(selectDiscoveryAttribution({ ...exact, url: "https://routescan.io.example/" }), null);
 });
 
 test("campaign availability fails closed from the live open flag and remaining capacity", () => {

@@ -15,8 +15,8 @@
   },
   "vars": {
     "RETRYCREDIT_ENVIRONMENT": "staging",
-    "ALLOWED_ORIGIN": "https://f4948438.retrycredit.pages.dev",
-    "PUBLIC_ORIGIN": "https://f4948438.retrycredit.pages.dev",
+    "ALLOWED_ORIGIN": "https://cloudflare-staging.retrycredit.pages.dev",
+    "PUBLIC_ORIGIN": "https://cloudflare-staging.retrycredit.pages.dev",
     "CREDITCOIN_RPC": "https://rpc.cc3-testnet.creditcoin.network",
     "CREDITCOIN_LOG_RPC": "https://creditcoin-testnet.blockscout.com/api/eth-rpc",
     "ATTESTCOIN_PROOF_BUILDER": "https://prover.cc3-testnet.creditcoin.network",

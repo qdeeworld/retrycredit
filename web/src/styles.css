@@ -48,6 +48,7 @@ a:hover { text-decoration-thickness:2px; }
 .service-state { min-height:32px; display:flex; align-items:center; gap:8px; padding:0 10px; border:1px solid #596159; color:#e9ece9; font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
 .service-state i { width:8px; height:8px; flex:none; background:var(--rule); }
 .service-state.ready i { background:var(--green); }
+.service-state.read-only i { background:var(--blue); }
 .service-state.loading i { background:var(--amber); }
 .service-state.continuation-waiting i { background:var(--amber); }
 .service-state.unavailable i,.service-state.offline i { background:var(--red); }
@@ -100,7 +101,14 @@ a:hover { text-decoration-thickness:2px; }
 .wallet-discovery { display:grid; gap:8px; margin-block-start:24px; }
 .wallet-discovery .primary-action { margin:0; }
 .wallet-discovery p { margin:0; color:var(--muted); font-size:11px; line-height:1.5; }
-.wallet-discovery small { color:var(--ink); font:600 10px/1.45 "IBM Plex Mono",monospace; }
+.read-only-note { display:grid; grid-template-columns:18px minmax(0,1fr); gap:9px; margin-block-start:18px; padding:11px; border-block:1px solid var(--blue); background:var(--sheet); }
+.read-only-note > svg { width:17px; color:var(--blue); }
+.read-only-note strong { font-size:12px; }
+.read-only-note p { margin:2px 0 0; color:var(--muted); font-size:11px; line-height:1.45; }
+.discovery-receipt { min-height:44px; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:4px 14px; margin-block-start:12px; border-block:1px solid var(--rule-soft); }
+.discovery-receipt small { color:var(--ink); font:600 10px/1.45 "IBM Plex Mono",monospace; }
+.discovery-attribution { min-height:44px; display:inline-flex; align-items:center; gap:6px; color:var(--muted); font:500 10px/1.45 "IBM Plex Mono",monospace; }
+.discovery-attribution svg { width:14px; flex:none; }
 .manual-divider { display:flex; align-items:center; gap:10px; margin-block-start:22px; color:var(--muted); font:600 9px "IBM Plex Mono",monospace; text-transform:uppercase; letter-spacing:.06em; }
 .manual-divider::before,.manual-divider::after { content:""; height:1px; flex:1; background:var(--rule); }
 .pair-intake { display:flex; flex-direction:column; margin-block-start:24px; }
