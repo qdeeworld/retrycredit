@@ -3,7 +3,14 @@ import test from "node:test";
 import { Interface, Wallet, getAddress } from "ethers";
 
 import { SEA_DROP_MAINNET } from "../src/seadrop-recovery.mjs";
-import { discoverSeaDropPairs, fetchWalletTransactions } from "../src/seadrop-wallet-discovery.mjs";
+import {
+  ROUTESCAN_ATTRIBUTION,
+  ROUTESCAN_ETHEREUM_API,
+  discoverWalletSeaDropPairsResilient,
+  discoverSeaDropPairs,
+  fetchWalletTransactions,
+  fetchWalletTransactionsV2,
+} from "../src/seadrop-wallet-discovery.mjs";
 
 const wallet = new Wallet(`0x${"a7".repeat(32)}`).address;
 const nft = getAddress("0x1111111111111111111111111111111111111111");
@@ -50,6 +57,933 @@ test("wallet history reports bounded truncation instead of implying completeness
   assert.equal(result.transactions.length, 2);
   assert.equal(result.truncated, true);
   assert.equal(result.pages, 2);
+});
+
+test("keyless RouteScan history carries its required public attribution", async () => {
+  const result = await fetchWalletTransactions({
+    wallet,
+    startBlock: 100,
+    endBlock: 200,
+    apiUrl: ROUTESCAN_ETHEREUM_API,
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({ status: "0", message: "No transactions found", result: [] }),
+    }),
+  });
+  assert.deepEqual(result.attribution, ROUTESCAN_ATTRIBUTION);
+});
+
+test("Blockscout V2 history is bounded, normalized, and stops below the campaign window", async () => {
+  const urls = [];
+  const responses = [
+    {
+      items: [
+        v2Transaction({ hashByte: "21", nonce: 3, block: 205, status: "ok" }),
+        v2Transaction({ hashByte: "22", nonce: 2, block: 150, status: "error" }),
+      ],
+      next_page_params: {
+        index: 2,
+        value: "1000000000000000",
+        filter: "from",
+        hash: `0x${"88".repeat(32)}`,
+        inserted_at: "2026-09-03T00:00:01.743095Z",
+        block_number: 150,
+        fee: "50450000000000",
+        items_count: 50,
+      },
+    },
+    {
+      items: [v2Transaction({ hashByte: "23", nonce: 1, block: 90, status: "ok" })],
+      next_page_params: { block_number: 90, index: 1 },
+    },
+  ];
+  const result = await fetchWalletTransactionsV2({
+    wallet,
+    startBlock: 100,
+    endBlock: 200,
+    fetchImpl: async (url) => {
+      urls.push(url);
+      return { ok: true, json: async () => responses.shift() };
+    },
+  });
+
+  assert.equal(result.transactions.length, 1);
+  assert.equal(result.transactions[0].hash, `0x${"22".repeat(32)}`);
+  assert.equal(result.transactions[0].txreceipt_status, "0");
+  assert.equal(result.pages, 2);
+  assert.equal(result.truncated, false);
+  assert.equal(urls[0].searchParams.get("filter"), "from");
+  assert.equal(urls[1].searchParams.get("block_number"), "150");
+  assert.equal(urls[1].searchParams.get("index"), "2");
+  assert.equal(urls[1].searchParams.get("filter"), "from");
+  assert.equal(urls[1].searchParams.get("items_count"), "50");
+});
+
+test("Blockscout V2 history rejects an oversized response before parsing", async () => {
+  await assert.rejects(
+    fetchWalletTransactionsV2({
+      wallet,
+      startBlock: 100,
+      endBlock: 200,
+      maximumResponseBytes: 20,
+      fetchImpl: async () => ({
+        ok: true,
+        headers: { get: () => "21" },
+        json: async () => ({ items: [] }),
+      }),
+    }),
+    /response is too large/,
+  );
+});
+
+test("Blockscout V2 preserves earlier rows after an oversized later page", async () => {
+  let page = 0;
+  let parsedOversize = 0;
+  let cancellations = 0;
+  const result = await fetchWalletTransactionsV2({
+    wallet,
+    startBlock: 100,
+    endBlock: 200,
+    maximumResponseBytes: 20,
+    fetchImpl: async () => {
+      page += 1;
+      if (page === 1) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [v2Transaction({ hashByte: "26", nonce: 4, block: 150, status: "ok" })],
+            next_page_params: { block_number: 150, index: 1, filter: "from" },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        headers: { get: () => "21" },
+        body: { cancel: async () => { cancellations += 1; } },
+        json: async () => {
+          parsedOversize += 1;
+          return { items: [], next_page_params: null };
+        },
+      };
+    },
+  });
+
+  assert.equal(page, 2);
+  assert.equal(parsedOversize, 0);
+  assert.equal(cancellations, 1);
+  assert.equal(result.transactions.length, 1);
+  assert.equal(result.pages, 1);
+  assert.equal(result.truncated, true);
+});
+
+test("Blockscout V2 history rejects unknown statuses and pagination keys", async () => {
+  await assert.rejects(
+    fetchWalletTransactionsV2({
+      wallet,
+      startBlock: 100,
+      endBlock: 200,
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({
+          items: [v2Transaction({ hashByte: "24", nonce: 1, block: 150, status: "pending" })],
+          next_page_params: null,
+        }),
+      }),
+    }),
+    /invalid transaction status/,
+  );
+
+  await assert.rejects(
+    fetchWalletTransactionsV2({
+      wallet,
+      startBlock: 100,
+      endBlock: 200,
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({
+          items: [],
+          next_page_params: { block_number: 150, redirect: "https://example.com" },
+        }),
+      }),
+    }),
+    /invalid pagination cursor/,
+  );
+
+  await assert.rejects(
+    fetchWalletTransactionsV2({
+      wallet,
+      startBlock: 100,
+      endBlock: 200,
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({ items: [], next_page_params: { filter: "to", block_number: 150 } }),
+      }),
+    }),
+    /invalid pagination cursor/,
+  );
+
+  await assert.rejects(
+    fetchWalletTransactionsV2({
+      wallet,
+      startBlock: 100,
+      endBlock: 200,
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({ items: [], next_page_params: { value: "1".repeat(81), block_number: 150 } }),
+      }),
+    }),
+    /invalid pagination cursor/,
+  );
+});
+
+test("Blockscout V2 history rejects a repeated pagination cursor", async () => {
+  const cursor = { block_number: 150, index: 2, items_count: 50, filter: "from" };
+  await assert.rejects(
+    fetchWalletTransactionsV2({
+      wallet,
+      startBlock: 100,
+      endBlock: 200,
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({
+          items: [v2Transaction({ hashByte: "25", nonce: 3, block: 150, status: "ok" })],
+          next_page_params: cursor,
+        }),
+      }),
+    }),
+    /repeated its pagination cursor/,
+  );
+});
+
+test("Etherscan-compatible history rejects an oversized response before parsing", async () => {
+  let cancellations = 0;
+  await assert.rejects(
+    fetchWalletTransactions({
+      wallet,
+      startBlock: 100,
+      endBlock: 200,
+      maximumResponseBytes: 20,
+      fetchImpl: async () => ({
+        ok: true,
+        headers: { get: () => "21" },
+        body: { cancel: async () => { cancellations += 1; } },
+        json: async () => ({ status: "1", message: "OK", result: [] }),
+      }),
+    }),
+    /response is too large/,
+  );
+  assert.equal(cancellations, 1);
+});
+
+test("a declared oversized first page falls back without parsing it", async () => {
+  let parsed = 0;
+  let fallbacks = 0;
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    historyFetchers: [
+      (options) => fetchWalletTransactions({
+        ...options,
+        maximumResponseBytes: 20,
+        fetchImpl: async () => ({
+          ok: true,
+          headers: { get: () => "21" },
+          body: { cancel: async () => {} },
+          json: async () => {
+            parsed += 1;
+            return { status: "1", message: "OK", result: [] };
+          },
+        }),
+      }),
+      async () => {
+        fallbacks += 1;
+        return { transactions: [], truncated: false, pages: 1 };
+      },
+    ],
+  });
+
+  assert.equal(parsed, 0);
+  assert.equal(fallbacks, 1);
+  assert.equal(result.truncated, false);
+  assert.deepEqual(result.transactions, []);
+});
+
+test("history providers cancel unread rate-limit responses before fallback", async () => {
+  let cancellations = 0;
+  const rateLimited = () => ({
+    ok: false,
+    status: 429,
+    body: { cancel: async () => { cancellations += 1; } },
+  });
+  await assert.rejects(
+    fetchWalletTransactions({
+      wallet,
+      startBlock: 100,
+      endBlock: 200,
+      fetchImpl: async () => rateLimited(),
+    }),
+    /HTTP 429/,
+  );
+  await assert.rejects(
+    fetchWalletTransactionsV2({
+      wallet,
+      startBlock: 100,
+      endBlock: 200,
+      fetchImpl: async () => rateLimited(),
+    }),
+    /HTTP 429/,
+  );
+  assert.equal(cancellations, 2);
+});
+
+test("resilient discovery falls back and still applies deterministic pair validation", async () => {
+  const failedInput = mintInput(11n, `0x${"31".repeat(65)}`);
+  const successfulInput = mintInput(12n, `0x${"32".repeat(65)}`);
+  const calls = [];
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      async () => {
+        calls.push("primary");
+        throw new Error("primary rate limited");
+      },
+      async () => {
+        calls.push("fallback");
+        return {
+          transactions: [
+            transaction({ hashByte: "33", nonce: 7, block: 140, status: 0, input: failedInput }),
+            transaction({ hashByte: "34", nonce: 8, block: 141, status: 1, input: successfulInput }),
+          ],
+          truncated: false,
+          pages: 1,
+        };
+      },
+    ],
+  });
+
+  assert.deepEqual(calls, ["primary", "fallback"]);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].failedTransactionHash, `0x${"33".repeat(32)}`);
+  assert.equal(result.pairs[0].successfulTransactionHash, `0x${"34".repeat(32)}`);
+});
+
+test("default resilient discovery handles both keyless rate-limit response forms", async () => {
+  for (const routeScanResponse of [
+    { ok: false, status: 429, body: { cancel: async () => {} } },
+    {
+      ok: true,
+      json: async () => ({ status: "0", message: "NOTOK", result: "Max rate limit reached" }),
+    },
+  ]) {
+    const urls = [];
+    const result = await discoverWalletSeaDropPairsResilient({
+      ...config(),
+      fetchImpl: async (url) => {
+        urls.push(url);
+        if (new URL(url).hostname === "api.routescan.io") return routeScanResponse;
+        return {
+          ok: true,
+          json: async () => ({ items: [], next_page_params: null }),
+        };
+      },
+    });
+    assert.equal(urls.length, 2);
+    assert.equal(urls[0].origin + urls[0].pathname, ROUTESCAN_ETHEREUM_API);
+    assert.equal(urls[0].searchParams.get("address"), wallet);
+    assert.equal(urls[0].searchParams.get("startblock"), "100");
+    assert.equal(urls[0].searchParams.get("endblock"), "200");
+    assert.equal(urls[0].searchParams.get("page"), "1");
+    assert.equal(urls[0].searchParams.get("offset"), "100");
+    assert.equal(urls[0].searchParams.get("sort"), "desc");
+    assert.equal(urls[0].searchParams.has("apikey"), false);
+    assert.equal(urls[1].hostname, "eth.blockscout.com");
+    assert.equal(result.truncated, false);
+    assert.deepEqual(result.attribution, ROUTESCAN_ATTRIBUTION);
+  }
+});
+
+test("a status-one non-OK primary envelope hard-fails into the resilient fallback", async () => {
+  for (const message of ["NOTOK", "ok", "OK "]) {
+    const hosts = [];
+    const result = await discoverWalletSeaDropPairsResilient({
+      ...config(),
+      fetchImpl: async (url) => {
+        const host = new URL(url).hostname;
+        hosts.push(host);
+        if (host === "api.routescan.io") {
+          return {
+            ok: true,
+            json: async () => ({ status: "1", message, result: [] }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({ items: [], next_page_params: null }),
+        };
+      },
+    });
+
+    assert.deepEqual(hosts, ["api.routescan.io", "eth.blockscout.com"]);
+    assert.equal(result.truncated, false);
+    assert.deepEqual(result.transactions, []);
+  }
+});
+
+test("canonical empty primary histories do not call the fallback", async () => {
+  for (const body of [
+    { status: "0", message: "No transactions found", result: [] },
+    { status: "1", message: "OK", result: [] },
+  ]) {
+    let calls = 0;
+    const result = await discoverWalletSeaDropPairsResilient({
+      ...config(),
+      fetchImpl: async () => {
+        calls += 1;
+        return { ok: true, json: async () => body };
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.truncated, false);
+    assert.deepEqual(result.pairs, []);
+  }
+});
+
+test("malformed or non-empty no-transactions envelopes force the resilient fallback", async () => {
+  for (const malformedResult of [
+    undefined,
+    null,
+    "No transactions found",
+    { unexpected: true },
+    [{ unexpected: true }],
+  ]) {
+    const hosts = [];
+    const result = await discoverWalletSeaDropPairsResilient({
+      ...config(),
+      fetchImpl: async (url) => {
+        hosts.push(new URL(url).hostname);
+        if (new URL(url).hostname === "api.routescan.io") {
+          return {
+            ok: true,
+            json: async () => ({
+              status: "0",
+              message: "No transactions found",
+              result: malformedResult,
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({ items: [], next_page_params: null }),
+        };
+      },
+    });
+
+    assert.deepEqual(hosts, ["api.routescan.io", "eth.blockscout.com"]);
+    assert.equal(result.truncated, false);
+    assert.deepEqual(result.transactions, []);
+  }
+});
+
+test("a complete-empty fallback cannot erase a valid pair from a truncated primary", async () => {
+  const failedInput = mintInput(11n, `0x${"31".repeat(65)}`);
+  const successfulInput = mintInput(12n, `0x${"32".repeat(65)}`);
+  const validPair = [
+    transaction({ hashByte: "35", nonce: 7, block: 140, status: 0, input: failedInput }),
+    transaction({ hashByte: "36", nonce: 8, block: 141, status: 1, input: successfulInput }),
+  ];
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      async () => ({ transactions: validPair, truncated: true, pages: 10 }),
+      async () => ({ transactions: [], truncated: false, pages: 1 }),
+    ],
+  });
+
+  assert.equal(result.truncated, true);
+  assert.equal(result.transactions.length, 2);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].failedTransactionHash, `0x${"35".repeat(32)}`);
+});
+
+test("a later-page rate limit preserves normalized rows as a marked partial history", async () => {
+  const failedInput = mintInput(13n, `0x${"33".repeat(65)}`);
+  const successfulInput = mintInput(14n, `0x${"34".repeat(65)}`);
+  let page = 0;
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      (options) => fetchWalletTransactions({
+        ...options,
+        pageSize: 2,
+        maxPages: 3,
+        fetchImpl: async () => {
+          page += 1;
+          if (page === 1) {
+            return {
+              ok: true,
+              json: async () => ({
+                status: "1",
+                message: "OK",
+                result: [
+                  transaction({ hashByte: "37", nonce: 9, block: 150, status: 0, input: failedInput }),
+                  transaction({ hashByte: "38", nonce: 10, block: 151, status: 1, input: successfulInput }),
+                ],
+              }),
+            };
+          }
+          return { ok: false, status: 429, body: { cancel: async () => {} } };
+        },
+      }),
+      async () => ({ transactions: [], truncated: false, pages: 1 }),
+    ],
+  });
+
+  assert.equal(page, 2);
+  assert.equal(result.truncated, true);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].successfulTransactionHash, `0x${"38".repeat(32)}`);
+});
+
+test("a later-page HTTP-200 rate-limit envelope preserves normalized rows as partial", async () => {
+  const failedInput = mintInput(17n, `0x${"37".repeat(65)}`);
+  const successfulInput = mintInput(18n, `0x${"38".repeat(65)}`);
+  let page = 0;
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      (options) => fetchWalletTransactions({
+        ...options,
+        pageSize: 2,
+        maxPages: 3,
+        fetchImpl: async () => {
+          page += 1;
+          if (page === 1) {
+            return {
+              ok: true,
+              json: async () => ({
+                status: "1",
+                message: "OK",
+                result: [
+                  transaction({ hashByte: "3b", nonce: 13, block: 162, status: 0, input: failedInput }),
+                  transaction({ hashByte: "3c", nonce: 14, block: 163, status: 1, input: successfulInput }),
+                ],
+              }),
+            };
+          }
+          return {
+            ok: true,
+            json: async () => ({
+              status: "0",
+              message: "NOTOK",
+              result: "Max rate limit reached, please use API Key for higher rate limit",
+            }),
+          };
+        },
+      }),
+      async () => ({ transactions: [], truncated: false, pages: 1 }),
+    ],
+  });
+
+  assert.equal(page, 2);
+  assert.equal(result.truncated, true);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].successfulTransactionHash, `0x${"3c".repeat(32)}`);
+});
+
+test("a declared oversized later page preserves earlier rows as truncated without parsing", async () => {
+  let page = 0;
+  let parsedOversize = 0;
+  let cancellations = 0;
+  const result = await fetchWalletTransactions({
+    ...config(),
+    pageSize: 2,
+    maxPages: 3,
+    maximumResponseBytes: 200,
+    fetchImpl: async () => {
+      page += 1;
+      if (page === 1) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: "1",
+            message: "OK",
+            result: [
+              transaction({ hashByte: "41", nonce: 19, block: 168, status: 0 }),
+              transaction({ hashByte: "42", nonce: 20, block: 169, status: 1 }),
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        headers: { get: () => "201" },
+        body: { cancel: async () => { cancellations += 1; } },
+        json: async () => {
+          parsedOversize += 1;
+          return { status: "1", message: "OK", result: [] };
+        },
+      };
+    },
+  });
+
+  assert.equal(page, 2);
+  assert.equal(parsedOversize, 0);
+  assert.equal(cancellations, 1);
+  assert.equal(result.truncated, true);
+  assert.equal(result.transactions.length, 2);
+});
+
+test("a streamed oversized later page cancels its reader and preserves earlier rows", async () => {
+  let page = 0;
+  let reads = 0;
+  let cancellations = 0;
+  let releases = 0;
+  const chunks = [new Uint8Array(12), new Uint8Array(12)];
+  const result = await fetchWalletTransactions({
+    ...config(),
+    pageSize: 2,
+    maxPages: 3,
+    maximumResponseBytes: 20,
+    fetchImpl: async () => {
+      page += 1;
+      if (page === 1) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: "1",
+            message: "OK",
+            result: [
+              transaction({ hashByte: "43", nonce: 21, block: 170, status: 0 }),
+              transaction({ hashByte: "44", nonce: 22, block: 171, status: 1 }),
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        headers: { get: () => null },
+        body: {
+          getReader: () => ({
+            read: async () => {
+              const value = chunks[reads];
+              reads += 1;
+              return value ? { done: false, value } : { done: true };
+            },
+            cancel: async () => {
+              cancellations += 1;
+              throw new Error("synthetic cancellation failure");
+            },
+            releaseLock: () => { releases += 1; },
+          }),
+        },
+      };
+    },
+  });
+
+  assert.equal(page, 2);
+  assert.equal(reads, 2);
+  assert.equal(cancellations, 1);
+  assert.equal(releases, 1);
+  assert.equal(result.truncated, true);
+  assert.equal(result.transactions.length, 2);
+});
+
+test("malformed JSON on a later page remains a hard provider failure", async () => {
+  let page = 0;
+  await assert.rejects(
+    fetchWalletTransactions({
+      ...config(),
+      pageSize: 2,
+      maxPages: 3,
+      fetchImpl: async () => {
+        page += 1;
+        if (page === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              status: "1",
+              message: "OK",
+              result: [
+                transaction({ hashByte: "45", nonce: 23, block: 172, status: 0 }),
+                transaction({ hashByte: "46", nonce: 24, block: 173, status: 1 }),
+              ],
+            }),
+          };
+        }
+        return { ok: true, text: async () => "{" };
+      },
+    }),
+    SyntaxError,
+  );
+  assert.equal(page, 2);
+});
+
+test("a stalled later-page body is aborted, cancelled, and retained as partial history", async () => {
+  const failedInput = mintInput(19n, `0x${"39".repeat(65)}`);
+  const successfulInput = mintInput(20n, `0x${"3a".repeat(65)}`);
+  let page = 0;
+  let aborts = 0;
+  let cancellations = 0;
+  let releases = 0;
+  let finishRead;
+  const started = performance.now();
+  const result = await fetchWalletTransactions({
+    ...config(),
+    pageSize: 2,
+    maxPages: 3,
+    timeoutMs: 30,
+    fetchImpl: async (_url, { signal }) => {
+      page += 1;
+      if (page === 1) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: "1",
+            message: "OK",
+            result: [
+              transaction({ hashByte: "3f", nonce: 17, block: 166, status: 0, input: failedInput }),
+              transaction({ hashByte: "40", nonce: 18, block: 167, status: 1, input: successfulInput }),
+            ],
+          }),
+        };
+      }
+      signal.addEventListener("abort", () => { aborts += 1; }, { once: true });
+      return {
+        ok: true,
+        headers: { get: () => null },
+        body: {
+          getReader: () => ({
+            read: () => new Promise((resolve) => { finishRead = resolve; }),
+            cancel: async () => {
+              cancellations += 1;
+              finishRead?.({ done: true });
+            },
+            releaseLock: () => { releases += 1; },
+          }),
+        },
+      };
+    },
+  });
+  const elapsed = performance.now() - started;
+
+  assert.equal(page, 2);
+  assert.equal(result.truncated, true);
+  assert.equal(result.transactions.length, 2);
+  assert.equal(aborts, 1);
+  assert.equal(cancellations, 1);
+  assert.equal(releases, 1);
+  assert.ok(elapsed >= 20, `body deadline ended too early: ${elapsed}ms`);
+  assert.ok(elapsed < 200, `body deadline exceeded bound: ${elapsed}ms`);
+});
+
+test("a completed history body clears its page timer", async () => {
+  let observedSignal;
+  let aborts = 0;
+  const result = await fetchWalletTransactions({
+    ...config(),
+    timeoutMs: 20,
+    fetchImpl: async (_url, { signal }) => {
+      observedSignal = signal;
+      signal.addEventListener("abort", () => { aborts += 1; }, { once: true });
+      return {
+        ok: true,
+        json: async () => ({ status: "1", message: "OK", result: [] }),
+      };
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(result.truncated, false);
+  assert.equal(observedSignal.aborted, false);
+  assert.equal(aborts, 0);
+});
+
+test("an arbitrary later-page NOTOK envelope remains a hard provider failure", async () => {
+  let page = 0;
+  await assert.rejects(
+    fetchWalletTransactions({
+      ...config(),
+      pageSize: 2,
+      maxPages: 3,
+      fetchImpl: async () => {
+        page += 1;
+        if (page === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              status: "1",
+              message: "OK",
+              result: [
+                transaction({ hashByte: "3d", nonce: 15, block: 164, status: 0 }),
+                transaction({ hashByte: "3e", nonce: 16, block: 165, status: 1 }),
+              ],
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            status: "0",
+            message: "NOTOK",
+            result: "Invalid API Key",
+          }),
+        };
+      },
+    }),
+    /invalid transaction response/,
+  );
+  assert.equal(page, 2);
+});
+
+test("merged fallback ranks a qualifying pair above a larger irrelevant history", async () => {
+  const failedInput = mintInput(15n, `0x${"35".repeat(65)}`);
+  const successfulInput = mintInput(16n, `0x${"36".repeat(65)}`);
+  const pairRows = [
+    transaction({ hashByte: "39", nonce: 11, block: 160, status: 0, input: failedInput }),
+    transaction({ hashByte: "3a", nonce: 12, block: 161, status: 1, input: successfulInput }),
+  ];
+  const irrelevantRows = Array.from({ length: 20 }, (_, index) => transaction({
+    hashByte: (64 + index).toString(16),
+    nonce: 30 + index,
+    block: 170 + index,
+    status: 1,
+    input: "0x",
+  }));
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      async () => ({ transactions: pairRows, truncated: true, pages: 2 }),
+      async () => ({ transactions: irrelevantRows, truncated: true, pages: 6 }),
+    ],
+  });
+
+  assert.equal(result.transactions.length, 22);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].failedTransactionHash, `0x${"39".repeat(32)}`);
+});
+
+test("same-hash conflicts retain the canonical fallback variant without duplicate candidates", async () => {
+  const failedInput = mintInput(21n, `0x${"3b".repeat(65)}`);
+  const successfulInput = mintInput(22n, `0x${"3c".repeat(65)}`);
+  const failed = transaction({ hashByte: "47", nonce: 25, block: 174, status: 0, input: failedInput });
+  const successful = transaction({ hashByte: "48", nonce: 26, block: 175, status: 1, input: successfulInput });
+  const conflictingFailed = { ...failed, txreceipt_status: "1", isError: "0" };
+  const conflictingSuccessful = { ...successful, txreceipt_status: "0", isError: "1" };
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      async () => ({
+        transactions: [conflictingFailed, conflictingSuccessful],
+        truncated: true,
+        pages: 2,
+      }),
+      async () => ({
+        transactions: [failed, successful, { ...successful }],
+        truncated: false,
+        pages: 1,
+      }),
+    ],
+  });
+
+  assert.equal(result.transactions.length, 4);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].failedTransactionHash, failed.hash);
+  assert.equal(result.pairs[0].successfulTransactionHash, successful.hash);
+});
+
+test("complete fallback candidates survive newer truncated-primary decoys in the first two slots", async () => {
+  const failedInput = mintInput(23n, `0x${"3d".repeat(65)}`);
+  const successfulInput = mintInput(24n, `0x${"3e".repeat(65)}`);
+  const primaryRows = [
+    transaction({ hashByte: "49", nonce: 36, block: 186, status: 0, input: failedInput }),
+    transaction({ hashByte: "4a", nonce: 37, block: 187, status: 1, input: successfulInput }),
+    transaction({ hashByte: "4b", nonce: 34, block: 182, status: 0, input: failedInput }),
+    transaction({ hashByte: "4c", nonce: 35, block: 183, status: 1, input: successfulInput }),
+    transaction({ hashByte: "4d", nonce: 32, block: 178, status: 0, input: failedInput }),
+    transaction({ hashByte: "4e", nonce: 33, block: 179, status: 1, input: successfulInput }),
+  ];
+  const fallbackRows = [
+    transaction({ hashByte: "4f", nonce: 5, block: 124, status: 0, input: failedInput }),
+    transaction({ hashByte: "50", nonce: 6, block: 125, status: 1, input: successfulInput }),
+  ];
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      async () => ({ transactions: primaryRows, truncated: true, pages: 6 }),
+      async () => ({ transactions: fallbackRows, truncated: false, pages: 1 }),
+    ],
+  });
+
+  assert.deepEqual(result.pairs.slice(0, 2).map(({ failedTransactionHash }) => failedTransactionHash), [
+    fallbackRows[0].hash,
+    primaryRows[0].hash,
+  ]);
+});
+
+test("provider queues dedupe an identical pair identity case-insensitively", async () => {
+  const failedInput = mintInput(25n, `0x${"3f".repeat(65)}`);
+  const successfulInput = mintInput(26n, `0x${"40".repeat(65)}`);
+  const failed = transaction({ hashByte: "ab", nonce: 27, block: 176, status: 0, input: failedInput });
+  const successful = transaction({ hashByte: "cd", nonce: 28, block: 177, status: 1, input: successfulInput });
+  const uppercaseRows = [failed, successful].map((row) => ({
+    ...row,
+    hash: `0x${row.hash.slice(2).toUpperCase()}`,
+  }));
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      async () => ({ transactions: uppercaseRows, truncated: true, pages: 2 }),
+      async () => ({ transactions: [failed, successful], truncated: false, pages: 1 }),
+    ],
+  });
+
+  assert.equal(result.transactions.length, 2);
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].failedTransactionHash, failed.hash);
+  assert.equal(result.pairs[0].successfulTransactionHash, successful.hash);
+});
+
+test("provider-local queues never synthesize a cross-provider half-pair", async () => {
+  const failedInput = mintInput(27n, `0x${"41".repeat(65)}`);
+  const successfulInput = mintInput(28n, `0x${"42".repeat(65)}`);
+  const failed = transaction({ hashByte: "51", nonce: 29, block: 178, status: 0, input: failedInput });
+  const successful = transaction({ hashByte: "52", nonce: 30, block: 179, status: 1, input: successfulInput });
+  const result = await discoverWalletSeaDropPairsResilient({
+    ...config(),
+    feeRecipient,
+    historyFetchers: [
+      async () => ({ transactions: [failed], truncated: true, pages: 1 }),
+      async () => ({ transactions: [successful], truncated: false, pages: 1 }),
+    ],
+  });
+
+  assert.equal(result.transactions.length, 2);
+  assert.equal(result.truncated, true);
+  assert.deepEqual(result.pairs, []);
+});
+
+test("two hung default history providers remain inside their combined deadline", async () => {
+  const started = performance.now();
+  await assert.rejects(
+    discoverWalletSeaDropPairsResilient({
+      ...config(),
+      timeoutMs: 20,
+      fetchImpl: async (_url, { signal }) => new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+    }),
+    AggregateError,
+  );
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed >= 30, `combined deadline ended too early: ${elapsed}ms`);
+  assert.ok(elapsed < 200, `combined deadline exceeded bound: ${elapsed}ms`);
 });
 
 test("advisory discovery finds only an exact paid consecutive failed-then-success SeaDrop pair", () => {
@@ -165,5 +1099,19 @@ function transaction({ hashByte, nonce, block, status, input, to = SEA_DROP_MAIN
     isError: status === 0 ? "1" : "0",
     input,
     value,
+  };
+}
+
+function v2Transaction({ hashByte, nonce, block, status }) {
+  return {
+    hash: `0x${hashByte.repeat(32)}`,
+    from: { hash: wallet },
+    to: { hash: SEA_DROP_MAINNET },
+    nonce,
+    block_number: block,
+    status,
+    result: status === "ok" ? "success" : "reverted",
+    raw_input: "0x",
+    value: "0",
   };
 }

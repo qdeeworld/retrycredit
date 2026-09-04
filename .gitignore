@@ -4,6 +4,9 @@ cache/
 dist/
 broadcast/
 .env
+.dev.vars
+.dev.vars.*
+.wrangler/
 .DS_Store
 
 # Private demo and submission preparation belongs outside the repository

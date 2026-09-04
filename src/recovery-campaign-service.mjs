@@ -67,11 +67,15 @@ export const RECOVERY_DEFAULTS = Object.freeze({
   releaseGasLimit: 6_000_000n,
   releaseLogChunkBlocks: 10_000,
   releaseLogLookbackBlocks: 250_000,
+  releaseLogConcurrency: 1,
   sourceLookupConcurrency: 4,
   sourceLookupQueueLimit: 16,
   sourceLookupTimeoutMs: 20_000,
   intakeTimeoutMs: 25_000,
   sourceProviderAttempts: 3,
+  sourceRpcBatchMaxCount: 100,
+  settlementRpcBatchMaxCount: 100,
+  releaseRpcBatchMaxCount: 100,
   sourcePairCacheMaxEntries: 256,
   sourcePairCacheTtlSeconds: 10 * 60,
   sourcePairNegativeCacheTtlSeconds: 30,
@@ -79,6 +83,7 @@ export const RECOVERY_DEFAULTS = Object.freeze({
   releaseQueueLimit: 8,
   discoveryTimeoutMs: 35_000,
   discoveryCandidateLimit: 4,
+  discoverySourceLookupConcurrency: 4,
 });
 
 const DEFAULT_CREDITCOIN_RPC = "https://rpc.cc3-testnet.creditcoin.network";
@@ -99,6 +104,7 @@ export class RecoveryCampaignService {
     poolAddress,
     campaignNumber,
     creditcoinRpc = DEFAULT_CREDITCOIN_RPC,
+    releaseReceiptRpc,
     proofBuilderUrl = DEFAULT_PROOF_BUILDER,
     ethereumRpcUrls = DEFAULT_ETHEREUM_RPCS,
     publicOrigin,
@@ -107,10 +113,15 @@ export class RecoveryCampaignService {
   }) {
     const creditcoinRequest = new FetchRequest(creditcoinRpc);
     creditcoinRequest.timeout = 15_000;
+    const settlementRpcBatchMaxCount = requireBoundedInteger(
+      config.settlementRpcBatchMaxCount ?? RECOVERY_DEFAULTS.settlementRpcBatchMaxCount,
+      "settlement RPC batch size",
+      { minimum: 1, maximum: 100 },
+    );
     const ccProvider = new JsonRpcProvider(
       creditcoinRequest,
       RECOVERY_DEFAULTS.settlementChainId,
-      { staticNetwork: true },
+      { staticNetwork: true, batchMaxCount: settlementRpcBatchMaxCount },
     );
     // Keep permissionless proof relay writes out of the campaign sponsor's
     // nonce domain. This role is already used as the isolated CC3 relayer by
@@ -129,6 +140,11 @@ export class RecoveryCampaignService {
       "source provider attempts",
       { minimum: 1, maximum: 3 },
     );
+    const sourceRpcBatchMaxCount = requireBoundedInteger(
+      config.sourceRpcBatchMaxCount ?? RECOVERY_DEFAULTS.sourceRpcBatchMaxCount,
+      "source RPC batch size",
+      { minimum: 1, maximum: 100 },
+    );
     // The outer work-pool deadline protects callers and queue capacity. Each
     // underlying HTTP request also needs a finite deadline so a dead RPC cannot
     // retain a pool slot forever after the caller has timed out.
@@ -139,7 +155,10 @@ export class RecoveryCampaignService {
     const ethereumProviders = ethereumRpcUrls.map((url) => {
       const request = new FetchRequest(url);
       request.timeout = sourceProviderRequestTimeoutMs;
-      return new JsonRpcProvider(request, RECOVERY_DEFAULTS.sourceChainId, { staticNetwork: true });
+      return new JsonRpcProvider(request, RECOVERY_DEFAULTS.sourceChainId, {
+        staticNetwork: true,
+        batchMaxCount: sourceRpcBatchMaxCount,
+      });
     });
     const normalizedPool = requireNonzeroAddress(poolAddress, "recovery pool");
     const contractVersion = requireRecoveryContractVersion(config.contractVersion);
@@ -148,6 +167,28 @@ export class RecoveryCampaignService {
       selectRecoveryCampaignAbi(contractVersion),
       relayerWallet,
     );
+    let releasePoolContract = poolContract;
+    let releaseFallbackPoolContract = null;
+    if (releaseReceiptRpc) {
+      const releaseRpcBatchMaxCount = requireBoundedInteger(
+        config.releaseRpcBatchMaxCount ?? RECOVERY_DEFAULTS.releaseRpcBatchMaxCount,
+        "release RPC batch size",
+        { minimum: 1, maximum: 100 },
+      );
+      const releaseRequest = new FetchRequest(releaseReceiptRpc);
+      releaseRequest.timeout = 15_000;
+      const releaseProvider = new JsonRpcProvider(
+        releaseRequest,
+        RECOVERY_DEFAULTS.settlementChainId,
+        { staticNetwork: true, batchMaxCount: releaseRpcBatchMaxCount },
+      );
+      releasePoolContract = new Contract(
+        normalizedPool,
+        selectRecoveryCampaignAbi(contractVersion),
+        releaseProvider,
+      );
+      releaseFallbackPoolContract = poolContract;
+    }
     return new RecoveryCampaignService({
       poolAddress: normalizedPool,
       campaignNumber,
@@ -162,6 +203,111 @@ export class RecoveryCampaignService {
       publicOrigin,
       config,
       poolContract,
+      releasePoolContract,
+      releaseFallbackPoolContract,
+      contractFactory: (address, abi) => new Contract(address, abi, ccProvider),
+      ...options,
+    });
+  }
+
+  static fromReadOnly({
+    relayerAddress,
+    poolAddress,
+    campaignNumber,
+    creditcoinRpc = DEFAULT_CREDITCOIN_RPC,
+    releaseReceiptRpc,
+    proofBuilderUrl = DEFAULT_PROOF_BUILDER,
+    ethereumRpcUrls = DEFAULT_ETHEREUM_RPCS,
+    publicOrigin,
+    config = {},
+    ...options
+  }) {
+    const creditcoinRequest = new FetchRequest(creditcoinRpc);
+    creditcoinRequest.timeout = 15_000;
+    const settlementRpcBatchMaxCount = requireBoundedInteger(
+      config.settlementRpcBatchMaxCount ?? RECOVERY_DEFAULTS.settlementRpcBatchMaxCount,
+      "settlement RPC batch size",
+      { minimum: 1, maximum: 100 },
+    );
+    const ccProvider = new JsonRpcProvider(
+      creditcoinRequest,
+      RECOVERY_DEFAULTS.settlementChainId,
+      { staticNetwork: true, batchMaxCount: settlementRpcBatchMaxCount },
+    );
+    const normalizedRelayer = requireNonzeroAddress(relayerAddress, "recovery relayer");
+    const relayerIdentity = Object.freeze({ address: normalizedRelayer });
+    const sourceLookupTimeoutMs = requireBoundedInteger(
+      config.sourceLookupTimeoutMs ?? RECOVERY_DEFAULTS.sourceLookupTimeoutMs,
+      "source lookup timeout",
+      { minimum: 250, maximum: 120_000 },
+    );
+    const sourceProviderAttempts = requireBoundedInteger(
+      config.sourceProviderAttempts ?? RECOVERY_DEFAULTS.sourceProviderAttempts,
+      "source provider attempts",
+      { minimum: 1, maximum: 3 },
+    );
+    const sourceRpcBatchMaxCount = requireBoundedInteger(
+      config.sourceRpcBatchMaxCount ?? RECOVERY_DEFAULTS.sourceRpcBatchMaxCount,
+      "source RPC batch size",
+      { minimum: 1, maximum: 100 },
+    );
+    const sourceProviderRequestTimeoutMs = Math.max(
+      250,
+      Math.min(6_000, Math.floor(sourceLookupTimeoutMs / sourceProviderAttempts) - 250),
+    );
+    const ethereumProviders = ethereumRpcUrls.map((url) => {
+      const request = new FetchRequest(url);
+      request.timeout = sourceProviderRequestTimeoutMs;
+      return new JsonRpcProvider(request, RECOVERY_DEFAULTS.sourceChainId, {
+        staticNetwork: true,
+        batchMaxCount: sourceRpcBatchMaxCount,
+      });
+    });
+    const normalizedPool = requireNonzeroAddress(poolAddress, "recovery pool");
+    const contractVersion = requireRecoveryContractVersion(config.contractVersion);
+    const poolContract = new Contract(
+      normalizedPool,
+      selectRecoveryCampaignAbi(contractVersion),
+      ccProvider,
+    );
+    let releasePoolContract = poolContract;
+    let releaseFallbackPoolContract = null;
+    if (releaseReceiptRpc) {
+      const releaseRpcBatchMaxCount = requireBoundedInteger(
+        config.releaseRpcBatchMaxCount ?? RECOVERY_DEFAULTS.releaseRpcBatchMaxCount,
+        "release RPC batch size",
+        { minimum: 1, maximum: 100 },
+      );
+      const releaseRequest = new FetchRequest(releaseReceiptRpc);
+      releaseRequest.timeout = 15_000;
+      const releaseProvider = new JsonRpcProvider(
+        releaseRequest,
+        RECOVERY_DEFAULTS.settlementChainId,
+        { staticNetwork: true, batchMaxCount: releaseRpcBatchMaxCount },
+      );
+      releasePoolContract = new Contract(
+        normalizedPool,
+        selectRecoveryCampaignAbi(contractVersion),
+        releaseProvider,
+      );
+      releaseFallbackPoolContract = poolContract;
+    }
+    return new RecoveryCampaignService({
+      poolAddress: normalizedPool,
+      campaignNumber,
+      ccProvider,
+      relayerWallet: relayerIdentity,
+      ethereumProviders,
+      proofBuilder: new proofProvider.service.ProofBuilder(
+        RECOVERY_DEFAULTS.sourceChainKey,
+        proofBuilderUrl,
+        RECOVERY_DEFAULTS.proofTimeoutMs,
+      ),
+      publicOrigin,
+      config,
+      poolContract,
+      releasePoolContract,
+      releaseFallbackPoolContract,
       contractFactory: (address, abi) => new Contract(address, abi, ccProvider),
       ...options,
     });
@@ -176,6 +322,8 @@ export class RecoveryCampaignService {
     proofBuilder,
     publicOrigin,
     poolContract,
+    releasePoolContract,
+    releaseFallbackPoolContract,
     verifierContract,
     predicateContract,
     nativeVerifierContract,
@@ -200,6 +348,19 @@ export class RecoveryCampaignService {
       selectRecoveryCampaignAbi(this.contractVersion),
       relayerWallet,
     );
+    this.releasePools = Object.freeze([
+      releasePoolContract ?? this.pool,
+      ...(releaseFallbackPoolContract && releaseFallbackPoolContract !== releasePoolContract
+        ? [releaseFallbackPoolContract]
+        : []),
+    ]);
+    if (this.releasePools.some((pool) => requireContractAddress(pool) !== this.poolAddress)) {
+      throw new WorkerError(
+        "INVALID_RECOVERY_CONFIGURATION",
+        "Recovery receipt readers must be bound to the configured pool.",
+        500,
+      );
+    }
     this.verifier = verifierContract ?? null;
     this.predicate = predicateContract ?? null;
     this.nativeVerifier = nativeVerifierContract ?? null;
@@ -230,6 +391,11 @@ export class RecoveryCampaignService {
     const releaseLogLookbackBlocks = requirePositiveInteger(
       mergedConfig.releaseLogLookbackBlocks,
       "release log lookback blocks",
+    );
+    const releaseLogConcurrency = requireBoundedInteger(
+      mergedConfig.releaseLogConcurrency,
+      "release log concurrency",
+      { minimum: 1, maximum: 6 },
     );
     if (
       releaseLogChunkBlocks > 50_000
@@ -272,10 +438,30 @@ export class RecoveryCampaignService {
       "wallet discovery candidate limit",
       { minimum: 1, maximum: 8 },
     );
+    const discoverySourceLookupConcurrency = requireBoundedInteger(
+      mergedConfig.discoverySourceLookupConcurrency,
+      "wallet discovery source concurrency",
+      { minimum: 1, maximum: 4 },
+    );
     const sourceProviderAttempts = requireBoundedInteger(
       mergedConfig.sourceProviderAttempts,
       "source provider attempts",
       { minimum: 1, maximum: 3 },
+    );
+    const sourceRpcBatchMaxCount = requireBoundedInteger(
+      mergedConfig.sourceRpcBatchMaxCount,
+      "source RPC batch size",
+      { minimum: 1, maximum: 100 },
+    );
+    const settlementRpcBatchMaxCount = requireBoundedInteger(
+      mergedConfig.settlementRpcBatchMaxCount,
+      "settlement RPC batch size",
+      { minimum: 1, maximum: 100 },
+    );
+    const releaseRpcBatchMaxCount = requireBoundedInteger(
+      mergedConfig.releaseRpcBatchMaxCount,
+      "release RPC batch size",
+      { minimum: 1, maximum: 100 },
     );
     const sourcePairCacheMaxEntries = requireBoundedInteger(
       mergedConfig.sourcePairCacheMaxEntries,
@@ -307,13 +493,18 @@ export class RecoveryCampaignService {
       contractVersion: this.contractVersion,
       releaseLogChunkBlocks,
       releaseLogLookbackBlocks,
+      releaseLogConcurrency,
       sourceLookupConcurrency,
       sourceLookupQueueLimit,
       sourceLookupTimeoutMs,
       intakeTimeoutMs,
       discoveryTimeoutMs,
       discoveryCandidateLimit,
+      discoverySourceLookupConcurrency,
       sourceProviderAttempts,
+      sourceRpcBatchMaxCount,
+      settlementRpcBatchMaxCount,
+      releaseRpcBatchMaxCount,
       sourcePairCacheMaxEntries,
       sourcePairCacheTtlSeconds,
       sourcePairNegativeCacheTtlSeconds,
@@ -369,7 +560,7 @@ export class RecoveryCampaignService {
       ),
     });
     this.discoverySourceLookupPool = new BoundedWorkPool({
-      concurrency: 4,
+      concurrency: discoverySourceLookupConcurrency,
       queueLimit: 4,
       timeoutMs: sourceLookupTimeoutMs,
       busyError: () => new WorkerError(
@@ -482,6 +673,7 @@ export class RecoveryCampaignService {
     return Object.freeze({
       wallet,
       authority: "advisory-discovery-only",
+      ...(discovered.attribution ? { attribution: discovered.attribution } : {}),
       historyRowsInspected: discovered.transactions.length,
       historyTruncated: discovered.truncated,
       pagesInspected: discovered.pages,
@@ -838,15 +1030,15 @@ export class RecoveryCampaignService {
         seaDrop,
         selector,
         maximumGap,
-      ] = await Promise.all([
-        this.verifier.predicate(),
-        this.verifier.verifier(),
-        this.verifier.SOURCE_CHAIN_KEY(),
-        this.verifier.SOURCE_CHAIN_ID(),
-        this.predicate.ETHEREUM_CHAIN_ID(),
-        this.predicate.SEADROP(),
-        this.predicate.MINT_SIGNED_SELECTOR(),
-        this.predicate.MAX_ATTESTCOIN_BATCH_BLOCK_GAP(),
+      ] = await boundedParallel([
+        () => this.verifier.predicate(),
+        () => this.verifier.verifier(),
+        () => this.verifier.SOURCE_CHAIN_KEY(),
+        () => this.verifier.SOURCE_CHAIN_ID(),
+        () => this.predicate.ETHEREUM_CHAIN_ID(),
+        () => this.predicate.SEADROP(),
+        () => this.predicate.MINT_SIGNED_SELECTOR(),
+        () => this.predicate.MAX_ATTESTCOIN_BATCH_BLOCK_GAP(),
       ]);
       if (requireAddress(verifierPredicate, "verifier predicate") !== predicateAddress) {
         throw new Error("pool and verifier predicate bindings differ");
@@ -898,15 +1090,15 @@ export class RecoveryCampaignService {
       startBlockValue,
       endBlockValue,
       deadlineValue,
-    ] = await Promise.all([
-      this.pool.legacyPool(),
-      this.pool.LEGACY_CAMPAIGN_NUMBER(),
-      this.pool.legacySponsor(),
-      this.pool.legacyTermsHash(),
-      this.pool.legacyBindingHash(),
-      this.pool.legacyStartBlock(),
-      this.pool.legacyEndBlock(),
-      this.pool.legacyDeadline(),
+    ] = await boundedParallel([
+      () => this.pool.legacyPool(),
+      () => this.pool.LEGACY_CAMPAIGN_NUMBER(),
+      () => this.pool.legacySponsor(),
+      () => this.pool.legacyTermsHash(),
+      () => this.pool.legacyBindingHash(),
+      () => this.pool.legacyStartBlock(),
+      () => this.pool.legacyEndBlock(),
+      () => this.pool.legacyDeadline(),
     ]);
     const poolAddress = requireNonzeroAddress(poolValue, "predecessor recovery pool");
     const campaignNumber = requirePositiveInteger(
@@ -1319,23 +1511,53 @@ export class RecoveryCampaignService {
   }
 
   async #releaseEvents(wallet) {
+    let lastError = null;
+    for (const pool of this.releasePools) {
+      try {
+        const events = await this.#releaseEventsFrom(pool, wallet);
+        if (events.length > 0) return events;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!lastError) return [];
+    if (lastError instanceof WorkerError) throw lastError;
+    throw new WorkerError(
+      "RECOVERY_STATE_UNAVAILABLE",
+      "Recovery release receipts are temporarily unavailable.",
+      503,
+      lastError,
+    );
+  }
+
+  async #releaseEventsFrom(pool, wallet) {
     try {
-      const filter = this.pool.filters.CreditReleased(this.campaignNumber, wallet);
+      const filter = pool.filters.CreditReleased(this.campaignNumber, wallet);
+      const provider = pool === this.pool ? this.ccProvider : pool.runner?.provider ?? pool.runner;
+      if (!provider?.getBlockNumber) throw new Error("recovery receipt reader has no provider");
       const latestBlock = requireSafeUint(
-        await this.ccProvider.getBlockNumber(),
+        await provider.getBlockNumber(),
         "latest Creditcoin block number",
       );
       const floor = Math.max(0, latestBlock - this.config.releaseLogLookbackBlocks + 1);
       let toBlock = latestBlock;
-
+      const windows = [];
       while (toBlock >= floor) {
         const fromBlock = Math.max(floor, toBlock - this.config.releaseLogChunkBlocks + 1);
-        const events = await this.pool.queryFilter(filter, fromBlock, toBlock);
-        if (events.length > 0) {
-          return events.map((event) => serializeReleaseEvent(event, this.poolAddress));
-        }
+        windows.push([fromBlock, toBlock]);
         if (fromBlock === floor) break;
         toBlock = fromBlock - 1;
+      }
+      for (let index = 0; index < windows.length; index += this.config.releaseLogConcurrency) {
+        const results = await Promise.all(
+          windows.slice(index, index + this.config.releaseLogConcurrency)
+            .map(([fromBlock, throughBlock]) => pool.queryFilter(filter, fromBlock, throughBlock)),
+        );
+        for (const events of results) {
+          if (events.length > 0) {
+            return events.map((event) => serializeReleaseEvent(event, this.poolAddress));
+          }
+        }
       }
       return [];
     } catch (error) {
@@ -2365,6 +2587,14 @@ function requireSafeUint(value, label) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${label} must be a safe uint`);
   return parsed;
+}
+
+async function boundedParallel(tasks, concurrency = 4) {
+  const values = [];
+  for (let index = 0; index < tasks.length; index += concurrency) {
+    values.push(...await Promise.all(tasks.slice(index, index + concurrency).map((task) => task())));
+  }
+  return values;
 }
 
 function requireTimestamp(value, label) {
