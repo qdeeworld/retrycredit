@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
+import {
+  cloudflareHeadersForApiOrigin,
+  PRODUCTION_API_ORIGIN,
+  SAME_ORIGIN_API_ORIGIN,
+  STAGING_API_ORIGIN,
+} from "../scripts/cloudflare-headers.mjs";
 
 const root = new URL("../", import.meta.url);
-const [html, app, styles, api, uiState, resumeState, gitignore, redirects, headers, license, readme] = await Promise.all([
+const [html, app, styles, api, uiState, resumeState, gitignore, redirects, headers, license, readme, viteConfig, dockerfile] = await Promise.all([
   readFile(new URL("web/index.html", root), "utf8"),
   readFile(new URL("web/src/main.jsx", root), "utf8"),
   readFile(new URL("web/src/styles.css", root), "utf8"),
@@ -15,6 +21,8 @@ const [html, app, styles, api, uiState, resumeState, gitignore, redirects, heade
   readFile(new URL("web/public/_headers", root), "utf8"),
   readFile(new URL("LICENSE", root), "utf8"),
   readFile(new URL("README.md", root), "utf8"),
+  readFile(new URL("vite.config.mjs", root), "utf8"),
+  readFile(new URL("Dockerfile", root), "utf8"),
 ]);
 
 test("the public shell is a multi-route Recovery Dispatch, not the old cockpit", () => {
@@ -59,6 +67,12 @@ test("Recovery leads with campaign truth and wallet-native discovery with pair f
   assert.match(app, /Completed retry/);
   assert.match(app, /Connection reveals only the selected public address/);
   assert.match(app, /independently rechecks any match before it can qualify/);
+  assert.match(app, /<DiscoveryReceipt result=\{discoveryResult\} \/>/);
+  assert.match(app, /selectDiscoveryAttribution\(result\?\.attribution\)/);
+  assert.match(app, /className="discovery-attribution"[\s\S]*target="_blank"[\s\S]*rel="noreferrer"/);
+  assert.match(uiState, /Powered by Routescan\.io APIs/);
+  assert.match(uiState, /https:\/\/routescan\.io\//);
+  assert.match(styles, /\.discovery-attribution \{[^}]*min-height:44px/s);
   assert.doesNotMatch(app, /Connect wallet and check/);
 
   assert.match(app, /One wallet\. One ordered source pair\. One fixed release\./);
@@ -117,6 +131,17 @@ test("the pair desk includes every required resilient state", () => {
   ]) assert.match(app, new RegExp(`"${state}"`));
 
   assert.match(app, /role="status" aria-live="polite" aria-atomic="true"/);
+  assert.match(app, /role="note"/);
+  assert.match(app, /Live checks, no signing/);
+  assert.match(app, /config\?\.readOnly[\s\S]*cannot request a signature or release credit/);
+  assert.match(app, /hasQualifyingResult && !needsStatusCheck && !config\?\.readOnly/);
+  assert.match(app, /Pair qualifies; release disabled here/);
+  assert.match(app, /Read-only staging stops before signing/);
+  assert.match(app, /const compactReadOnlyResult = readOnly && eligibility\?\.eligible === true/);
+  assert.match(app, /plain-boundary\$\{compactReadOnlyResult \? " compact-read-only-result" : ""\}/);
+  assert.match(app, /Stop before signing/);
+  assert.match(app, /Release disabled here/);
+  assert.match(styles, /@media\(max-width:820px\)[\s\S]*\.compact-read-only-result \.boundary-line \{ display:none; \}/);
   assert.match(app, /role="alert"/);
   assert.match(app, /pairOperations\.current\.invalidate\(\)/);
   assert.match(app, /operationIsCurrent\(operation, walletOperation\)/);
@@ -200,6 +225,7 @@ test("the open-pair API surface is bounded and archived helpers remain available
   assert.match(api, /body: \{ wallet, pair, issuedAt, expiresAt, signature \}/);
   assert.match(api, /body: \{ wallet, message, issuedAt, expiresAt, signature \}/);
   assert.match(api, /error\?\.status !== 425/);
+  assert.match(api, /onSubmitting\?\.\(\)/);
   assert.match(api, /onPending\?\./);
   assert.match(api, /onRetrying\?\./);
   assert.match(api, /class RateLimitedError extends Error/);
@@ -222,12 +248,22 @@ test("the interface keeps the public accessibility and responsive floor", () => 
   assert.match(styles, /\.example-action \{[^}]*min-height:44px/s);
   assert.match(styles, /\.transaction-field input \{[^}]*min-height:52px/s);
   assert.match(app, /<label htmlFor=\{id\}>\{label\}<\/label>/);
+  assert.match(app, /className="hash-readout"/);
+  assert.match(app, /href=\{`\$\{ETHEREUM_EXPLORER\}\/tx\/\$\{canonicalHash\}`\}/);
+  assert.match(app, /aria-label=\{`Open transaction \$\{canonicalHash\} on Etherscan`\}/);
+  assert.match(app, /compactHash\(canonicalHash\)/);
+  assert.match(styles, /\.hash-readout \{[^}]*min-height:44px/s);
+  assert.match(styles, /\.campaign-file \{[^}]*align-self:stretch/s);
+  assert.match(app, /className="file-registration" aria-hidden="true">Campaign file<\/div>/);
+  assert.doesNotMatch(app, /className="file-registration"[^>]*><span/);
+  assert.match(styles, /\.evidence-step ul \{[^}]*font-size:12px/s);
+  assert.match(styles, /@media\(max-width:480px\)[\s\S]*\.service-state \{ grid-row:3;/);
   assert.match(app, /aria-invalid=\{error \? "true" : "false"\}/);
   assert.match(app, /aria-describedby=\{`\$\{helperId\}/);
   assert.match(app, /<form className="pair-intake" onSubmit=\{onCheckPair\} noValidate aria-busy=\{busy\}>/);
   assert.match(app, /id="eligibility-heading" tabIndex="-1"/);
   assert.match(app, /document\.getElementById\("eligibility-heading"\)\?\.focus/);
-  assert.match(styles, /@media\(max-width:420px\)/);
+  assert.match(styles, /@media\(max-width:480px\)/);
   assert.match(styles, /\.service-state \{ grid-row:2; grid-column:2;/);
   assert.doesNotMatch(styles, /\.service-state \{ display:none;/);
   assert.match(styles, /\.step-status > span \{[^}]*font:700 19px/s);
@@ -249,6 +285,27 @@ test("the public release carries a license and Cloudflare security policy", () =
   assert.match(readme, /npm run verify:recovery-gate/);
   assert.match(headers, /Content-Security-Policy:/);
   assert.match(headers, /connect-src 'self' https:\/\/retrycredit-api\.onrender\.com/);
+  assert.doesNotMatch(headers, /https:\/\/retrycredit-api-staging\.qdworld001\.workers\.dev/);
+  const productionHeaders = cloudflareHeadersForApiOrigin(PRODUCTION_API_ORIGIN);
+  const sameOriginHeaders = cloudflareHeadersForApiOrigin(SAME_ORIGIN_API_ORIGIN);
+  const stagingHeaders = cloudflareHeadersForApiOrigin(STAGING_API_ORIGIN);
+  assert.equal(headers, productionHeaders);
+  assert.match(productionHeaders, new RegExp(PRODUCTION_API_ORIGIN.replaceAll(".", "\\.")));
+  assert.doesNotMatch(productionHeaders, new RegExp(STAGING_API_ORIGIN.replaceAll(".", "\\.")));
+  assert.match(stagingHeaders, new RegExp(STAGING_API_ORIGIN.replaceAll(".", "\\.")));
+  assert.doesNotMatch(stagingHeaders, new RegExp(PRODUCTION_API_ORIGIN.replaceAll(".", "\\.")));
+  assert.match(sameOriginHeaders, /connect-src 'self';/);
+  assert.doesNotMatch(sameOriginHeaders, /https:\/\/retrycredit-api/);
+  assert.throws(() => cloudflareHeadersForApiOrigin("https://example.invalid"), /unapproved API origin/);
+  assert.match(viteConfig, /const headers = cloudflareHeadersForApiOrigin\(apiOrigin\)/);
+  assert.match(viteConfig, /loadEnv\(mode, WEB_ROOT, "VITE_"\)/);
+  assert.match(viteConfig, /process\.env\.VITE_RETRYCREDIT_API_ORIGIN[\s\S]*\?\? fileEnv\.VITE_RETRYCREDIT_API_ORIGIN[\s\S]*\?\? SAME_ORIGIN_API_ORIGIN/);
+  assert.match(viteConfig, /cloudflareHeadersPlugin\(apiOrigin\)/);
+  assert.match(viteConfig, /"import\.meta\.env\.VITE_RETRYCREDIT_API_ORIGIN": JSON\.stringify\(apiOrigin\)/);
+  const dockerOriginScripts = dockerfile.indexOf("COPY scripts/cloudflare-headers.mjs scripts/verify-web-build-origin.mjs ./scripts/");
+  const dockerWebBuild = dockerfile.indexOf("RUN npm run build:web");
+  assert.ok(dockerOriginScripts >= 0);
+  assert.ok(dockerWebBuild > dockerOriginScripts);
   assert.match(headers, /frame-ancestors 'none'/);
   assert.match(headers, /X-Frame-Options: DENY/);
   assert.match(headers, /X-Content-Type-Options: nosniff/);
@@ -273,10 +330,82 @@ test("open tabs refresh campaign truth and never overstate unfinished browser ch
   assert.match(app, /window\.setInterval\(refreshVisible, CONFIG_REFRESH_INTERVAL_MS\)/);
   assert.match(app, /document\.addEventListener\("visibilitychange", refreshVisible\)/);
   assert.match(app, /setCampaignClock\(Date\.now\(\)\)/);
-  assert.match(app, /if \(configFlight\.current\) return configFlight\.current/);
+  assert.match(app, /if \(!forceFresh && configFlight\.current\) return configFlight\.current/);
+  assert.match(app, /const previousFlight = configFlight\.current/);
+  assert.match(app, /previousFlight\.catch\(\(\) => undefined\)\.then\(requestConfig\)/);
+  assert.match(app, /configFlight\.current = flight/);
   assert.match(app, /const busy = isBusyFlow\(flow\) \|\| authorizationPending/);
   assert.match(app, /setAuthorizationPending\(true\)/);
   assert.match(app, /setAuthorizationPending\(false\)/);
+  const challengeRequest = app.indexOf("await requestRecoveryIntakeChallenge");
+  const liveModeRecheck = app.indexOf("canContinueRecoveryAuthorization", challengeRequest);
+  const signatureRequest = app.indexOf('method: "personal_sign"', challengeRequest);
+  const postSignatureRefresh = app.indexOf("fetchRecoveryConfig({ forceFresh: true })", signatureRequest);
+  const postSignatureApply = app.indexOf("applyRecoveryConfig(postSignatureConfig)", postSignatureRefresh);
+  const postApplyOperationRecheck = app.indexOf("const postSignatureOperationCurrent", postSignatureApply);
+  const postSignatureRecheck = app.indexOf("canContinueRecoveryAuthorization", postSignatureRefresh);
+  const releaseRequest = app.indexOf("await releaseRecoveryPairWhenReady", signatureRequest);
+  const onSubmittingCallback = app.indexOf("onSubmitting: () => {", releaseRequest);
+  const submittedAtMarker = app.indexOf("submittedRecoveryStartedAt.current = Date.now()", signatureRequest);
+  const proofQueuedMarker = app.indexOf('updateFlow("proof-queued")', submittedAtMarker);
+  const releaseSubmittedMarker = app.indexOf("releaseSubmitted = true", proofQueuedMarker);
+  const persistenceMarker = app.indexOf('persistSubmittedRecovery("proof-queued"', releaseSubmittedMarker);
+  const onPendingCallback = app.indexOf("onPending: () => {", onSubmittingCallback);
+  assert.ok(challengeRequest >= 0);
+  assert.ok(liveModeRecheck > challengeRequest);
+  assert.ok(signatureRequest > liveModeRecheck);
+  assert.ok(postSignatureRefresh > signatureRequest);
+  assert.ok(postSignatureApply > postSignatureRefresh);
+  assert.ok(postApplyOperationRecheck > postSignatureApply);
+  assert.ok(postSignatureRecheck > postApplyOperationRecheck);
+  assert.ok(releaseRequest > postSignatureRecheck);
+  assert.ok(onSubmittingCallback > releaseRequest);
+  assert.ok(submittedAtMarker > onSubmittingCallback);
+  assert.ok(proofQueuedMarker > submittedAtMarker);
+  assert.ok(releaseSubmittedMarker > proofQueuedMarker);
+  assert.ok(persistenceMarker > releaseSubmittedMarker);
+  assert.ok(onPendingCallback > persistenceMarker);
+  const postChallengeGuard = app.slice(liveModeRecheck, signatureRequest);
+  assert.match(postChallengeGuard, /initialConfig: liveConfig/);
+  assert.match(postChallengeGuard, /currentConfig: currentAuthorizationConfig/);
+  assert.match(postChallengeGuard, /recoveryAuthorizationInterruptionFlow/);
+  assert.match(postChallengeGuard, /updateFlow\(interruptionFlow\)/);
+  const postSignatureFetch = app.slice(postSignatureRefresh, postSignatureApply);
+  assert.match(postSignatureFetch, /catch \(nextError\)[\s\S]*operationIsCurrent\(operation, walletOperation\)/);
+  assert.match(postSignatureFetch, /setConfigState\("unavailable"\)/);
+  assert.match(postSignatureFetch, /updateFlow\("service-unavailable"\)/);
+  assert.match(postSignatureFetch, /return/);
+  const postSignatureGuard = app.slice(postSignatureRecheck, releaseRequest);
+  assert.match(postSignatureGuard, /initialConfig: liveConfig/);
+  assert.match(postSignatureGuard, /currentConfig: postSignatureConfig/);
+  assert.match(postSignatureGuard, /recoveryAuthorizationInterruptionFlow/);
+  assert.match(postSignatureGuard, /updateFlow\(interruptionFlow\)/);
+  assert.doesNotMatch(postSignatureGuard, /submittedRecoveryStartedAt|proof-queued|releaseSubmitted = true|persistSubmittedRecovery/);
+  const onSubmittingBody = app.slice(onSubmittingCallback, onPendingCallback);
+  assert.match(onSubmittingBody, /submittedRecoveryStartedAt\.current = Date\.now\(\)/);
+  assert.match(onSubmittingBody, /updateFlow\("proof-queued"\)/);
+  assert.match(onSubmittingBody, /releaseSubmitted = true/);
+  assert.match(onSubmittingBody, /persistSubmittedRecovery\("proof-queued"/);
+  assert.match(app, /recoveryEligibleInspectionFlow\(\{[\s\S]*config: liveConfig,[\s\S]*sourceWallet: result\.wallet/);
+  const accountUpdateStart = app.indexOf("function updateConnectedAccount");
+  const connectWalletStart = app.indexOf("async function connectWallet", accountUpdateStart);
+  const accountUpdate = app.slice(accountUpdateStart, connectWalletStart);
+  assert.ok(accountUpdateStart >= 0);
+  assert.ok(connectWalletStart > accountUpdateStart);
+  assert.match(accountUpdate, /recoveryEligibleAccountUpdateFlow\(\{/);
+  assert.match(accountUpdate, /config: configRef\.current/);
+  assert.match(accountUpdate, /connectedAccount: next/);
+  assert.match(accountUpdate, /sourceWallet: liveEligibility\.wallet/);
+  assert.match(accountUpdate, /currentFlow/);
+  assert.match(accountUpdate, /externalChange/);
+  assert.match(accountUpdate, /previousAccount: previous/);
+  const initialAccountsStart = app.indexOf('method: "eth_accounts"');
+  const accountListenerStart = app.indexOf('window.ethereum.on?.("accountsChanged"', initialAccountsStart);
+  const walletAccountCallbacks = app.slice(initialAccountsStart, accountListenerStart);
+  assert.ok(initialAccountsStart >= 0);
+  assert.ok(accountListenerStart > initialAccountsStart);
+  assert.match(walletAccountCallbacks, /updateConnectedAccount\(next\)/);
+  assert.match(walletAccountCallbacks, /updateConnectedAccount\(next, \{ externalChange: true \}\)/);
   assert.match(app, /if \(flowRef\.current === "account-changed"\)/);
   assert.match(app, /featuredState === "ready"/);
   assert.match(app, /Verifying source pair/);

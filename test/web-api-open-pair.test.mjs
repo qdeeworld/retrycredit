@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   checkRecoveryPairEligibility,
   RateLimitedError,
+  RECOVERY_AUTHORIZATION_EXPIRED_MESSAGE,
   releaseRecoveryPairWhenReady,
   requestRecoveryIntakeChallenge,
 } from "../web/src/api.mjs";
@@ -34,6 +35,7 @@ test("open release retries pending proof with the exact pair-bound signature fie
   const bodies = [];
   const pending = [];
   const retrying = [];
+  const events = [];
   let calls = 0;
   let clock = 1_000;
   let wallClock = 10_000;
@@ -60,6 +62,7 @@ test("open release retries pending proof with the exact pair-bound signature fie
     },
     fetchImpl: async (url, options) => {
       assert.equal(url, "/api/recovery/intake/release");
+      events.push(`fetch-${calls + 1}`);
       bodies.push(JSON.parse(options.body));
       calls += 1;
       return calls === 1
@@ -68,6 +71,7 @@ test("open release retries pending proof with the exact pair-bound signature fie
         }), { status: 425 })
         : new Response(JSON.stringify({ status: "released", wallet: WALLET }), { status: 200 });
     },
+    onSubmitting: () => events.push("submitting"),
     onPending: (value) => pending.push(value),
     onRetrying: (value) => retrying.push(value),
   });
@@ -75,8 +79,38 @@ test("open release retries pending proof with the exact pair-bound signature fie
   assert.equal(result.status, "released");
   assert.deepEqual(bodies, [signed, signed]);
   assert.equal("message" in bodies[0], false);
+  assert.deepEqual(events, ["submitting", "fetch-1", "fetch-2"]);
   assert.deepEqual(pending, [{ attempt: 1, code: "RECOVERY_ATTESTATION_PENDING", requestId: "req-pair" }]);
   assert.deepEqual(retrying, [{ attempt: 2 }]);
+});
+
+test("an expired open-pair authorization never announces or attempts submission", async () => {
+  let submittingCalls = 0;
+  let fetchCalls = 0;
+
+  await assert.rejects(
+    releaseRecoveryPairWhenReady({
+      wallet: WALLET,
+      pair: PAIR,
+      issuedAt: 2_000,
+      expiresAt: 2_300,
+      authorizationStartedAtMs: 75_000,
+      authorizationStartedAtWallMs: 750_000,
+      signature: "0x1234",
+      now: () => 375_000,
+      wallNow: () => 1_050_000,
+      onSubmitting: () => { submittingCalls += 1; },
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        throw new Error("must not submit");
+      },
+    }),
+    (error) => error.code === "RECOVERY_CHALLENGE_EXPIRED"
+      && error.message === RECOVERY_AUTHORIZATION_EXPIRED_MESSAGE,
+  );
+
+  assert.equal(submittingCalls, 0);
+  assert.equal(fetchCalls, 0);
 });
 
 test("rate limiting remains distinct from service unavailability", async () => {

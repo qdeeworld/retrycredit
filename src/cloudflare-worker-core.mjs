@@ -89,7 +89,11 @@ export function createCloudflareApiHandler({
         throw new CloudflareApiError("NOT_FOUND", "Route not found", 404);
       }
       const coordinator = coordinatorFor(env);
-      const body = route.body ? await readJson(request) : {};
+      const body = route.body
+        ? await readJson(request)
+        : route.operation === "configuration"
+          ? { fresh: url.searchParams.get("fresh") === "1" }
+          : {};
       const result = await coordinator.execute({
         operation: route.operation,
         body,
@@ -183,7 +187,7 @@ export function createCoordinatorRuntime({ serviceFactory, env } = {}) {
 
 async function callService(service, operation, body) {
   switch (operation) {
-    case "configuration": return service.configuration();
+    case "configuration": return service.configuration({ fresh: body?.fresh === true });
     case "discover": return service.discover(body?.wallet);
     case "intakeEligibility": return service.intakeEligibility(body);
     case "intakeChallenge": return service.intakeChallenge(body);

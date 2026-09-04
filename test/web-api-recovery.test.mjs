@@ -57,6 +57,20 @@ test("the recovery config wake uses the V2 route and retries transient starts", 
 
   assert.equal(config.campaignNumber, 1);
   assert.deepEqual(seen, Array(3).fill("https://api.example/api/recovery/config"));
+
+  const freshSeen = [];
+  await wakeRecoveryConfig({
+    apiOrigin: "https://api.example",
+    fresh: true,
+    fetchImpl: async (url) => {
+      freshSeen.push(url);
+      return new Response(JSON.stringify({ enabled: true, campaignNumber: 1 }), { status: 200 });
+    },
+    totalTimeoutMs: 50,
+    requestTimeoutMs: 25,
+    attemptOffsetsMs: [0],
+  });
+  assert.deepEqual(freshSeen, ["https://api.example/api/recovery/config?fresh=1"]);
 });
 
 test("eligibility posts only the source wallet to the V2 endpoint", async () => {

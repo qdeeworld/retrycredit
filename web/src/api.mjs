@@ -44,10 +44,10 @@ export class RateLimitedError extends Error {
   }
 }
 
-export async function wakeRecoveryConfig(options = {}) {
+export async function wakeRecoveryConfig({ fresh = false, ...options } = {}) {
   return wakeEndpoint({
     ...options,
-    path: "/api/recovery/config",
+    path: fresh === true ? "/api/recovery/config?fresh=1" : "/api/recovery/config",
     shouldRetry: (value) => value?.waking === true,
   });
 }
@@ -148,6 +148,7 @@ export async function releaseRecoveryPairWhenReady({
   now = recoveryClockNow,
   wallNow = recoveryWallClockNow,
   sleep = delay,
+  onSubmitting,
   onPending,
   onRetrying,
 } = {}) {
@@ -160,6 +161,7 @@ export async function releaseRecoveryPairWhenReady({
     expiresAt,
   });
   let pendingCount = 0;
+  let submissionNotified = false;
 
   while (true) {
     const attemptBudget = recoveryReleaseBudget({
@@ -170,6 +172,10 @@ export async function releaseRecoveryPairWhenReady({
     });
     const attemptTimeoutMs = Math.floor(Math.min(requestTimeoutMs, attemptBudget.remainingMs));
     if (attemptTimeoutMs <= 0) break;
+    if (!submissionNotified) {
+      submissionNotified = true;
+      onSubmitting?.();
+    }
 
     try {
       return await postRecoveryJson({

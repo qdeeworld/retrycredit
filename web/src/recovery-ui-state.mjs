@@ -5,6 +5,11 @@ const RECOVERY_CONSENT_FINAL_LINE = "Authorize proof and relayer submission for 
 const ETHEREUM_MAINNET_CHAIN_ID = 1;
 const ETHEREUM_ATTESTCOIN_CHAIN_KEY = 3;
 const CREDITCOIN_TESTNET_CHAIN_ID = 102031;
+const RECOVERY_READ_ONLY_REASON = "isolated-cloudflare-staging";
+const ROUTESCAN_ATTRIBUTION = Object.freeze({
+  label: "Powered by Routescan.io APIs",
+  url: "https://routescan.io/",
+});
 
 function normalizeWallet(value) {
   return typeof value === "string" ? value.toLowerCase() : "";
@@ -126,8 +131,71 @@ export function recoveryCampaignsMatch(left, right) {
   return Boolean(leftIdentity && leftIdentity === rightIdentity);
 }
 
+export function isRecoveryConfigReadable(config) {
+  return config?.enabled === true || Boolean(
+    config?.enabled === false
+    && config?.readOnly === true
+    && config?.readOnlyReason === RECOVERY_READ_ONLY_REASON
+  );
+}
+
+export function canContinueRecoveryAuthorization({ operationCurrent, initialConfig, currentConfig } = {}) {
+  const initialState = recoveryAuthorizationStateIdentity(initialConfig);
+  const currentState = recoveryAuthorizationStateIdentity(currentConfig);
+  return Boolean(operationCurrent === true
+    && currentConfig?.enabled === true
+    && currentConfig?.readOnly !== true
+    && recoveryCampaignsMatch(initialConfig, currentConfig)
+    && recoveryCampaignAvailability(currentConfig) === "open"
+    && initialState
+    && initialState === currentState);
+}
+
+export function recoveryAuthorizationInterruptionFlow({ operationCurrent, currentConfig } = {}) {
+  if (operationCurrent !== true) return null;
+  if (!isRecoveryConfigReadable(currentConfig)) return "service-unavailable";
+  const availability = recoveryCampaignAvailability(currentConfig);
+  if (availability === "full") return "campaign-full";
+  if (availability === "closed") return "campaign-closed";
+  return "campaign-changed";
+}
+
+export function recoveryEligibleInspectionFlow({ config, connectedAccount, sourceWallet } = {}) {
+  if (config?.readOnly === true && isRecoveryConfigReadable(config)) return "qualifying";
+  return connectedAccount && !walletsMatch(connectedAccount, sourceWallet)
+    ? "wrong-wallet"
+    : "qualifying";
+}
+
+export function recoveryEligibleAccountUpdateFlow({
+  config,
+  connectedAccount,
+  sourceWallet,
+  currentFlow,
+  externalChange = false,
+  previousAccount = "",
+} = {}) {
+  const authorizationWalletMismatch = !walletsMatch(connectedAccount, sourceWallet);
+  if (
+    config?.readOnly !== true
+    && authorizationWalletMismatch
+    && externalChange === true
+    && previousAccount
+    && currentFlow === "authorization-requested"
+  ) return "account-changed";
+  return recoveryEligibleInspectionFlow({ config, connectedAccount, sourceWallet });
+}
+
+export function selectDiscoveryAttribution(value) {
+  if (
+    value?.label !== ROUTESCAN_ATTRIBUTION.label
+    || value?.url !== ROUTESCAN_ATTRIBUTION.url
+  ) return null;
+  return ROUTESCAN_ATTRIBUTION;
+}
+
 export function recoveryCampaignAvailability(config) {
-  if (!config?.enabled || !config?.campaign || !config?.capacity) return "unavailable";
+  if (!isRecoveryConfigReadable(config) || !config?.campaign || !config?.capacity) return "unavailable";
   const remaining = Number(config.capacity.remaining);
   const deadline = Number(config.campaign.deadline);
   const deadlinePassed = Number.isSafeInteger(deadline)
@@ -143,13 +211,16 @@ export function recoveryCampaignAvailability(config) {
 
 export function validateRecoveryConfigResponse(response) {
   if (typeof response?.enabled !== "boolean") throw responseMismatch();
+  if (response?.readOnly !== undefined && typeof response.readOnly !== "boolean") throw responseMismatch();
+  const readOnly = response.readOnly === true;
+  if (response.enabled && readOnly) throw responseMismatch();
   const hasExpectedNetworks = response?.source?.chainId === ETHEREUM_MAINNET_CHAIN_ID
     && response?.source?.chainKey === ETHEREUM_ATTESTCOIN_CHAIN_KEY
     && response?.settlement?.chainId === CREDITCOIN_TESTNET_CHAIN_ID;
   const hasFeaturedIdentity = isAddress(response?.featuredCase?.wallet)
     && isHash(response?.featuredCase?.failedTransactionHash)
     && isHash(response?.featuredCase?.successfulTransactionHash);
-  if (!response.enabled) {
+  if (!response.enabled && !readOnly) {
     if (
       response.waking !== false
       || !hasExpectedNetworks
@@ -163,6 +234,7 @@ export function validateRecoveryConfigResponse(response) {
     ) throw responseMismatch();
     return Object.freeze({ ...response });
   }
+  if (readOnly && response.readOnlyReason !== RECOVERY_READ_ONLY_REASON) throw responseMismatch();
   const publicOrigin = normalizeOrigin(response.publicOrigin);
   const totalCapacity = Number(response?.capacity?.total);
   const claimedCapacity = Number(response?.capacity?.claimed);
@@ -253,7 +325,7 @@ export function validateRecoveryConfigResponse(response) {
 }
 
 export function validatePairEligibilityResponse({ response, requestedPair, config } = {}) {
-  const boundary = requireRecoveryBoundary(config);
+  const boundary = requireRecoveryBoundary(config, { allowReadOnly: true });
   if (!isAddress(response?.wallet)) throw responseMismatch();
   requireResponseCampaign(response, boundary);
   requireAnalyzedPair(response?.pair, requestedPair, config);
@@ -287,7 +359,7 @@ export function validatePairEligibilityResponse({ response, requestedPair, confi
 }
 
 export function validateEligibilityResponse({ response, requestedWallet, config, expectedPair } = {}) {
-  const boundary = requireRecoveryBoundary(config);
+  const boundary = requireRecoveryBoundary(config, { allowReadOnly: true });
   requireResponseWallet(response, requestedWallet);
   requireResponseCampaign(response, boundary);
 
@@ -535,10 +607,13 @@ export function recoveryRecordMatchesConfig(record, config) {
   );
 }
 
-function requireRecoveryBoundary(config) {
+function requireRecoveryBoundary(config, { allowReadOnly = false } = {}) {
   const boundary = recoveryBoundary(config);
   const configIdentity = recoveryCampaignIdentity(config);
-  if (!config?.enabled || !boundary || !configIdentity) throw responseMismatch();
+  const modeAllowed = allowReadOnly
+    ? isRecoveryConfigReadable(config)
+    : config?.enabled === true && config?.readOnly !== true;
+  if (!modeAllowed || !boundary || !configIdentity) throw responseMismatch();
   return Object.freeze({ ...boundary, configIdentity });
 }
 
@@ -712,6 +787,11 @@ function recoveryCampaignIdentity(config) {
   const creditAmount = config?.campaign?.creditAmount;
   const contractVersion = config?.contractVersion;
   const lineage = config?.lineage;
+  const accessMode = config?.enabled === true && config?.readOnly !== true
+    ? "write-enabled"
+    : isRecoveryConfigReadable(config)
+      ? "read-only"
+      : "";
   if (
     !publicOrigin
     || !Number.isSafeInteger(sourceChainId)
@@ -723,6 +803,7 @@ function recoveryCampaignIdentity(config) {
     || !isPositiveUint(creditAmount)
     || !["v1", "v2"].includes(contractVersion)
     || !lineage
+    || !accessMode
   ) return "";
   const predecessor = lineage.predecessor;
   return JSON.stringify([
@@ -734,6 +815,7 @@ function recoveryCampaignIdentity(config) {
     settlementChainId,
     String(creditAmount),
     contractVersion,
+    accessMode,
     lineage.scope,
     lineage.releasesUnlocked,
     predecessor
@@ -747,6 +829,36 @@ function recoveryCampaignIdentity(config) {
           Number(predecessor.endBlock),
         ]
       : null,
+  ]);
+}
+
+function recoveryAuthorizationStateIdentity(config) {
+  const campaignIdentity = recoveryCampaignIdentity(config);
+  const campaign = config?.campaign;
+  const rule = config?.rule;
+  const capacity = config?.capacity;
+  if (!campaignIdentity || !campaign || !rule || !capacity) return "";
+  return JSON.stringify([
+    campaignIdentity,
+    normalizeWallet(config.verifierAddress),
+    normalizeWallet(config.predicateAddress),
+    normalizeWallet(campaign.sponsor),
+    String(campaign.maxClaims),
+    String(campaign.claimCount),
+    String(campaign.remainingClaims),
+    String(campaign.deadline),
+    String(campaign.fundedAmount),
+    normalizeHash(campaign.termsHash),
+    campaign.releaseState,
+    campaign.open,
+    normalizeWallet(rule.feeRecipient),
+    String(rule.startBlock),
+    String(rule.endBlock),
+    String(rule.maxBlockGap),
+    String(rule.maxQuantity),
+    String(capacity.total),
+    String(capacity.claimed),
+    String(capacity.remaining),
   ]);
 }
 

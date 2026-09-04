@@ -3,18 +3,24 @@ import test from "node:test";
 import { getAddress } from "ethers";
 import { recoveryChallengeMessage as serverRecoveryChallengeMessage } from "../src/recovery-campaign-service.mjs";
 import {
+  canContinueRecoveryAuthorization,
   createPairOperationGuard,
   createWalletOperationGuard,
+  isRecoveryConfigReadable,
   isRecoveryChallengeExpired,
   isRecoveryPairInvalid,
   isRecoveryRateLimited,
   isRecoveryResponseMismatch,
   normalizeEthereumTransactionReference,
+  recoveryAuthorizationInterruptionFlow,
   recoveryCampaignAvailability,
   recoveryCampaignsMatch,
+  recoveryEligibleAccountUpdateFlow,
+  recoveryEligibleInspectionFlow,
   recoveryRecordMatchesConfig,
   recoveryConfigsMatch,
   recoveryPairsMatch,
+  selectDiscoveryAttribution,
   selectFeaturedRelease,
   selectRecoveryEvidence,
   selectVisibleRelease,
@@ -94,6 +100,15 @@ function config(overrides = {}) {
     campaign,
     rule: { ...base.rule, ...overrides.rule },
     capacity: { ...base.capacity, ...overrides.capacity },
+  };
+}
+
+function readOnlyConfig(overrides = {}) {
+  return {
+    ...config(overrides),
+    enabled: false,
+    readOnly: true,
+    readOnlyReason: "isolated-cloudflare-staging",
   };
 }
 
@@ -447,6 +462,356 @@ test("a fully claimed campaign remains a valid closed state after its deadline",
 
   assert.equal(closed.campaign.releaseState, "closed");
   assert.equal(recoveryCampaignAvailability(closed), "closed");
+});
+
+test("read-only staging preserves authenticated inspection without enabling release", () => {
+  const readOnly = validateRecoveryConfigResponse(readOnlyConfig());
+  const eligibilityResponse = {
+    eligible: true,
+    status: "eligible",
+    reason: "This pair qualifies.",
+    wallet: WALLET_A,
+    campaignNumber: 7,
+    creditAmount: "10",
+    pair: analyzedPair("1"),
+    release: null,
+    lineage: { scope: "campaign", status: "unused" },
+  };
+  const inspected = validatePairEligibilityResponse({
+    response: eligibilityResponse,
+    requestedPair: pair("1"),
+    config: readOnly,
+  });
+
+  assert.equal(readOnly.enabled, false);
+  assert.equal(readOnly.readOnly, true);
+  assert.equal(isRecoveryConfigReadable(readOnly), true);
+  assert.equal(recoveryCampaignAvailability(readOnly), "open");
+  assert.equal(isRecoveryConfigReadable({ enabled: false }), false);
+  assert.equal(inspected.eligible, true);
+  assert.equal(recoveryRecordMatchesConfig(inspected, readOnly), true);
+  assert.equal(recoveryCampaignsMatch(readOnly, validateRecoveryConfigResponse(config())), false);
+
+  const challenge = {
+    wallet: WALLET_A,
+    poolAddress: POOL_A,
+    campaignNumber: 7,
+    pair: inspected.pair,
+    issuedAt: 1_000,
+    expiresAt: 1_300,
+    message: challengeMessage({ liveConfig: readOnly, sourcePair: inspected.pair }),
+  };
+  const released = {
+    status: "released",
+    wallet: WALLET_A,
+    campaignNumber: 7,
+    creditAmount: "10",
+    pair: inspected.pair,
+    release: claimedResponse().release,
+    lineage: { scope: "campaign", status: "claimed-current" },
+  };
+  const live = validateRecoveryConfigResponse(config());
+  const liveInspected = validatePairEligibilityResponse({
+    response: eligibilityResponse,
+    requestedPair: pair("1"),
+    config: live,
+  });
+  assert.equal(validateChallengeResponse({
+    response: challenge,
+    wallet: WALLET_A,
+    eligibility: liveInspected,
+    config: live,
+    currentOrigin: live.publicOrigin,
+  }), challenge);
+  assert.equal(validateReleaseResponse({
+    response: released,
+    wallet: WALLET_A,
+    eligibility: liveInspected,
+    config: live,
+  }).status, "released");
+  assert.equal(validatePairReleaseResponse({
+    response: released,
+    wallet: WALLET_A,
+    eligibility: liveInspected,
+    config: live,
+  }).status, "released");
+  for (const validateWriteResponse of [
+    () => validateChallengeResponse({
+      response: challenge,
+      wallet: WALLET_A,
+      eligibility: inspected,
+      config: readOnly,
+      currentOrigin: readOnly.publicOrigin,
+    }),
+    () => validateReleaseResponse({
+      response: released,
+      wallet: WALLET_A,
+      eligibility: inspected,
+      config: readOnly,
+    }),
+    () => validatePairReleaseResponse({
+      response: released,
+      wallet: WALLET_A,
+      eligibility: inspected,
+      config: readOnly,
+    }),
+  ]) {
+    assert.throws(
+      validateWriteResponse,
+      (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
+    );
+  }
+
+  for (const invalid of [
+    { ...readOnlyConfig(), enabled: true },
+    { ...readOnlyConfig(), readOnly: "true" },
+    { ...readOnlyConfig(), readOnlyReason: "operator-preview" },
+  ]) {
+    assert.throws(
+      () => validateRecoveryConfigResponse(invalid),
+      (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
+    );
+  }
+});
+
+test("a mode or availability switch stops a deferred authorization before signing or release", async () => {
+  const initialConfig = validateRecoveryConfigResponse(config());
+  assert.equal(canContinueRecoveryAuthorization({
+    operationCurrent: true,
+    initialConfig,
+    currentConfig: validateRecoveryConfigResponse(config()),
+  }), true);
+  const transitions = [
+    ["read-only", "campaign-changed", validateRecoveryConfigResponse(readOnlyConfig())],
+    ["capacity changed", "campaign-changed", validateRecoveryConfigResponse(config({
+      campaign: { claimCount: 1, remainingClaims: 2 },
+      capacity: { claimed: 1, remaining: 2 },
+    }))],
+    ["deadline changed", "campaign-changed", validateRecoveryConfigResponse(config({
+      campaign: { deadline: 2_000_000_100 },
+    }))],
+    ["closed", "campaign-closed", validateRecoveryConfigResponse(config({
+      campaign: { open: false, releaseState: "closed" },
+    }))],
+    ["full", "campaign-full", validateRecoveryConfigResponse(config({
+      campaign: { claimCount: 3, remainingClaims: 0, open: false, releaseState: "full" },
+      capacity: { claimed: 3, remaining: 0 },
+    }))],
+    ["expired", "campaign-closed", validateRecoveryConfigResponse(config({
+      campaign: { deadline: 1 },
+    }))],
+  ];
+
+  for (const [label, expectedFlow, transitionedConfig] of transitions) {
+    let currentConfig = initialConfig;
+    let resolveChallenge;
+    const challenge = new Promise((resolve) => {
+      resolveChallenge = resolve;
+    });
+    let personalSignCalls = 0;
+    let releaseCalls = 0;
+
+    const authorization = (async () => {
+      await challenge;
+      if (!canContinueRecoveryAuthorization({
+        operationCurrent: true,
+        initialConfig,
+        currentConfig,
+      })) return;
+      personalSignCalls += 1;
+      releaseCalls += 1;
+    })();
+
+    currentConfig = transitionedConfig;
+    resolveChallenge();
+    await authorization;
+
+    assert.equal(personalSignCalls, 0, `${label} transition must not request personal_sign`);
+    assert.equal(releaseCalls, 0, `${label} transition must not request release`);
+    assert.equal(recoveryAuthorizationInterruptionFlow({
+      operationCurrent: true,
+      currentConfig: transitionedConfig,
+    }), expectedFlow);
+  }
+
+  const postSignatureCases = [
+    ["unchanged", null, initialConfig, true, true, true],
+    ...transitions.map(([label, expectedFlow, transitionedConfig]) => [
+      label,
+      expectedFlow,
+      transitionedConfig,
+      true,
+      false,
+      false,
+    ]),
+    ["account changed", null, initialConfig, false, false, false],
+    ["authorization expired after fresh fetch", null, initialConfig, true, true, false],
+  ];
+  for (const [
+    label,
+    expectedFlow,
+    freshConfig,
+    operationCurrent,
+    authorizationContinues,
+    submissionStarts,
+  ] of postSignatureCases) {
+    let resolveSignature;
+    const signature = new Promise((resolve) => {
+      resolveSignature = resolve;
+    });
+    let personalSignCalls = 0;
+    let freshConfigCalls = 0;
+    let submittedAtWrites = 0;
+    let proofQueuedWrites = 0;
+    let releaseSubmittedWrites = 0;
+    let persistenceCalls = 0;
+    let releaseCalls = 0;
+    let interruptionFlow = null;
+    const fetchFreshConfig = async () => {
+      freshConfigCalls += 1;
+      return freshConfig;
+    };
+
+    const authorization = (async () => {
+      if (!canContinueRecoveryAuthorization({
+        operationCurrent: true,
+        initialConfig,
+        currentConfig: initialConfig,
+      })) return;
+      personalSignCalls += 1;
+      await signature;
+      const currentConfig = await fetchFreshConfig();
+      if (!canContinueRecoveryAuthorization({
+        operationCurrent,
+        initialConfig,
+        currentConfig,
+      })) {
+        interruptionFlow = recoveryAuthorizationInterruptionFlow({
+          operationCurrent,
+          currentConfig,
+        });
+        return;
+      }
+      if (!submissionStarts) return;
+      const onSubmitting = () => {
+        submittedAtWrites += 1;
+        proofQueuedWrites += 1;
+        releaseSubmittedWrites += 1;
+        persistenceCalls += 1;
+      };
+      onSubmitting();
+      releaseCalls += 1;
+    })();
+
+    resolveSignature();
+    await authorization;
+
+    assert.equal(personalSignCalls, 1, `${label} transition occurs while personal_sign is pending`);
+    assert.equal(freshConfigCalls, 1, `${label} transition must fetch fresh post-sign campaign truth`);
+    assert.equal(
+      canContinueRecoveryAuthorization({ operationCurrent, initialConfig, currentConfig: freshConfig }),
+      authorizationContinues,
+      `${label} post-sign authorization gate`,
+    );
+    const expectedWrites = submissionStarts ? 1 : 0;
+    assert.equal(submittedAtWrites, expectedWrites, `${label} submitted-at marker`);
+    assert.equal(proofQueuedWrites, expectedWrites, `${label} proof-queued marker`);
+    assert.equal(releaseSubmittedWrites, expectedWrites, `${label} release-submitted marker`);
+    assert.equal(persistenceCalls, expectedWrites, `${label} persistence`);
+    assert.equal(releaseCalls, expectedWrites, `${label} release request`);
+    assert.equal(interruptionFlow, expectedFlow, `${label} transition must leave the busy flow`);
+  }
+  assert.equal(recoveryAuthorizationInterruptionFlow({
+    operationCurrent: false,
+    currentConfig: initialConfig,
+  }), null);
+});
+
+test("read-only inspection never requires the source wallet while write mode does", () => {
+  assert.equal(recoveryEligibleInspectionFlow({
+    config: validateRecoveryConfigResponse(readOnlyConfig()),
+    connectedAccount: WALLET_B,
+    sourceWallet: WALLET_A,
+  }), "qualifying");
+  assert.equal(recoveryEligibleInspectionFlow({
+    config: validateRecoveryConfigResponse(config()),
+    connectedAccount: WALLET_B,
+    sourceWallet: WALLET_A,
+  }), "wrong-wallet");
+  assert.equal(recoveryEligibleInspectionFlow({
+    config: validateRecoveryConfigResponse(config()),
+    connectedAccount: "",
+    sourceWallet: WALLET_A,
+  }), "qualifying");
+});
+
+test("eligible account updates preserve inspection and interrupt only active write authorization", () => {
+  const cases = [
+    {
+      label: "delayed eth_accounts in read-only mode",
+      config: validateRecoveryConfigResponse(readOnlyConfig()),
+      currentFlow: "qualifying",
+      externalChange: false,
+      previousAccount: "",
+      expected: "qualifying",
+    },
+    {
+      label: "accountsChanged in read-only mode",
+      config: validateRecoveryConfigResponse(readOnlyConfig()),
+      currentFlow: "qualifying",
+      externalChange: true,
+      previousAccount: WALLET_A,
+      expected: "qualifying",
+    },
+    {
+      label: "accountsChanged during write authorization",
+      config: validateRecoveryConfigResponse(config()),
+      currentFlow: "authorization-requested",
+      externalChange: true,
+      previousAccount: WALLET_A,
+      expected: "account-changed",
+    },
+    {
+      label: "wallet disconnect during write authorization",
+      config: validateRecoveryConfigResponse(config()),
+      connectedAccount: "",
+      currentFlow: "authorization-requested",
+      externalChange: true,
+      previousAccount: WALLET_A,
+      expected: "account-changed",
+    },
+    {
+      label: "wrong wallet during ordinary write inspection",
+      config: validateRecoveryConfigResponse(config()),
+      currentFlow: "qualifying",
+      externalChange: true,
+      previousAccount: WALLET_A,
+      expected: "wrong-wallet",
+    },
+  ];
+
+  for (const row of cases) {
+    assert.equal(recoveryEligibleAccountUpdateFlow({
+      config: row.config,
+      connectedAccount: row.connectedAccount ?? WALLET_B,
+      sourceWallet: WALLET_A,
+      currentFlow: row.currentFlow,
+      externalChange: row.externalChange,
+      previousAccount: row.previousAccount,
+    }), row.expected, row.label);
+  }
+});
+
+test("discovery attribution allows only the exact RouteScan identity", () => {
+  const exact = {
+    label: "Powered by Routescan.io APIs",
+    url: "https://routescan.io/",
+  };
+  assert.deepEqual(selectDiscoveryAttribution(exact), exact);
+  assert.equal(selectDiscoveryAttribution(null), null);
+  assert.equal(selectDiscoveryAttribution({ ...exact, label: "Explorer data" }), null);
+  assert.equal(selectDiscoveryAttribution({ ...exact, url: "javascript:alert(1)" }), null);
+  assert.equal(selectDiscoveryAttribution({ ...exact, url: "https://routescan.io.example/" }), null);
 });
 
 test("campaign availability fails closed from the live open flag and remaining capacity", () => {

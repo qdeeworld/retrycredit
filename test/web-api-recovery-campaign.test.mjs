@@ -401,8 +401,8 @@ test("waking recovery exposes config without blocking and returns 425 for action
 test("ready API routes preserve the fixed recovery response contract", async () => {
   const calls = [];
   const service = {
-    async configuration() {
-      calls.push(["configuration"]);
+    async configuration(options) {
+      calls.push(["configuration", options]);
       return { enabled: true, waking: false, publicOrigin: origin, campaignNumber: 7 };
     },
     async eligibility(input) {
@@ -441,6 +441,10 @@ test("ready API routes preserve the fixed recovery response contract", async () 
     const configBody = await config.json();
     assert.equal(configBody.campaignNumber, 7);
     assert.equal(configBody.publicOrigin, origin);
+
+    const freshConfig = await fetch(`${base}/api/recovery/config?fresh=1`);
+    assert.equal(freshConfig.status, 200);
+    assert.equal((await freshConfig.json()).campaignNumber, 7);
 
     const intakeEligibilityBody = { pair };
     const discovery = await post(base, "/api/recovery/discover", { wallet });
@@ -489,7 +493,8 @@ test("ready API routes preserve the fixed recovery response contract", async () 
     assert.equal(release.status, 200);
     assert.equal((await release.json()).status, "released");
     assert.deepEqual(calls, [
-      ["configuration"],
+      ["configuration", { fresh: false }],
+      ["configuration", { fresh: true }],
       ["discover", wallet],
       ["intakeEligibility", intakeEligibilityBody],
       ["intakeChallenge", intakeChallengeBody],

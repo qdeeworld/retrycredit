@@ -54,6 +54,24 @@ test("Cloudflare handler rejects unsupported routes without invoking the coordin
   assert.equal(called, false);
 });
 
+test("Cloudflare config forwards only the explicit fresh query to the coordinator", async () => {
+  const inputs = [];
+  const coordinator = {
+    async execute(input) {
+      inputs.push(input);
+      return { status: 200, body: { enabled: false } };
+    },
+  };
+  const handler = createCloudflareApiHandler({ coordinatorFor: () => coordinator });
+
+  assert.equal((await handler(new Request("https://api.example/api/recovery/config"), ENV)).status, 200);
+  assert.equal((await handler(new Request("https://api.example/api/recovery/config?fresh=1"), ENV)).status, 200);
+  assert.deepEqual(inputs.map(({ operation, body }) => ({ operation, body })), [
+    { operation: "configuration", body: { fresh: false } },
+    { operation: "configuration", body: { fresh: true } },
+  ]);
+});
+
 test("Cloudflare handler enforces JSON content type and 16 KB body bound", async () => {
   let coordinatorCalls = 0;
   const coordinator = { async execute() { coordinatorCalls += 1; throw new Error("must not execute"); } };
@@ -104,9 +122,13 @@ test("Cloudflare handler cancels an oversized streamed body before reading the t
 test("read-only coordinator exposes authenticated config but fails release closed", async () => {
   let readinessCalls = 0;
   let releaseCalls = 0;
+  const configurationCalls = [];
   const service = {
     async readiness() { readinessCalls += 1; },
-    async configuration() { return { enabled: true, poolAddress: "0xpool" }; },
+    async configuration(options) {
+      configurationCalls.push(options);
+      return { enabled: true, poolAddress: "0xpool" };
+    },
     async intakeRelease() { releaseCalls += 1; return { status: "released" }; },
   };
   const runtime = createCoordinatorRuntime({
@@ -119,6 +141,11 @@ test("read-only coordinator exposes authenticated config but fails release close
   assert.equal(config.body.enabled, false);
   assert.equal(config.body.readOnly, true);
   assert.equal(readinessCalls, 1);
+  assert.deepEqual(configurationCalls, [{ fresh: false }]);
+
+  const freshConfig = await runtime.execute(input("configuration", { fresh: true }));
+  assert.equal(freshConfig.status, 200);
+  assert.deepEqual(configurationCalls, [{ fresh: false }, { fresh: true }]);
 
   const release = await runtime.execute({
     ...input("intakeRelease", { wallet: "0x01" }),

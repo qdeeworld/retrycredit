@@ -213,7 +213,9 @@ export function createAppHandler({
         return;
       }
       requireRecoveryService(recovery);
-      sendJson(response, 200, await recovery.service.configuration());
+      sendJson(response, 200, await recovery.service.configuration({
+        fresh: url.searchParams.get("fresh") === "1",
+      }));
       return;
     }
 

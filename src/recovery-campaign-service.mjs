@@ -121,7 +121,11 @@ export class RecoveryCampaignService {
     const ccProvider = new JsonRpcProvider(
       creditcoinRequest,
       RECOVERY_DEFAULTS.settlementChainId,
-      { staticNetwork: true, batchMaxCount: settlementRpcBatchMaxCount },
+      {
+        staticNetwork: true,
+        batchMaxCount: settlementRpcBatchMaxCount,
+        cacheTimeout: -1,
+      },
     );
     // Keep permissionless proof relay writes out of the campaign sponsor's
     // nonce domain. This role is already used as the isolated CC3 relayer by
@@ -232,7 +236,11 @@ export class RecoveryCampaignService {
     const ccProvider = new JsonRpcProvider(
       creditcoinRequest,
       RECOVERY_DEFAULTS.settlementChainId,
-      { staticNetwork: true, batchMaxCount: settlementRpcBatchMaxCount },
+      {
+        staticNetwork: true,
+        batchMaxCount: settlementRpcBatchMaxCount,
+        cacheTimeout: -1,
+      },
     );
     const normalizedRelayer = requireNonzeroAddress(relayerAddress, "recovery relayer");
     const relayerIdentity = Object.freeze({ address: normalizedRelayer });
@@ -577,6 +585,7 @@ export class RecoveryCampaignService {
     this.campaignStateCache = null;
     this.campaignStateGeneration = 0;
     this.campaignStateFlights = { normal: null, fresh: null };
+    this.campaignStateFreshQueued = null;
     this.releaseFlights = new Map();
     this.releaseQueue = Promise.resolve();
     this.releaseQueueDepth = 0;
@@ -588,10 +597,10 @@ export class RecoveryCampaignService {
     return infrastructure;
   }
 
-  async configuration() {
+  async configuration({ fresh = false } = {}) {
     const [infrastructure, state] = await Promise.all([
       this.#authenticateInfrastructure(),
-      this.#campaignState(),
+      this.#campaignState({ fresh: fresh === true }),
     ]);
     return {
       enabled: true,
@@ -1148,14 +1157,48 @@ export class RecoveryCampaignService {
 
   async #campaignState({ fresh = false } = {}) {
     await this.#authenticateInfrastructure();
+    if (fresh) return this.#freshCampaignState();
     const cached = this.campaignStateCache;
-    if (!fresh && cached && cached.expiresAt > this.now()) return cached.state;
+    if (cached && cached.expiresAt > this.now()) return cached.state;
     const generation = this.campaignStateGeneration;
     const freshFlight = this.campaignStateFlights.fresh;
     if (freshFlight?.generation === generation) return freshFlight.promise;
-    const kind = fresh ? "fresh" : "normal";
     const normalFlight = this.campaignStateFlights.normal;
-    if (!fresh && normalFlight?.generation === generation) return normalFlight.promise;
+    if (normalFlight?.generation === generation) return normalFlight.promise;
+    return this.#startCampaignStateFlight("normal", generation);
+  }
+
+  #freshCampaignState() {
+    const queued = this.campaignStateFreshQueued;
+    if (queued && !queued.started) return queued.promise;
+
+    const active = this.campaignStateFlights.fresh;
+    if (!active) return this.#startCampaignStateFlight("fresh");
+
+    const entry = { started: false, promise: null };
+    entry.promise = active.promise
+      .catch(() => undefined)
+      .then(() => {
+        entry.started = true;
+        if (this.campaignStateFreshQueued === entry) this.campaignStateFreshQueued = null;
+        return this.#startCampaignStateFlight("fresh");
+      });
+    this.campaignStateFreshQueued = entry;
+    return entry.promise;
+  }
+
+  #startCampaignStateFlight(kind, requestedGeneration) {
+    const generation = kind === "fresh"
+      ? this.campaignStateGeneration + 1
+      : requestedGeneration;
+    if (kind === "fresh") {
+      // Every active freshness barrier begins after its caller requested one.
+      // A burst may join only the single not-yet-started trailing read. The
+      // generation prevents older normal or fresh flights from restoring a
+      // stale snapshot to the shared cache after this read begins.
+      this.campaignStateGeneration = generation;
+      this.campaignStateCache = null;
+    }
 
     const entry = { generation, promise: null };
     entry.promise = this.#readCampaignState()
