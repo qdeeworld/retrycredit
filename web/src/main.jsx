@@ -36,6 +36,7 @@ import {
   isRecoveryPairInvalid,
   isRecoveryRateLimited,
   isRecoveryResponseMismatch,
+  normalizeEthereumTransactionReference,
   recoveryCampaignAvailability,
   recoveryCampaignsMatch,
   recoveryAuthorizationInterruptionFlow,
@@ -1160,13 +1161,14 @@ function AppHeader({ account, config, configState, online, route, onConnect, wal
 function RecoveryPage(props) {
   const { config, configState, eligibility, flow, releaseResult } = props;
   const readOnly = config?.readOnly === true;
+  const compactReadOnlyResult = readOnly && eligibility?.eligible === true;
   return <div className="route-page recovery-page">
     <div className="campaign-layout">
       <EligibilityDesk {...props} />
       <CampaignFile config={config} configState={configState} />
     </div>
     <EvidenceBand config={config} eligibility={eligibility} flow={flow} releaseResult={releaseResult} />
-    <section className="plain-boundary" aria-labelledby="boundary-heading">
+    <section className={`plain-boundary${compactReadOnlyResult ? " compact-read-only-result" : ""}`} aria-labelledby="boundary-heading">
       <h2 id="boundary-heading">The source pair fixes the only destination.</h2>
       <p>{readOnly
         ? "This staging surface stops after live pair inspection. In a write-enabled release, the contract—not the browser or relayer—derives the only payout wallet from that pair."
@@ -1191,7 +1193,7 @@ function CampaignFile({ config, configState }) {
   const campaignFull = campaignAvailability === "full";
   const campaignClosed = campaignReady && ["closed", "full"].includes(campaignAvailability);
   return <section className="campaign-file" aria-labelledby="campaign-heading">
-    <div className="file-registration" aria-hidden="true"><span /><span /><span /></div>
+    <div className="file-registration" aria-hidden="true">Campaign file</div>
     <h2 id="campaign-heading" tabIndex="-1">{!campaignReady
       ? "The recovery campaign is being verified."
       : campaignClosed
@@ -1467,6 +1469,7 @@ function LineageAssurance({ config, eligibility }) {
 function TransactionField({ disabled, error, helper, id, label, marker, onChange, value }) {
   const helperId = `${id}-helper`;
   const errorId = `${id}-error`;
+  const canonicalHash = canonicalTransactionHash(value);
   return <div className={`transaction-field${error ? " invalid" : ""}`}>
     <div className="transaction-label">
       <span aria-hidden="true">{marker}</span>
@@ -1489,7 +1492,19 @@ function TransactionField({ disabled, error, helper, id, label, marker, onChange
       aria-invalid={error ? "true" : "false"}
       aria-describedby={`${helperId}${error ? ` ${errorId}` : ""}`}
     />
-    <p id={helperId} className="field-helper">{helper}</p>
+    <div className="field-support">
+      <p id={helperId} className="field-helper">{helper}</p>
+      {canonicalHash && <a
+        className="hash-readout"
+        href={`${ETHEREUM_EXPLORER}/tx/${canonicalHash}`}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`Open transaction ${canonicalHash} on Etherscan`}
+      >
+        <code>{compactHash(canonicalHash)}</code>
+        <ExternalLink aria-hidden="true" />
+      </a>}
+    </div>
     {error && <p id={errorId} className="field-error" role="alert">{error}</p>}
   </div>;
 }
@@ -2002,6 +2017,19 @@ function cleanError(error) {
 function short(value) {
   if (!value || value.length < 14) return value || "—";
   return `${value.slice(0, 7)}…${value.slice(-5)}`;
+}
+
+function canonicalTransactionHash(value) {
+  try {
+    return normalizeEthereumTransactionReference(value);
+  } catch {
+    return "";
+  }
+}
+
+function compactHash(value) {
+  if (!value || value.length < 24) return value || "—";
+  return `${value.slice(0, 12)}…${value.slice(-10)}`;
 }
 
 function safeAddress(value) {
