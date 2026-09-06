@@ -38,12 +38,21 @@ export const RECOVERY_RELEASE_DEFAULTS = Object.freeze({
 });
 const recoveryBootstrap = resolveRecoveryBootstrap(process.env);
 const staticRoot = fileURLToPath(new URL("../dist", import.meta.url));
-const recoveryV2Deployment = process.env.RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE === "observation-only"
-  ? createRecoveryV2LiveObserver({ env: process.env })
-  : createRecoveryV2DeploymentSupervisor({
-  env: process.env,
-  controllerOptions: { privateKey: process.env.RETRYCREDIT_DEMO_PRIVATE_KEY },
-});
+const recoveryV2Deployment = createRecoveryVerification(process.env);
+
+export function createRecoveryVerification(env = {}) {
+  if (env.RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE === "observation-only") {
+    if (!resolveRecoveryBootstrap(env).enabled) {
+      return createRecoveryV2DeploymentSupervisor({
+        env: { RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE: "disabled" },
+      });
+    }
+    return createRecoveryV2LiveObserver({ env });
+  }
+  return createRecoveryV2DeploymentSupervisor({
+    env, controllerOptions: { privateKey: env.RETRYCREDIT_DEMO_PRIVATE_KEY },
+  });
+}
 
 const worker = new RuleDropWorker({
   poolAddress: POOL_ADDRESS,
@@ -99,6 +108,9 @@ if (recoveryBootstrap.enabled) {
           : {}),
         publicOrigin: PUBLIC_ORIGIN,
         config: { contractVersion: RECOVERY_CONTRACT_VERSION },
+        beforeBroadcast: () => {
+          if (RECOVERY_CONTRACT_VERSION === "v2") requireVerifiedV2(recoveryV2Deployment);
+        },
       });
       recoveryLifecycle = { state: "waking", service, error: null };
       service.readiness().then(
@@ -210,10 +222,7 @@ export function createAppHandler({
 
     const url = new URL(request.url, "http://localhost");
     if (url.pathname.startsWith("/api/recovery/") && recovery.service?.contractVersion === "v2") {
-      const health = recoveryV2HealthSnapshot(recoveryV2);
-      if (health.statusCode !== 200 || health.publicState.publicProfile !== "v2") {
-        throw new WorkerError("RECOVERY_V2_NOT_VERIFIED", "Recovery V2 verification is temporarily unavailable", 503);
-      }
+      requireVerifiedV2(recoveryV2);
     }
     if (request.method === "GET" && url.pathname === "/health") {
       const recoveryV2Health = recoveryV2HealthSnapshot(recoveryV2);
@@ -449,6 +458,13 @@ async function readJson(request) {
 function sendJson(response, status, body) {
   response.writeHead(status);
   response.end(JSON.stringify(body));
+}
+
+export function requireVerifiedV2(supervisor) {
+  const health = recoveryV2HealthSnapshot(supervisor);
+  if (health.statusCode !== 200 || health.publicState.publicProfile !== "v2") {
+    throw new WorkerError("RECOVERY_V2_NOT_VERIFIED", "Recovery V2 verification is temporarily unavailable", 503);
+  }
 }
 
 export function recoveryV2HealthSnapshot(supervisor) {

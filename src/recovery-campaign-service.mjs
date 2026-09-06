@@ -345,6 +345,7 @@ export class RecoveryCampaignService {
     discoveryIndex = RECOVERY_DISCOVERY_INDEX,
     walletDiscovery = discoverWalletSeaDropPairs,
     pairResolver,
+    beforeBroadcast = () => {},
     now = () => Math.floor(Date.now() / 1000),
     config = {},
   }) {
@@ -385,6 +386,8 @@ export class RecoveryCampaignService {
       this.discoveryIndex.map((entry) => [entry.wallet.toLowerCase(), entry]),
     );
     this.pairResolver = pairResolver;
+    if (typeof beforeBroadcast !== "function") throw new Error("Invalid recovery broadcast guard");
+    this.beforeBroadcast = beforeBroadcast;
     this.now = now;
     const mergedConfig = { ...RECOVERY_DEFAULTS, ...config };
     this.expectedRuntimeCodeHash = requireHash(
@@ -1782,6 +1785,9 @@ export class RecoveryCampaignService {
       this.pool.getCampaign(this.campaignNumber),
     ]);
     let receipt;
+    // Recheck after queueing, proof construction, simulation and balance reads.
+    // Keep this outside the ambiguous-broadcast recovery catch: nothing was sent.
+    this.beforeBroadcast();
     try {
       const transaction = await this.pool.releaseCredit(
         this.campaignNumber,

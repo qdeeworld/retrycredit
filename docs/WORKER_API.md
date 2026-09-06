@@ -28,6 +28,12 @@ not a distributed rate-limit guarantee across replicas or restarts.
 `/health/recovery-v2` reports `publicProfile: "v2"` and returns 200 only for a
 current two-provider observation. All V2 recovery API routes refuse with
 `503 RECOVERY_V2_NOT_VERIFIED` while verification is unavailable. Observation
+is rechecked after queueing, proof construction, simulation, and balance reads,
+immediately before the shared release broadcast. Failed verification at that
+boundary sends nothing and does not enter ambiguous-broadcast reconciliation.
+Setting `RETRYCREDIT_RECOVERY_ENABLED=false` skips V2 observer construction,
+preserving health and unrelated read routes even if observation mode remains set.
+Observation
 confirms deployment identity, not campaign eligibility or unlock: the existing
 campaign service and contract still enforce predecessor closure, funding, consent,
 proofs, and replay. The predecessor deadline does not change API configuration.

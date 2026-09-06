@@ -6,6 +6,7 @@ import { WorkerError } from "../src/proof-worker.mjs";
 import {
   RECOVERY_RELEASE_DEFAULTS,
   createAppHandler,
+  createRecoveryVerification,
   normalizeDeploymentRevision,
   recoveryV2HealthSnapshot,
   resolveRecoveryContractVersion,
@@ -147,6 +148,22 @@ test("disabled V2 configuration stays inert without filling activation defaults"
     RETRYCREDIT_RECOVERY_ENABLED: "false",
     RETRYCREDIT_RECOVERY_CONTRACT_VERSION: "v2",
   }), { enabled: false, poolAddress: null, campaignNumber: null, productionDefault: false });
+});
+
+test("V2 kill switch skips observation profile validation and preserves server health", async () => {
+  const verifier = createRecoveryVerification({
+    RETRYCREDIT_RECOVERY_ENABLED: "false", RETRYCREDIT_RECOVERY_CONTRACT_VERSION: "v2",
+    RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE: "observation-only",
+  });
+  await verifier.start();
+  await withServer({ state: "disabled", service: null }, async base => {
+    assert.equal((await fetch(`${base}/health`)).status, 200);
+    const config = await fetch(`${base}/api/recovery/config`);
+    assert.equal(config.status, 200);
+    assert.equal((await config.json()).enabled, false);
+    assert.equal((await fetch(`${base}/api/retry-credit/config`)).status, 200);
+  }, { recoveryV2: verifier });
+  verifier.stop();
 });
 
 test("health exposes only an exact normalized Render revision", async () => {

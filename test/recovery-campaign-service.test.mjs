@@ -1255,6 +1255,30 @@ test("release refuses a different signer, an altered consent message, and an exp
   assert.equal(fixture.releaseCalls, 0);
 });
 
+test("verification lost during proof building prevents broadcast on both release routes", async () => {
+  for (const intake of [false, true]) {
+    let verified = true;
+    const fixture = serviceFixture({
+      beforeBroadcast() {
+        if (!verified) throw new WorkerError("RECOVERY_V2_NOT_VERIFIED", "verification unavailable", 503);
+      },
+      proofBuilderOverride: async ({ resolved }) => {
+        verified = false;
+        return { success: true, data: batchProofFixture(resolved) };
+      },
+    });
+    const challenge = intake
+      ? await fixture.service.intakeChallenge({ pair: pairIdentity() })
+      : await fixture.service.challenge(source.address);
+    const request = intake ? await signedIntakeRequest(challenge, source) : await signedRequest(challenge, source);
+    await assert.rejects(intake ? fixture.service.intakeRelease(request) : fixture.service.release(request),
+      error => error.code === "RECOVERY_V2_NOT_VERIFIED" && error.status === 503);
+    assert.equal(fixture.proofCalls, 1);
+    assert.equal(fixture.staticCalls, 1);
+    assert.equal(fixture.releaseCalls, 0);
+  }
+});
+
 test("one authorized pair-local proof releases the exact credit and a retry is idempotent", async () => {
   const fixture = serviceFixture();
   const challenge = await fixture.service.challenge(source.address);
@@ -1347,6 +1371,7 @@ test("batch normalization rejects unexpected hashes and keeps the exact two-entr
 });
 
 function serviceFixture({
+  beforeBroadcast,
   pairOverride = {},
   pairResolverOverride,
   campaignOverride = {},
@@ -1541,6 +1566,7 @@ function serviceFixture({
   const resolved = pairSummary(pairOverride);
   const builderResult = proofResult ?? { success: true, data: batchProofFixture(resolved) };
   const service = new RecoveryCampaignService({
+    beforeBroadcast,
     poolAddress,
     campaignNumber: 7,
     ccProvider,
