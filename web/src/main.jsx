@@ -683,6 +683,9 @@ function App() {
       setReleaseResult(null);
       setError("");
       updateFlow("malformed");
+      const invalidFieldId = validation.errors.failedTransactionHash
+        ? "failed-transaction" : "successful-transaction";
+      requestAnimationFrame(() => document.getElementById(invalidFieldId)?.focus());
       return;
     }
 

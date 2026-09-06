@@ -267,6 +267,8 @@ test("the interface keeps the public accessibility and responsive floor", () => 
   assert.match(styles, /\.evidence-step ul \{[^}]*font-size:12px/s);
   assert.match(styles, /@media\(max-width:480px\)[\s\S]*\.service-state \{ grid-row:3;/);
   assert.match(app, /aria-invalid=\{error \? "true" : "false"\}/);
+  assert.match(app, /const invalidFieldId = validation.errors.failedTransactionHash\s*\? "failed-transaction" : "successful-transaction"/);
+  assert.match(app, /requestAnimationFrame\(\(\) => document\.getElementById\(invalidFieldId\)\?\.focus\(\)\)/);
   assert.match(app, /aria-describedby=\{`\$\{helperId\}/);
   assert.match(app, /<form className="pair-intake" onSubmit=\{onCheckPair\} noValidate aria-busy=\{busy\}>/);
   assert.match(app, /id="eligibility-heading" tabIndex="-1"/);
