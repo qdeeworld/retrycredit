@@ -1,4 +1,5 @@
 import { observeRecoveryV2, RECOVERY_V2_OBSERVATION } from "./recovery-v2-observer.mjs";
+import { createRecoveryV2AuditTransport } from "./recovery-v2-audit-transport.mjs";
 
 // Leave room for a full slow observation before the previous sample expires.
 export const V2_OBSERVER_INTERVAL_MS = 15_000;
@@ -19,9 +20,10 @@ export function createRecoveryV2LiveObserver({
     || !/^[0-9a-f]{40}$/.test(env.RENDER_GIT_COMMIT ?? "")) {
     throw new Error("RECOVERY_V2_OBSERVER_PROFILE_INVALID");
   }
+  const audit = createRecoveryV2AuditTransport(env);
   const observationEnv = Object.freeze({
     CREDITCOIN_RPC: "https://rpc.cc3-testnet.creditcoin.network",
-    CREDITCOIN_LOG_RPC: "https://creditcoin-testnet.blockscout.com/api/eth-rpc",
+    CREDITCOIN_LOG_RPC: audit.auditUrl,
     RETRYCREDIT_DEPLOYMENT_REVISION: env.RENDER_GIT_COMMIT,
   });
   let stopped = false;
@@ -50,6 +52,7 @@ export function createRecoveryV2LiveObserver({
       try {
         const result = await Promise.resolve().then(() => observe(observationEnv, {
           timeoutMs: V2_OBSERVER_TIMEOUT_MS,
+          ...(audit.fetchImpl ? { fetchImpl: audit.fetchImpl } : {}),
         }));
         const value = result?.body?.recoveryV2;
         const timestamp = now();

@@ -19,7 +19,7 @@ these application settings.
 
 This mode never constructs the deployment controller or receives its private key,
 arm digest, or broadcast window. It observes the already-deployed transaction and
-runtime through the two canonical CC3 endpoints, initially on startup and then
+runtime through the official CC3 and selected audit endpoints, initially on startup and then
 15 seconds after each completed observation, with a 25-second observation budget.
 This leaves five seconds of scheduling margin before the unchanged 45-second
 freshness limit; event-loop stalls can still expire readiness and fail closed.
@@ -42,6 +42,28 @@ confirms deployment identity, not campaign eligibility or unlock: the existing
 campaign service and contract still enforce predecessor closure, funding, consent,
 proofs, and replay. The predecessor deadline does not change API configuration.
 Production remains V1 until a separately authorized, verified cutover.
+
+#### Optional authenticated audit RPC (Node V2 observer only)
+
+The default audit provider remains Blockscout. To explicitly select Thirdweb for
+the Node V2 live observer, set `RETRYCREDIT_RECOVERY_V2_AUDIT_PROVIDER=thirdweb`,
+`THIRDWEB_RPC_CLIENT_ID` and `THIRDWEB_RPC_SECRET` in the host's protected
+environment settings. Missing or malformed credentials reject observer startup;
+there is no silent fallback. Do not put credentials in source, launch commands,
+logs, public configuration or client bundles. Without explicit Thirdweb selection,
+these credential variables are unused.
+
+The authenticated transport binds the secret header to the exact chain-102031
+Thirdweb URL, rejects redirects and permits only the observer's read methods.
+Provider exception details are discarded. Both providers still undergo every
+canonical deployment check and must agree. This option does not change campaign
+reads, the proof builder, the release/broadcast provider, or Cloudflare's observer.
+It introduces no wallet or signing capability into the observer.
+
+A distinct RPC operator/URL does not establish independent underlying node
+infrastructure. Hosted reliability, upstream independence and full user-journey
+readiness must be assessed separately before a production cutover. Configuration
+support is not evidence that production has enabled it.
 
 Install dependencies and create a local environment file:
 

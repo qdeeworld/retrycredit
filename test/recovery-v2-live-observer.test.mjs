@@ -129,3 +129,22 @@ test("activation requires exact explicit profile and does not accept deployment 
     ["RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER", "2"], ["RENDER_GIT_COMMIT", ""],
   ]) assert.throws(() => createRecoveryV2LiveObserver({ env: { ...env, [key]: value } }), /PROFILE_INVALID/);
 });
+
+test("explicit Thirdweb selection wires only authenticated audit reads without exposing credentials", async () => {
+  let input;
+  let options;
+  const secret = "secret_".repeat(8);
+  const observer = createRecoveryV2LiveObserver({ env: { ...env,
+    RETRYCREDIT_RECOVERY_V2_AUDIT_PROVIDER: "thirdweb",
+    THIRDWEB_RPC_CLIENT_ID: "a".repeat(32), THIRDWEB_RPC_SECRET: secret,
+  }, observe: async (value, settings) => { input = value; options = settings; return success(); }, setTimer: () => 1, clearTimer: () => {} });
+  await observer.start();
+  assert.equal(input.CREDITCOIN_RPC, "https://rpc.cc3-testnet.creditcoin.network");
+  assert.equal(input.CREDITCOIN_LOG_RPC, `https://102031.rpc.thirdweb.com/${"a".repeat(32)}`);
+  assert.equal(typeof options.fetchImpl, "function");
+  assert.equal(options.timeoutMs, 25000);
+  assert.equal(observer.readiness().ready, true);
+  assert.equal(JSON.stringify({ input, options, readiness: observer.readiness() }).includes(secret), false);
+  observer.stop();
+  assert.throws(() => createRecoveryV2LiveObserver({ env: { ...env, RETRYCREDIT_RECOVERY_V2_AUDIT_PROVIDER: "thirdweb" } }), /CREDENTIALS_INVALID/);
+});
