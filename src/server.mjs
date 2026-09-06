@@ -14,6 +14,7 @@ import {
 } from "./recovery-campaign-service.mjs";
 import { createRecoveryV2DeploymentSupervisor } from "./recovery-v2-deployment-supervisor.mjs";
 import { createRecoveryV2LiveObserver } from "./recovery-v2-live-observer.mjs";
+import { createRecoverySourceProvider } from "./recovery-source-provider.mjs";
 
 const POOL_ADDRESS = process.env.RULEDROP_POOL_ADDRESS ?? "0x6f8dE7e1599A0c8D38eB25996cB841a4920ed999";
 const CREDITCOIN_RPC = process.env.CREDITCOIN_RPC ?? "https://rpc.cc3-testnet.creditcoin.network";
@@ -97,6 +98,7 @@ if (recoveryBootstrap.enabled) {
     };
   } else {
     try {
+      const sourceProvider = createRecoverySourceProvider(process.env);
       const service = RecoveryCampaignService.fromPrivateKey({
         privateKey,
         poolAddress: recoveryBootstrap.poolAddress,
@@ -107,6 +109,7 @@ if (recoveryBootstrap.enabled) {
           ? { ethereumRpcUrls: ethereumRpcUrls.filter(Boolean) }
           : {}),
         publicOrigin: PUBLIC_ORIGIN,
+        ...(sourceProvider ? { ethereumProviders: [sourceProvider] } : {}),
         config: { contractVersion: RECOVERY_CONTRACT_VERSION },
         beforeBroadcast: () => {
           if (RECOVERY_CONTRACT_VERSION === "v2") requireVerifiedV2(recoveryV2Deployment);
