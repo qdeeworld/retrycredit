@@ -1587,6 +1587,8 @@ function EvidenceBand({ config, eligibility, flow, releaseResult }) {
     releaseResult,
   });
   const { pair, release, wallet } = evidence;
+  const priorRecovery = eligibility?.status === "claimed"
+    && recoveryRecordMatchesConfig(eligibility, config);
   const paymentValue = formatEthValue(pair?.valueWei);
   const mintPrice = formatEthValue(pair?.mintPriceWei);
   const continuationWaiting = isContinuationWaiting(config);
@@ -1644,11 +1646,13 @@ function EvidenceBand({ config, eligibility, flow, releaseResult }) {
       />
       <div className="sequence-link" aria-hidden="true"><ArrowRight /></div>
       <EvidenceStep
-        kind={release ? "released" : continuationWaiting ? "waiting" : "funded"}
+        kind={release ? "released" : priorRecovery ? "waiting" : continuationWaiting ? "waiting" : "funded"}
         number="C"
         title={release
           ? "Fixed credit released"
-          : releaseProcessing
+          : priorRecovery
+            ? "Earlier recovery blocks another credit"
+            : releaseProcessing
             ? "Release status needs confirmation"
             : continuationWaiting
               ? "Continuation release is waiting"
@@ -1657,13 +1661,16 @@ function EvidenceBand({ config, eligibility, flow, releaseResult }) {
                 : releaseAvailable ? "Fixed release awaits authorization" : "No new release available"}
         subtitle="Creditcoin Testnet · source-derived payout"
         hash={release?.transactionHash}
+        pendingLabel={priorRecovery ? "No new release will be created for this recovered wallet or evidence" : undefined}
         chain="creditcoin"
         facts={[
           formatCredit(evidence.creditAmount ?? config?.campaign?.creditAmount),
           release?.blockNumber !== undefined && `Block ${release.blockNumber}`,
           release
             ? "Replay consumed"
-            : releaseProcessing
+            : priorRecovery
+              ? "Prior use stays excluded after settlement opens"
+              : releaseProcessing
               ? "Check exact pair before any new signature"
               : continuationWaiting
                 ? "Predecessor must fill or pass its deadline"
@@ -1676,14 +1683,14 @@ function EvidenceBand({ config, eligibility, flow, releaseResult }) {
   </section>;
 }
 
-function EvidenceStep({ chain, facts, hash, kind, number, subtitle, title }) {
+function EvidenceStep({ chain, facts, hash, kind, number, subtitle, title, pendingLabel }) {
   return <article className={`evidence-step ${kind}`}>
     <div className="step-status"><span>{number}</span><b>{title}</b></div>
     <p>{subtitle}</p>
     <ul>{facts.filter(Boolean).map((fact) => <li key={fact}>{fact}</li>)}</ul>
     {hash
       ? <ExplorerLink chain={chain} hash={hash}>Open transaction</ExplorerLink>
-      : <span className="receipt-pending">Receipt appears when this state exists</span>}
+      : <span className="receipt-pending">{pendingLabel ?? "Receipt appears when this state exists"}</span>}
   </article>;
 }
 

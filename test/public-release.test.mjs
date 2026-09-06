@@ -206,6 +206,13 @@ test("Cases keeps recovered, observed, and controlled evidence distinct", () => 
   assert.match(app, /0\.01 tCTC/);
 });
 
+test("prior recovery cannot look like a pending continuation payout", () => {
+  assert.match(app, /const priorRecovery = eligibility\?\.status === "claimed"\s*&& recoveryRecordMatchesConfig\(eligibility, config\)/);
+  assert.match(app, /title=\{release\s*\? "Fixed credit released"\s*: priorRecovery\s*\? "Earlier recovery blocks another credit"/);
+  assert.match(app, /Prior use stays excluded after settlement opens/);
+  assert.match(app, /No new release will be created for this recovered wallet or evidence/);
+});
+
 test("Protocol states the exact predicate, payout, and truth limits", () => {
   assert.match(app, /dedicated paid SeaDrop pair/);
   assert.match(app, /canonical <code>mintSigned<\/code>/);
