@@ -95,3 +95,29 @@ test("refuses incomplete or mutable-looking authority fields", () => {
     config({ rule: { endBlock: 0 } }),
   ]) assert.throws(() => buildRecoveryCampaignManifest(invalid));
 });
+
+test("refuses network mismatch and contradictory campaign economics", () => {
+  for (const invalid of [
+    config({ source: { chainId: 11155111 } }),
+    config({ source: { chainKey: 1 } }),
+    config({ settlement: { chainId: 1 } }),
+    config({ rule: { startBlock: 25_100_001 } }),
+    config({ campaign: { remainingClaims: 11 } }),
+    config({ campaign: { fundedAmount: "1" } }),
+  ]) assert.throws(() => buildRecoveryCampaignManifest(invalid));
+});
+
+test("rejects coercible non-integers without rejecting explicit genesis zero", () => {
+  for (const invalid of [null, false, true, "", " ", [], "0x10", "1e2"]) {
+    assert.throws(() => buildRecoveryCampaignManifest(config({ rule: { startBlock: invalid } })));
+    assert.throws(() => buildRecoveryCampaignManifest(config({ campaignNumber: invalid })));
+  }
+  assert.equal(buildRecoveryCampaignManifest(config({ rule: { startBlock: "0" } })).source.startBlock, 0);
+});
+
+test("does not promise availability for closed or read-only campaigns", () => {
+  const manifest = buildRecoveryCampaignManifest(config({ enabled: false, readOnly: true, campaign: { releaseState: "closed" } }));
+  assert.equal(manifest.credit.releaseState, "closed");
+  assert.doesNotMatch(manifest.adapter.availability, /active campaign/i);
+  assert.equal(manifest.promise.recoveryBackedBeforeAction, false);
+});

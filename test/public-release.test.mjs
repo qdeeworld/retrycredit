@@ -48,7 +48,8 @@ test("the public shell is a multi-route Recovery Dispatch, not the old cockpit",
 });
 
 test("Recovery leads with campaign truth and wallet-native discovery with pair fallback", () => {
-  assert.match(app, /Recovery Promise/);
+  assert.match(app, /manifest\?\.promise\.label \?\? "Campaign terms unavailable"/);
+  assert.match(app, /function recoveryManifest\(config\) \{\s+if \(!isRecoveryConfigReadable\(config\)\) return null;/);
   assert.match(app, /manifest\.promise\.disclosure/);
   assert.match(app, /Campaign sponsor/);
   assert.match(app, /A completed mint can unlock one fixed credit\./);

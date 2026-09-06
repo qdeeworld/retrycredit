@@ -7,7 +7,7 @@ export const RECOVERY_ADAPTERS = Object.freeze([
     name: "Paid SeaDrop mint",
     source: "Ethereum Mainnet",
     evidence: "Organic mainnet incident",
-    availability: "Active campaign",
+    availability: "Availability follows live campaign terms",
     role: "primary",
   }),
   Object.freeze({
@@ -39,6 +39,9 @@ export function buildRecoveryCampaignManifest(config) {
   requireObject(config.rule, "campaign rule");
   requireObject(config.source, "source network");
   requireObject(config.settlement, "settlement network");
+  if (config.source.chainId !== 1 || config.source.chainKey !== 3 || config.settlement.chainId !== 102031) {
+    throw new Error("paid SeaDrop manifest requires Ethereum mainnet and Creditcoin testnet");
+  }
 
   const manifest = {
     schema: "retrycredit.recovery-campaign/1",
@@ -80,6 +83,11 @@ export function buildRecoveryCampaignManifest(config) {
     },
   };
 
+  if (manifest.source.startBlock > manifest.source.endBlock) throw new Error("source block window is reversed");
+  if (manifest.credit.remainingClaims > manifest.credit.maxClaims) throw new Error("remaining claims exceed capacity");
+  if (BigInt(manifest.credit.fundedAmount) !== BigInt(manifest.credit.amount) * BigInt(manifest.credit.maxClaims)) {
+    throw new Error("funded reserve does not match fixed campaign capacity");
+  }
   return deepFreeze(manifest);
 }
 
@@ -163,11 +171,13 @@ function requireVersion(value) {
 }
 
 function requirePositiveInteger(value, label) {
-  if (!Number.isSafeInteger(Number(value)) || Number(value) <= 0) throw new Error(`${label} is invalid`);
-  return Number(value);
+  const normalized = requireNonnegativeInteger(value, label);
+  if (normalized === 0) throw new Error(`${label} is invalid`);
+  return normalized;
 }
 
 function requireNonnegativeInteger(value, label) {
+  if (typeof value !== "number" && !(typeof value === "string" && /^\d+$/.test(value))) throw new Error(`${label} is invalid`);
   if (!Number.isSafeInteger(Number(value)) || Number(value) < 0) throw new Error(`${label} is invalid`);
   return Number(value);
 }

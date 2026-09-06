@@ -1250,7 +1250,7 @@ function CampaignFile({ config, configState }) {
   const campaignClosed = campaignReady && ["closed", "full"].includes(campaignAvailability);
   return <section className="campaign-file" aria-labelledby="campaign-heading">
     <div className="file-registration" aria-hidden="true">Campaign file</div>
-    <p className="promise-kicker">Recovery Promise · {manifest?.promise.label ?? "Authenticating funded terms"}</p>
+    <p className="promise-kicker">{manifest?.promise.label ?? "Campaign terms unavailable"}</p>
     <h2 id="campaign-heading" tabIndex="-1">{!campaignReady
       ? "The recovery campaign is being verified."
       : campaignClosed
@@ -1864,7 +1864,7 @@ function ProtocolField({ label, value }) {
 }
 
 function recoveryManifest(config) {
-  if (!config?.enabled) return null;
+  if (!isRecoveryConfigReadable(config)) return null;
   try {
     return buildRecoveryCampaignManifest(config);
   } catch {
