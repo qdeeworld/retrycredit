@@ -102,6 +102,29 @@ test("V2 observer cancels an oversized streamed RPC response", async () => {
   assert.ok(cancellations >= 1);
 });
 
+test("endpoint failure aborts and joins sibling work before completing a sample", async () => {
+  let siblingSignal;
+  let releaseSibling;
+  let completed = false;
+  const pending = observeRecoveryV2(ENV, {
+    observation,
+    fetchImpl: async (url, options) => {
+      if (url === ENV.CREDITCOIN_RPC) throw new Error("primary offline");
+      siblingSignal = options.signal;
+      // Model a transport that needs asynchronous cleanup even after abort.
+      await new Promise(resolve => { releaseSibling = resolve; });
+      throw new Error("audit cleanup completed");
+    },
+  }).then(result => { completed = true; return result; });
+  await new Promise(setImmediate);
+  assert.equal(siblingSignal.aborted, true);
+  assert.equal(completed, false);
+  releaseSibling();
+  const result = await pending;
+  assert.equal(result.status, 503);
+  assert.equal(completed, true);
+});
+
 function batchResponse() {
   return [
     {
