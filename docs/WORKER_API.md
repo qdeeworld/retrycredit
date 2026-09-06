@@ -20,7 +20,11 @@ these application settings.
 This mode never constructs the deployment controller or receives its private key,
 arm digest, or broadcast window. It observes the already-deployed transaction and
 runtime through the two canonical CC3 endpoints, initially on startup and then
-30 seconds after each completed observation. HTTP health checks read the latest
+15 seconds after each completed observation, with a 25-second observation budget.
+This leaves five seconds of scheduling margin before the unchanged 45-second
+freshness limit; event-loop stalls can still expire readiness and fail closed.
+The shorter delay increases background read frequency but never overlaps samples.
+HTTP health checks read the latest
 sample without additional RPC work. Failed refreshes, samples at least 45 seconds
 old, and stopped observers fail closed. This is per-process provider cadence,
 not a distributed rate-limit guarantee across replicas or restarts.

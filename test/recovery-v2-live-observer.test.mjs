@@ -23,12 +23,13 @@ function harness(observe = async () => success()) {
   let callback;
   let calls = 0;
   const observer = createRecoveryV2LiveObserver({ env,
-    observe: async (input) => {
+    observe: async (input, options) => {
       calls++;
       assert.deepEqual(Object.keys(input).sort(), ["CREDITCOIN_LOG_RPC", "CREDITCOIN_RPC", "RETRYCREDIT_DEPLOYMENT_REVISION"]);
+      assert.deepEqual(options, { timeoutMs: 25_000 });
       return observe(input);
     }, now: () => timestamp,
-    setTimer(fn, delay) { assert.equal(delay, 30_000); callback = fn; return 1; },
+    setTimer(fn, delay) { assert.equal(delay, 15_000); callback = fn; return 1; },
     clearTimer() { callback = null; },
   });
   return { observer, time: (t) => timestamp = t, calls: () => calls,
@@ -64,6 +65,43 @@ test("expired samples and clock reversal fail closed", async () => {
   h.time(145_000); assert.equal(h.observer.readiness().ready, false);
   h.time(99_999); assert.equal(h.observer.readiness().ready, false);
   h.time(NaN); assert.equal(h.observer.readiness().ready, false);
+});
+test("a slow refresh fits the unchanged freshness limit without overlapping RPC work", async () => {
+  let release;
+  let pending = false;
+  const h = harness(() => pending ? new Promise(resolve => { release = resolve; }) : success());
+  await h.observer.start();
+  pending = true;
+  h.time(115_000);
+  await h.tick();
+  assert.equal(h.calls(), 2);
+  h.time(139_999);
+  assert.equal(h.observer.readiness().ready, true);
+  const joined = h.observer.start();
+  assert.equal(h.calls(), 2);
+  release(success());
+  h.time(140_000);
+  await joined;
+  assert.equal(h.observer.readiness().ready, true);
+  h.time(185_000);
+  assert.equal(h.observer.readiness().ready, false);
+  h.observer.stop();
+});
+test("a stalled refresh cannot extend the previous success freshness", async () => {
+  let release;
+  let pending = false;
+  const h = harness(() => pending ? new Promise(resolve => { release = resolve; }) : success());
+  await h.observer.start();
+  pending = true;
+  h.time(115_000);
+  await h.tick();
+  const joined = h.observer.start();
+  h.time(145_000);
+  assert.equal(h.observer.readiness().ready, false);
+  release({ status: 503 });
+  await joined;
+  assert.equal(h.observer.readiness().ready, false);
+  h.observer.stop();
 });
 test("partial, wrong-revision, wrong-chain, or single-observer results fail closed", async () => {
   for (const modify of [

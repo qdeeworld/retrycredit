@@ -1,6 +1,8 @@
 import { observeRecoveryV2, RECOVERY_V2_OBSERVATION } from "./recovery-v2-observer.mjs";
 
-export const V2_OBSERVER_INTERVAL_MS = 30_000;
+// Leave room for a full slow observation before the previous sample expires.
+export const V2_OBSERVER_INTERVAL_MS = 15_000;
+export const V2_OBSERVER_TIMEOUT_MS = 25_000;
 const MAX_AGE_MS = 45_000;
 
 // Post-deployment verification has no wallet, deployment controller, arm digest,
@@ -46,7 +48,9 @@ export function createRecoveryV2LiveObserver({
     if (flight) return flight;
     flight = (async () => {
       try {
-        const result = await Promise.resolve().then(() => observe(observationEnv));
+        const result = await Promise.resolve().then(() => observe(observationEnv, {
+          timeoutMs: V2_OBSERVER_TIMEOUT_MS,
+        }));
         const value = result?.body?.recoveryV2;
         const timestamp = now();
         verifiedAt = !stopped && result?.status === 200 && result?.body?.ok === true
