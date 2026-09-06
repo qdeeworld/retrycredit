@@ -846,6 +846,19 @@ test("missing receipts for returned transactions are retryable and never negativ
   assert.equal(reads, 4);
 });
 
+test("one entirely absent hash stays pair-invalid and negatively cached", async () => {
+  let reads = 0;
+  const fixture = serviceFixture({ useEthereumResolver: true, ethereumProviders: [{
+    async getNetwork() { return { chainId: 1n }; },
+    async getTransaction(hash) { reads++; return hash === failedHash ? { type: 2 } : null; },
+    async getTransactionReceipt(hash) { return hash === failedHash ? {} : null; },
+  }] });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), { code: "RECOVERY_PAIR_INVALID", status: 422 });
+  }
+  assert.equal(reads, 2);
+});
+
 test("discovery cannot report an empty match when a candidate has unavailable receipts", async () => {
   const fixture = serviceFixture({
     useEthereumResolver: true,

@@ -2125,7 +2125,8 @@ async function resolvePairFromEthereum({
       if (returnedFacts.some(fact => !fact)) {
         // Hosted RPCs can return mined transactions while their receipt backend
         // is unavailable. Missing receipts are not evidence of ineligibility.
-        if (returnedFacts.some(Boolean)) incompleteProvider = true;
+        if (Boolean(failedTransaction) !== Boolean(failedReceipt)
+          || Boolean(successfulTransaction) !== Boolean(successfulReceipt)) incompleteProvider = true;
         else responsiveProvider = true;
         continue;
       }
