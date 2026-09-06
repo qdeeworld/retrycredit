@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { keccak256 } from "ethers";
+import { createRecoveryV2AuditTransport } from "../src/recovery-v2-audit-transport.mjs";
 
 import {
   RECOVERY_V2_OBSERVATION,
@@ -18,6 +19,28 @@ const observation = Object.freeze({
   ...RECOVERY_V2_OBSERVATION,
   initCodeHash: keccak256(initCode),
   runtimeCodeHash: keccak256(runtimeCode),
+});
+
+test("authenticated audit retains every canonical read and fails closed on HTTP or fingerprint failure", async () => {
+  for (const mode of ["valid", "unauthorized", "rate-limited", "redirect", "drift"]) {
+    const requests = [];
+    const transport = createRecoveryV2AuditTransport({
+      RETRYCREDIT_RECOVERY_V2_AUDIT_PROVIDER: "thirdweb",
+      THIRDWEB_RPC_CLIENT_ID: "a".repeat(32), THIRDWEB_RPC_SECRET: "secret_".repeat(8),
+    }, async (url, options) => {
+      requests.push({ url, options });
+      if (url.includes("thirdweb") && ["unauthorized", "rate-limited", "redirect"].includes(mode)) {
+        return new Response(null, { status: { unauthorized: 401, "rate-limited": 429, redirect: 302 }[mode] });
+      }
+      const responses = new Map(batchResponse().map(entry => [entry.id, entry]));
+      if (url.includes("thirdweb") && mode === "drift") responses.get(1).result.blockHash = `0x${"99".repeat(32)}`;
+      return jsonResponse(JSON.parse(options.body).map(({ id }) => responses.get(id)));
+    });
+    const result = await observeRecoveryV2({ ...ENV, CREDITCOIN_RPC: "https://rpc.cc3-testnet.creditcoin.network", CREDITCOIN_LOG_RPC: transport.auditUrl }, { observation, fetchImpl: transport.fetchImpl });
+    assert.equal(result.status, mode === "valid" ? 200 : 503);
+    assert.doesNotMatch(JSON.stringify(result), /secret_|thirdweb/);
+    if (mode === "valid") assert.equal(requests.length, 6);
+  }
 });
 
 test("V2 observer requires two exact agreeing canonical observations", async () => {
@@ -100,6 +123,29 @@ test("V2 observer cancels an oversized streamed RPC response", async () => {
   });
   assert.equal(response.status, 503);
   assert.ok(cancellations >= 1);
+});
+
+test("endpoint failure aborts and joins sibling work before completing a sample", async () => {
+  let siblingSignal;
+  let releaseSibling;
+  let completed = false;
+  const pending = observeRecoveryV2(ENV, {
+    observation,
+    fetchImpl: async (url, options) => {
+      if (url === ENV.CREDITCOIN_RPC) throw new Error("primary offline");
+      siblingSignal = options.signal;
+      // Model a transport that needs asynchronous cleanup even after abort.
+      await new Promise(resolve => { releaseSibling = resolve; });
+      throw new Error("audit cleanup completed");
+    },
+  }).then(result => { completed = true; return result; });
+  await new Promise(setImmediate);
+  assert.equal(siblingSignal.aborted, true);
+  assert.equal(completed, false);
+  releaseSibling();
+  const result = await pending;
+  assert.equal(result.status, 503);
+  assert.equal(completed, true);
 });
 
 function batchResponse() {

@@ -177,7 +177,16 @@ test("allows only submitted, reconciliation, and completed statuses", () => {
 
 test("never serializes signatures, raw transactions, authorization material, or proofs", () => {
   const sessionStorage = createSessionStorage();
-  const secretValues = ["secret-signature", "secret-raw-tx", "secret-private-key", "secret-auth", "secret-proof"];
+  const secretValues = [
+    "secret-signature",
+    "secret-raw-tx",
+    "secret-private-key",
+    "secret-auth",
+    "secret-proof",
+    "secret-fresh-receipt",
+    "secret-authorization-header",
+    "secret-challenge",
+  ];
   const saved = saveRecoveryResumeState({
     ...submittedState(),
     signature: secretValues[0],
@@ -185,12 +194,24 @@ test("never serializes signatures, raw transactions, authorization material, or 
     privateKey: secretValues[2],
     authorization: { challenge: secretValues[3] },
     proof: { plaintext: secretValues[4] },
+    freshReadReceipt: secretValues[5],
+    freshAuthorization: secretValues[6],
+    challenge: { message: secretValues[7] },
   }, { sessionStorage, now: NOW });
 
   assert.ok(saved);
   const serialized = sessionStorage.value();
   for (const secret of secretValues) assert.equal(serialized.includes(secret), false);
-  for (const forbiddenKey of ["signature", "rawTransaction", "privateKey", "authorization", "proof"]) {
+  for (const forbiddenKey of [
+    "signature",
+    "rawTransaction",
+    "privateKey",
+    "authorization",
+    "proof",
+    "freshReadReceipt",
+    "freshAuthorization",
+    "challenge",
+  ]) {
     assert.equal(Object.hasOwn(JSON.parse(serialized), forbiddenKey), false);
   }
 });

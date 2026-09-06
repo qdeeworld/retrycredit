@@ -101,7 +101,11 @@ test("configuration authenticates every binding and serializes campaign capacity
 
   assert.equal(config.enabled, true);
   assert.deepEqual(config.capabilities, { selfServePairIntake: true, walletNativeDiscovery: true });
-  assert.deepEqual(config.consent, { scope: "hosted-relayer", protocolEnforced: false });
+  assert.deepEqual(config.consent, {
+    scope: "hosted-relayer",
+    protocolEnforced: false,
+    freshReadAdmission: "anonymous-v1",
+  });
   assert.equal(config.poolAddress, poolAddress);
   assert.equal(config.verifierAddress, verifierAddress);
   assert.equal(config.predicateAddress, predicateAddress);
@@ -825,6 +829,53 @@ test("open-pair source resolution retries another provider after a complete sema
   assert.equal(networkChecks, 2);
 });
 
+test("missing receipts for returned transactions are retryable and never negatively cached", async () => {
+  let receiptAvailable = false;
+  let reads = 0;
+  const ethereumProvider = {
+    async getNetwork() { return { chainId: 1n }; },
+    async getTransaction() { reads++; return { type: 0 }; },
+    async getTransactionReceipt() { return receiptAvailable ? {} : null; },
+  };
+  const fixture = serviceFixture({ useEthereumResolver: true, ethereumProviders: [ethereumProvider] });
+  await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), { code: "RECOVERY_SOURCE_UNAVAILABLE", status: 503 });
+  receiptAvailable = true;
+  // Complete type-0 facts still fail the actual predicate. They must be reread,
+  // not hidden by a cached semantic verdict from the incomplete first response.
+  await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), { code: "RECOVERY_PAIR_INVALID", status: 422 });
+  assert.equal(reads, 4);
+});
+
+test("one entirely absent hash stays pair-invalid and negatively cached", async () => {
+  let reads = 0;
+  const fixture = serviceFixture({ useEthereumResolver: true, ethereumProviders: [{
+    async getNetwork() { return { chainId: 1n }; },
+    async getTransaction(hash) { reads++; return hash === failedHash ? { type: 2 } : null; },
+    async getTransactionReceipt(hash) { return hash === failedHash ? {} : null; },
+  }] });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), { code: "RECOVERY_PAIR_INVALID", status: 422 });
+  }
+  assert.equal(reads, 2);
+});
+
+test("discovery cannot report an empty match when a candidate has unavailable receipts", async () => {
+  const fixture = serviceFixture({
+    useEthereumResolver: true,
+    ethereumProviders: [{
+      async getNetwork() { return { chainId: 1n }; },
+      async getTransaction() { return { type: 2 }; },
+      async getTransactionReceipt() { return null; },
+    }, {
+      async getNetwork() { return { chainId: 1n }; },
+      async getTransaction() { return null; },
+      async getTransactionReceipt() { return null; },
+    }],
+    walletDiscovery: async () => ({ transactions: [], pages: 1, truncated: false, pairs: [pairIdentity()] }),
+  });
+  await assert.rejects(fixture.service.discover(source.address), { code: "RECOVERY_SOURCE_UNAVAILABLE", status: 503 });
+});
+
 test("open-pair release queue rejects overflow before a second proof starts", async () => {
   const proofGate = deferred();
   const secondPair = pairIdentity(`0x${"a9".repeat(32)}`, `0x${"b9".repeat(32)}`);
@@ -1251,6 +1302,30 @@ test("release refuses a different signer, an altered consent message, and an exp
   assert.equal(fixture.releaseCalls, 0);
 });
 
+test("verification lost during proof building prevents broadcast on both release routes", async () => {
+  for (const intake of [false, true]) {
+    let verified = true;
+    const fixture = serviceFixture({
+      beforeBroadcast() {
+        if (!verified) throw new WorkerError("RECOVERY_V2_NOT_VERIFIED", "verification unavailable", 503);
+      },
+      proofBuilderOverride: async ({ resolved }) => {
+        verified = false;
+        return { success: true, data: batchProofFixture(resolved) };
+      },
+    });
+    const challenge = intake
+      ? await fixture.service.intakeChallenge({ pair: pairIdentity() })
+      : await fixture.service.challenge(source.address);
+    const request = intake ? await signedIntakeRequest(challenge, source) : await signedRequest(challenge, source);
+    await assert.rejects(intake ? fixture.service.intakeRelease(request) : fixture.service.release(request),
+      error => error.code === "RECOVERY_V2_NOT_VERIFIED" && error.status === 503);
+    assert.equal(fixture.proofCalls, 1);
+    assert.equal(fixture.staticCalls, 1);
+    assert.equal(fixture.releaseCalls, 0);
+  }
+});
+
 test("one authorized pair-local proof releases the exact credit and a retry is idempotent", async () => {
   const fixture = serviceFixture();
   const challenge = await fixture.service.challenge(source.address);
@@ -1343,6 +1418,7 @@ test("batch normalization rejects unexpected hashes and keeps the exact two-entr
 });
 
 function serviceFixture({
+  beforeBroadcast,
   pairOverride = {},
   pairResolverOverride,
   campaignOverride = {},
@@ -1537,6 +1613,7 @@ function serviceFixture({
   const resolved = pairSummary(pairOverride);
   const builderResult = proofResult ?? { success: true, data: batchProofFixture(resolved) };
   const service = new RecoveryCampaignService({
+    beforeBroadcast,
     poolAddress,
     campaignNumber: 7,
     ccProvider,

@@ -13,6 +13,10 @@ export const RECOVERY_INTAKE_RELEASE_PATH = "/api/recovery/intake/release";
 export const RECOVERY_DISCOVERY_PATH = "/api/recovery/discover";
 
 const RECOVERY_RELEASE_PENDING_MESSAGE = "Attestcoin is still finalizing. Check the wallet again before signing a fresh authorization.";
+const RATE_LIMIT_RETRY_JITTER_MAX_MS = 250;
+const FRESH_READ_AUTHORIZATION_SCHEME = "RetryCreditFresh";
+const FRESH_READ_RECEIPT_PATTERN = /^v1\.[A-Za-z0-9_-]{43}$/;
+const FRESH_READ_AUTHORIZATION_PATTERN = /^RetryCreditFresh [A-Za-z0-9_-]{1,2048}$/;
 export const LEGACY_RELEASE_PENDING_MESSAGE = "The archived RetryCredit release is still finalizing. Retry the archived flow shortly.";
 export const RECOVERY_AUTHORIZATION_EXPIRED_MESSAGE = "The signed authorization window ended. Authorize again with a fresh signature.";
 
@@ -44,12 +48,63 @@ export class RateLimitedError extends Error {
   }
 }
 
-export async function wakeRecoveryConfig({ fresh = false, ...options } = {}) {
+export async function wakeRecoveryConfig({ fresh = false, freshAuthorization, ...options } = {}) {
+  if (fresh !== true && freshAuthorization !== undefined) {
+    throw new TypeError("freshAuthorization is accepted only for an explicit fresh config request");
+  }
+  if (
+    freshAuthorization !== undefined
+    && (
+      typeof freshAuthorization !== "string"
+      || !FRESH_READ_AUTHORIZATION_PATTERN.test(freshAuthorization)
+    )
+  ) {
+    throw new TypeError("freshAuthorization is invalid");
+  }
   return wakeEndpoint({
     ...options,
     path: fresh === true ? "/api/recovery/config?fresh=1" : "/api/recovery/config",
+    requestOptions: freshAuthorization === undefined
+      ? undefined
+      : { headers: { authorization: freshAuthorization } },
     shouldRetry: (value) => value?.waking === true,
+    retryRateLimits: fresh === true,
   });
+}
+
+export function createRecoveryFreshReadAuthorization({ challenge, signature } = {}) {
+  const wallet = requireFreshReadHex(challenge?.wallet, 20, "wallet");
+  const failedTransactionHash = requireFreshReadHex(
+    challenge?.pair?.failedTransactionHash,
+    32,
+    "failed transaction hash",
+  );
+  const successfulTransactionHash = requireFreshReadHex(
+    challenge?.pair?.successfulTransactionHash,
+    32,
+    "successful transaction hash",
+  );
+  const issuedAt = requireFreshReadTimestamp(challenge?.issuedAt, "issuedAt");
+  const expiresAt = requireFreshReadTimestamp(challenge?.expiresAt, "expiresAt");
+  const normalizedSignature = requireFreshReadHex(signature, 65, "signature");
+  const receipt = challenge?.freshReadReceipt;
+  if (typeof receipt !== "string" || !FRESH_READ_RECEIPT_PATTERN.test(receipt)) {
+    throw new TypeError("fresh-read receipt is invalid");
+  }
+  const credential = {
+    v: 1,
+    wallet,
+    pair: { failedTransactionHash, successfulTransactionHash },
+    issuedAt,
+    expiresAt,
+    signature: normalizedSignature,
+    receipt,
+  };
+  const bytes = new TextEncoder().encode(JSON.stringify(credential));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const token = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "");
+  return FRESH_READ_AUTHORIZATION_SCHEME + " " + token;
 }
 
 // Kept for the previous Uniswap public-lab fallback.
@@ -446,6 +501,7 @@ export async function requestJsonWithTimeout({ apiOrigin = "", path, options, fe
 async function wakeEndpoint({
   apiOrigin = "",
   path,
+  requestOptions,
   fetchImpl = globalThis.fetch,
   totalTimeoutMs = CONFIG_WAKE_TOTAL_TIMEOUT_MS,
   requestTimeoutMs = CONFIG_WAKE_REQUEST_TIMEOUT_MS,
@@ -453,13 +509,24 @@ async function wakeEndpoint({
   now = Date.now,
   sleep = delay,
   shouldRetry = () => false,
+  retryRateLimits = false,
+  canAttempt = () => true,
+  random = Math.random,
 } = {}) {
+  if (typeof canAttempt !== "function") throw new TypeError("canAttempt must be a function");
+  if (typeof random !== "function") throw new TypeError("random must be a function");
   const startedAt = now();
   let lastError = new TemporaryUnavailableError();
+  let nextAttemptAtMs = startedAt;
 
   for (const offsetMs of attemptOffsetsMs) {
-    const waitMs = offsetMs - (now() - startedAt);
+    if (!canAttempt()) throw new TemporaryUnavailableError();
+    const plannedAttemptAtMs = startedAt + offsetMs;
+    const waitMs = Math.max(plannedAttemptAtMs, nextAttemptAtMs) - now();
+    const remainingBeforeWaitMs = totalTimeoutMs - (now() - startedAt);
+    if (waitMs >= remainingBeforeWaitMs) break;
     if (waitMs > 0) await sleep(waitMs);
+    if (!canAttempt()) throw new TemporaryUnavailableError();
 
     const remainingMs = totalTimeoutMs - (now() - startedAt);
     if (remainingMs <= 0) break;
@@ -468,18 +535,65 @@ async function wakeEndpoint({
       const value = await requestJsonWithTimeout({
         apiOrigin,
         path,
+        options: requestOptions,
         fetchImpl,
         timeoutMs: Math.min(requestTimeoutMs, remainingMs),
       });
       if (!shouldRetry(value)) return value;
       lastError = new TemporaryUnavailableError();
     } catch (error) {
-      if (!error?.temporaryUnavailable) throw error;
-      lastError = error;
+      if (error?.temporaryUnavailable) {
+        lastError = error;
+        continue;
+      }
+      if (
+        retryRateLimits
+        && error?.rateLimited
+        && error.code === "RECOVERY_FRESH_READ_THROTTLED"
+      ) {
+        const retryDelayMs = rateLimitRetryDelayMs(error.retryAfter);
+        if (retryDelayMs === null) throw error;
+        lastError = error;
+        nextAttemptAtMs = Math.max(
+          nextAttemptAtMs,
+          now() + retryDelayMs + rateLimitRetryJitterMs(random),
+        );
+        continue;
+      }
+      throw error;
     }
   }
 
+  if (lastError?.rateLimited) throw lastError;
   throw new TemporaryUnavailableError(lastError.message);
+}
+
+function requireFreshReadHex(value, byteLength, label) {
+  if (
+    typeof value !== "string"
+    || !new RegExp("^0x[0-9a-fA-F]{" + (byteLength * 2) + "}$").test(value)
+  ) {
+    throw new TypeError(label + " is invalid");
+  }
+  return value;
+}
+
+function requireFreshReadTimestamp(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError(label + " is invalid");
+  return value;
+}
+
+function rateLimitRetryDelayMs(value) {
+  if (typeof value !== "string" || !/^[1-9][0-9]{0,2}$/.test(value)) return null;
+  const seconds = Number(value);
+  return seconds <= 300 ? seconds * 1_000 : null;
+}
+
+function rateLimitRetryJitterMs(random) {
+  const sample = random();
+  return Number.isFinite(sample) && sample >= 0 && sample < 1
+    ? Math.floor(sample * (RATE_LIMIT_RETRY_JITTER_MAX_MS + 1))
+    : 0;
 }
 
 function postRecoveryJson({ apiOrigin, path, body, fetchImpl, timeoutMs }) {

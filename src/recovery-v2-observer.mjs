@@ -29,10 +29,23 @@ export async function observeRecoveryV2(env = {}, {
       requireHttpsUrl(env.CREDITCOIN_LOG_RPC, "audit Creditcoin RPC"),
     ];
     if (endpoints[0] === endpoints[1]) throw new Error("V2 observation requires independent RPC URLs");
-    const observations = await Promise.all(
-      endpoints.map((endpoint) => observeEndpoint(endpoint, { fetchImpl, timeoutMs, observation })),
-    );
-    const [primary, audit] = observations;
+    const controller = new AbortController();
+    // A failed endpoint must not leave a sibling running into the next sample.
+    // Abort promptly, then join cleanup before releasing the single-flight slot.
+    const observations = await Promise.allSettled(endpoints.map(async (endpoint) => {
+      try {
+        return await observeEndpoint(endpoint, {
+          fetchImpl, timeoutMs, observation, signal: controller.signal,
+        });
+      } catch (error) {
+        controller.abort();
+        throw error;
+      }
+    }));
+    if (observations.some(result => result.status === "rejected")) {
+      throw new Error("V2 endpoint observation failed");
+    }
+    const [primary, audit] = observations.map(result => result.value);
     if (primary.fingerprint !== audit.fingerprint) {
       throw new Error("V2 RPC observations disagree");
     }
@@ -71,7 +84,7 @@ export async function observeRecoveryV2(env = {}, {
   }
 }
 
-async function observeEndpoint(endpoint, { fetchImpl, timeoutMs, observation }) {
+async function observeEndpoint(endpoint, { fetchImpl, timeoutMs, observation, signal }) {
   const payload = [
     { jsonrpc: "2.0", id: 1, method: "eth_getTransactionReceipt", params: [observation.transactionHash] },
     { jsonrpc: "2.0", id: 2, method: "eth_getCode", params: [observation.contractAddress, "latest"] },
@@ -94,6 +107,7 @@ async function observeEndpoint(endpoint, { fetchImpl, timeoutMs, observation }) 
   const startedAt = Date.now();
   const entries = [];
   for (let index = 0; index < payload.length; index += 3) {
+    signal.throwIfAborted();
     const remainingMs = timeoutMs - (Date.now() - startedAt);
     if (remainingMs <= 0) throw new Error("V2 observer RPC timed out");
     const batch = payload.slice(index, index + 3);
@@ -101,7 +115,7 @@ async function observeEndpoint(endpoint, { fetchImpl, timeoutMs, observation }) 
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(batch),
-      signal: AbortSignal.timeout(remainingMs),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(remainingMs)]),
     });
     if (!response.ok) {
       await cancelUnreadBody(response);

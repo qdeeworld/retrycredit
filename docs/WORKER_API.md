@@ -6,6 +6,65 @@ The wallet does not submit a transaction, switch networks, deposit an asset, or 
 
 ## Run locally
 
+### V2 activation runtime (not yet deployed)
+
+The reviewed deployment can be observed without retaining a signing or broadcast
+controller. Explicit V2 activation requires `RETRYCREDIT_RECOVERY_ENABLED=true`,
+`RETRYCREDIT_RECOVERY_CONTRACT_VERSION=v2`, the canonical V2 pool
+`0x3Eee179eDD6Fe6e40D7d23f0110ea639f2DA82B8`, campaign `1`, and
+`RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE=observation-only`. A valid full
+`RENDER_GIT_COMMIT` identifies the running release. V2 never inherits V1 pool
+defaults. The existing Google/Git deployment account settings are unrelated to
+these application settings.
+
+This mode never constructs the deployment controller or receives its private key,
+arm digest, or broadcast window. It observes the already-deployed transaction and
+runtime through the official CC3 and selected audit endpoints, initially on startup and then
+15 seconds after each completed observation, with a 25-second observation budget.
+This leaves five seconds of scheduling margin before the unchanged 45-second
+freshness limit; event-loop stalls can still expire readiness and fail closed.
+The shorter delay increases background read frequency but never overlaps samples.
+HTTP health checks read the latest
+sample without additional RPC work. Failed refreshes, samples at least 45 seconds
+old, and stopped observers fail closed. This is per-process provider cadence,
+not a distributed rate-limit guarantee across replicas or restarts.
+
+`/health/recovery-v2` reports `publicProfile: "v2"` and returns 200 only for a
+current two-provider observation. All V2 recovery API routes refuse with
+`503 RECOVERY_V2_NOT_VERIFIED` while verification is unavailable. Observation
+is rechecked after queueing, proof construction, simulation, and balance reads,
+immediately before the shared release broadcast. Failed verification at that
+boundary sends nothing and does not enter ambiguous-broadcast reconciliation.
+Setting `RETRYCREDIT_RECOVERY_ENABLED=false` skips V2 observer construction,
+preserving health and unrelated read routes even if observation mode remains set.
+Observation
+confirms deployment identity, not campaign eligibility or unlock: the existing
+campaign service and contract still enforce predecessor closure, funding, consent,
+proofs, and replay. The predecessor deadline does not change API configuration.
+Production remains V1 until a separately authorized, verified cutover.
+
+#### Optional authenticated audit RPC (Node V2 observer only)
+
+The default audit provider remains Blockscout. To explicitly select Thirdweb for
+the Node V2 live observer, set `RETRYCREDIT_RECOVERY_V2_AUDIT_PROVIDER=thirdweb`,
+`THIRDWEB_RPC_CLIENT_ID` and `THIRDWEB_RPC_SECRET` in the host's protected
+environment settings. Missing or malformed credentials reject observer startup;
+there is no silent fallback. Do not put credentials in source, launch commands,
+logs, public configuration or client bundles. Without explicit Thirdweb selection,
+these credential variables are unused.
+
+The authenticated transport binds the secret header to the exact chain-102031
+Thirdweb URL, rejects redirects and permits only the observer's read methods.
+Provider exception details are discarded. Both providers still undergo every
+canonical deployment check and must agree. This option does not change campaign
+reads, the proof builder, the release/broadcast provider, or Cloudflare's observer.
+It introduces no wallet or signing capability into the observer.
+
+A distinct RPC operator/URL does not establish independent underlying node
+infrastructure. Hosted reliability, upstream independence and full user-journey
+readiness must be assessed separately before a production cutover. Configuration
+support is not evidence that production has enabled it.
+
 Install dependencies and create a local environment file:
 
 ```bash
@@ -42,15 +101,19 @@ npm run app:dev
 | `RETRYCREDIT_RECOVERY_CONTRACT_VERSION` | Exact active recovery ABI and lineage model: `v1` (default) or `v2`. Change to `v2` only with the finalized V2 pool and campaign in the same reviewed cutover. |
 | `RETRYCREDIT_RECOVERY_POOL_ADDRESS` | Active `RetryCreditRecoveryCampaign` address. |
 | `RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER` | Positive active campaign number. |
+| `RETRYCREDIT_DEPLOYMENT_REVISION` | Exact lowercase 40-character Git commit for public rollout identity. On Cloudflare it also contributes to V2 observation snapshot invalidation; invalid or missing values are reported as `null`, while the platform's immutable Worker version ID still prevents reuse across Worker deployments. |
 | `RETRYCREDIT_POOL_ADDRESS` | Archived V3 Creditcoin pool. |
 | `RETRYCREDIT_VERIFIER_ADDRESS` | Archived V3 Attestcoin verifier. |
 | `SEPOLIA_RPC_URL` | Archived V3 Ethereum Sepolia execution RPC. |
 | `CREDITCOIN_RPC` | Shared Creditcoin Testnet RPC. |
+| `CREDITCOIN_LOG_RPC` | Independent Creditcoin audit RPC used for release receipts and the two-provider V2 deployment observation. It must not resolve to the same canonical URL as `CREDITCOIN_RPC`. |
 | `ATTESTCOIN_PROOF_BUILDER` | Shared Creditcoin Testnet Attestcoin proof-builder URL. |
 
 The guarded one-time V2 deployment supervisor also recognizes `RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE`, `RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_REVISION`, `RETRYCREDIT_RECOVERY_V2_PREPARE_ARM_DIGEST`, `RETRYCREDIT_RECOVERY_V2_EXPECTED_TRANSACTION_HASH`, `RETRYCREDIT_RECOVERY_V2_BROADCAST_NOT_BEFORE`, `RETRYCREDIT_RECOVERY_V2_BROADCAST_NOT_AFTER`, and `RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_ARM_DIGEST`. These values bind a reviewed release, exact signed transaction fingerprint, and short broadcast window; they are not normal product configuration. Production reached the terminal `FINALIZED_PLUS_TWO_VERIFIED` state without exposing the signing key or raw transaction.
 
 `ETHEREUM_RPC_URLS` is used by the Recovery Campaign to re-read mainnet source data and also supports archived RuleDrop compatibility endpoints. `RULEDROP_POOL_ADDRESS` and `RULEDROP_POOL_VERSION` are legacy-only. The frontend build uses `VITE_RETRYCREDIT_API_ORIGIN` to select the public API origin.
+
+Hosted recovery can explicitly select `RETRYCREDIT_RECOVERY_ETHEREUM_PROVIDER=thirdweb` with server-only `THIRDWEB_RPC_CLIENT_ID` and `THIRDWEB_RPC_SECRET`. This replaces only the Recovery Campaign's Ethereum read providers; it does not change the Creditcoin signer or payout transport. Do not combine it with `ETHEREUM_RPC_URLS`. Requests are restricted to account-independent chain, transaction, and receipt reads at the exact Ethereum endpoint, check chain ID in every bounded batch, refuse redirects, and time out after six seconds. Public RPCs remain the default. Incomplete transaction/receipt responses are retryable service failures, not proof that a pair is ineligible.
 
 The reviewed release also carries the active pool and campaign as source defaults. They are selected only when recovery is explicitly enabled with no address override, or when the existing public V3 service runs at the exact production origin with no recovery override. This keeps the isolated production service reproducible without weakening partial-configuration checks. Set `RETRYCREDIT_RECOVERY_ENABLED=false` to disable recovery immediately without removing the archived V3 read, challenge, and status routes. Archived prepare, execute, and release remain HTTP `410` unless their separate write switch is explicitly enabled. The V2 interface will report that recovery is unavailable; it does not rebind itself to the V3 journey.
 
@@ -63,7 +126,7 @@ Use two levels of rollback:
 1. For immediate Recovery Campaign containment, set `RETRYCREDIT_RECOVERY_ENABLED=false` on the stable API service and redeploy its current reviewed build. This preserves only the archived V3 read/challenge/status surface by default; its mutation routes remain HTTP `410`, and the V2 interface becomes truthfully unavailable.
 2. To restore a previous public product journey, roll the stable Render API back to the intended reviewed deploy and roll Cloudflare Pages back to the matching reviewed frontend deployment. The API and frontend must be treated as one release pair because the current interface calls only the V2 recovery routes.
 
-For the config-bound consent release, deploy and verify the stable Render API first, including `enabled: true`, `waking: false`, and the canonical `publicOrigin`; only then publish the matching Cloudflare frontend. The older frontend safely ignores the added config field, while the new frontend intentionally fails closed against an older API that does not provide it. Roll back in the reverse order: frontend first, API second.
+For the config-bound consent release, deploy and verify the stable Render API first, including `enabled: true`, `waking: false`, the canonical `publicOrigin`, and `consent.freshReadAdmission: "anonymous-v1"`; only then publish the matching Cloudflare-compatible frontend. The older frontend safely ignores the added config field, while the new frontend intentionally fails closed against an older API that does not provide it. After the compatible frontend is verified, a Cloudflare cutover may advertise `pair-signature-v1` and require the signed fresh-read credential. Roll back in the reverse order: restore the frontend/API pair before restoring an API that omits the discriminator.
 
 After either operation, verify the exact deployed source, `GET /health`, both config routes, production-origin CORS, the public app, and the intended disabled or ready Recovery Campaign state. A provider rollback, a healthy predecessor API, or a source revert is not complete until the public interface and API describe the same release.
 
@@ -72,9 +135,11 @@ After either operation, verify the exact deployed source, `GET /health`, both co
 - JSON bodies are limited to 16 KB.
 - Errors use `{ "error": { "code", "message", "requestId" } }`.
 - Every response includes `x-request-id` for operational correlation.
-- Browser CORS emits the one configured `ALLOWED_ORIGIN`; CORS is not authentication and does not block non-browser clients.
+- Browser CORS emits the one configured `ALLOWED_ORIGIN`; the Cloudflare response allows `Authorization` for the signed fresh-read preflight. CORS is not authentication and does not block non-browser clients.
 - Recovery release operations are serialized in-process and replay-safe against campaign-scoped onchain state.
 - The whole public intake pipeline is bounded to four active requests and sixteen queued requests; source resolution has its own matching bound. Campaign reads share a short generation-safe flight/cache, identical pair lookups share one flight, successful pair validation is held in a bounded 256-entry ten-minute cache, invalid-pair results are held for thirty seconds, one lookup receives at most three configured Ethereum providers, and a lookup times out after twenty seconds. Saturation returns HTTP `429` / `RECOVERY_BUSY` with `Retry-After: 5`.
+- On the isolated Cloudflare read plane, a successful open-pair challenge also returns a stateless `freshReadReceipt`: an HMAC-SHA-256 receipt made with a private key held in the existing pool-and-campaign Durable Object. The receipt binds the exact origin, pool, campaign, source wallet, pair, timestamps, and fresh-config action. `GET /api/recovery/config?fresh=1` accepts only `Authorization: RetryCreditFresh <base64url-json>` containing that receipt and the same exact EIP-191 wallet signature used for release. The Worker verifies the receipt before the wallet signature, then atomically burns the signed authorization and reserves the persisted five-second window before service initialization or provider work. Replay returns HTTP `409` / `RECOVERY_FRESH_READ_AUTHORIZATION_USED`; additional valid authorizations inside the window return HTTP `429` / `RECOVERY_FRESH_READ_THROTTLED` without being consumed. The reservation and replay record remain after provider failure, lost responses, or object eviction. A cold admitted refresh supplies the readiness state read instead of triggering a second campaign read. Ordinary configuration reads and other operations do not consume or extend the window. Missing/corrupt key state, storage failure, or invalid replay state fails closed with HTTP `503` before provider work. The gate removes anonymous fabricated fresh-read monopolization; it is not a comprehensive API-DoS or per-user fairness system, and challenge/discovery workloads retain their separately documented bounds.
+- Cloudflare routes the anonymous V2 deployment health probe through one deterministic observation-only Durable Object, separate from the pool-and-campaign object. A semantic `200` or `503` result is held for thirty seconds, concurrent callers share one live flight, and a durable lease is committed before any provider request so eviction or a failed result write cannot create a retry storm. One refresh performs six bounded HTTP batches containing fourteen JSON-RPC operations across the two independent Creditcoin providers. An expired success is never served after a failed refresh. The persisted identity binds the schema, interval, RPC URLs, canonical observation facts, normalized Git revision, and Cloudflare's immutable Worker version ID; at least one deployment discriminator must be valid. Per-request IDs and current Worker version metadata remain outside the snapshot, while response headers remain `no-store`. This bounds the public probe to one dual-provider observation per interval; it is not caller authentication or generalized API-DoS fairness, and it does not rate-limit discovery or intake.
 - At most eight hosted release operations may be active or queued. Each queued release freshly re-reads campaign and claimant state before requesting an Attestcoin proof. Replay IDs are then derived and checked after proof construction and before simulation, so a closed, full, already-claimed, or consumed release cannot reach the relay step.
 - Existing release receipts are searched in `10,000`-block chunks across the latest `250,000` Creditcoin blocks. Within that supported window, a concurrent or repeated request returns the existing current-campaign release instead of sending a second credit.
 - If the campaign records a wallet claim but its exact `CreditReleased` event is not discoverable inside that bounded window, the service fails closed with HTTP `503` / `RECOVERY_STATE_INCONSISTENT`. It does not reconstruct unverified evidence or send another credit.
@@ -85,9 +150,17 @@ After either operation, verify the exact deployed source, `GET /health`, both co
 
 Returns process identity, Creditcoin network `102031`, legacy-service configuration, the Recovery Campaign lifecycle state (`disabled`, `waking`, `ready`, or `error`), and `revision`. The revision is the normalized 40-character Git commit supplied by Render, or `null` when that exact deployment identity is unavailable. This is process health and rollout identity, not a live reserve measurement.
 
+### `GET /health/recovery-v2`
+
+Observes the one frozen V2 creation transaction, receipt, canonical block, deployment and latest runtime bytecode, confirmations, chain identity, value, signer, nonce, and deployment events through both configured Creditcoin RPCs. It returns HTTP `200` only when both providers independently match the same committed fingerprint and the deployment has at least two confirmations; otherwise it returns the stable HTTP `503` `RECOVERY_V2_OBSERVATION_FAILED` shape. This is deployment-integrity evidence for an observation-only V2 profile, not a V2 cutover, live release authorization, independent user completion, or adoption evidence.
+
+On Cloudflare the semantic body is subject to the bounded server-side observation cache described above. Every HTTP response still receives its own `x-request-id`, current normalized Git revision, current Worker version metadata, CORS policy, and `cache-control: no-store`. A Durable Object or platform RPC failure preserves the same canonical `503` health contract rather than degrading into a generic internal-error envelope.
+
 ### `GET /api/recovery/config`
 
-Returns a stable disabled/waking shape until recovery is ready, then the canonical public origin, dedicated public `relayerAddress`, authenticated source and settlement identities, pool/verifier/predicate addresses, exact `contractVersion`, campaign number, immutable terms, live capacity, featured public case, and discovery size. V1 reports campaign-scoped lineage with no predecessor. V2 reports its exact predecessor boundary, sponsor-scoped lineage, and whether releases are unlocked; a fully funded but locked campaign uses `campaign.releaseState: "continuation-waiting"` and `campaign.open: false`. `capabilities.selfServePairIntake` and `capabilities.walletNativeDiscovery` are exactly `true` when those API contracts are present. `consent.scope` is `hosted-relayer` and `consent.protocolEnforced` is `false`: the wallet signature authorizes this hosted service to build and relay the exact pair, but the deployed permissionless campaign contract does not itself verify that offchain signature. The browser uses the origin and returned identities to reconstruct the exact five-minute consent before opening `personal_sign`. The service authenticates the exact active runtime bytecode, the exact V1 predecessor runtime for V2, and all native/source bindings before entering `ready`.
+Returns a stable disabled/waking shape until recovery is ready, then the canonical public origin, dedicated public `relayerAddress`, authenticated source and settlement identities, pool/verifier/predicate addresses, exact `contractVersion`, campaign number, immutable terms, live capacity, featured public case, and discovery size. V1 reports campaign-scoped lineage with no predecessor. V2 reports its exact predecessor boundary, sponsor-scoped lineage, and whether releases are unlocked; a fully funded but locked campaign uses `campaign.releaseState: "continuation-waiting"` and `campaign.open: false`. `capabilities.selfServePairIntake` and `capabilities.walletNativeDiscovery` are exactly `true` when those API contracts are present. `consent.scope` is `hosted-relayer` and `consent.protocolEnforced` is `false`: the wallet signature authorizes this hosted service to build and relay the exact pair, but the deployed permissionless campaign contract does not itself verify that offchain signature. `consent.freshReadAdmission` is an exact rollout discriminator: Render returns `anonymous-v1`, while the Cloudflare coordinator returns `pair-signature-v1`. Unknown or missing values fail closed in the browser; a mode change while authorization is active cancels that operation. The browser uses the origin and returned identities to reconstruct the exact five-minute consent before opening `personal_sign`. The service authenticates the exact active runtime bytecode, the exact V1 predecessor runtime for V2, and all native/source bindings before entering `ready`.
+
+The optional exact query `?fresh=1` requests provider-backed campaign truth and cannot be satisfied from the normal short cache. Render's transition mode remains headerless. When configuration advertises `pair-signature-v1`, the browser sends the exact challenge receipt and signature in the bounded `Authorization` envelope and never falls back to an anonymous retry. It retries only the exact forced-refresh throttle, only when the response includes a valid integer `Retry-After`, and only inside its existing bounded configuration-wake budget; every retry reuses the identical header. It waits at least the advertised delay plus at most 250 milliseconds of positive jitter and abandons later attempts if the active wallet/pair operation changed. A used authorization or unresolved fresh result discards the stale qualifying verdict, sends no release request, preserves the entered pair, and requires a new pair check and signature.
 
 ### `POST /api/recovery/discover`
 
@@ -129,7 +202,7 @@ Request:
 }
 ```
 
-The service re-resolves the pair, derives its source wallet, requires current eligibility, and returns a canonical 300-second EIP-191 message bound to the public origin, pool, campaign, derived wallet, and both hashes. The browser must reconstruct that message from its live configuration and response before requesting a signature.
+The service re-resolves the pair, derives its source wallet, requires current eligibility, and returns a canonical 300-second EIP-191 message bound to the public origin, pool, campaign, derived wallet, and both hashes. The browser must reconstruct that message from its live configuration and response before requesting a signature. Cloudflare additionally returns `freshReadReceipt`; Render's `anonymous-v1` response omits it. The receipt is never persisted in browser resume storage and is accepted only in the signed fresh-config header.
 
 ### `POST /api/recovery/intake/release`
 

@@ -8,6 +8,8 @@ import {
   createWalletOperationGuard,
   isRecoveryConfigReadable,
   isRecoveryChallengeExpired,
+  isRecoveryFreshAuthorizationRejected,
+  isRecoveryFreshAuthorizationUsed,
   isRecoveryPairInvalid,
   isRecoveryRateLimited,
   isRecoveryResponseMismatch,
@@ -53,7 +55,11 @@ function config(overrides = {}) {
     enabled: true,
     waking: false,
     capabilities: { selfServePairIntake: true },
-    consent: { scope: "hosted-relayer", protocolEnforced: false },
+    consent: {
+      scope: "hosted-relayer",
+      protocolEnforced: false,
+      freshReadAdmission: "anonymous-v1",
+    },
     contractVersion: "v1",
     lineage: { scope: "campaign", releasesUnlocked: true, predecessor: null },
     publicOrigin: "https://retrycredit.example",
@@ -352,6 +358,33 @@ test("only the server challenge-expiry code returns authorization to the eligibl
   assert.equal(isRecoveryChallengeExpired(new Error("expired")), false);
 });
 
+test("fresh authorization safety branches require the exact status and code", () => {
+  assert.equal(isRecoveryFreshAuthorizationUsed({
+    status: 409,
+    code: "RECOVERY_FRESH_READ_AUTHORIZATION_USED",
+  }), true);
+  assert.equal(isRecoveryFreshAuthorizationUsed({
+    status: 409,
+    code: "RECOVERY_PAIR_USED",
+  }), false);
+  assert.equal(isRecoveryFreshAuthorizationUsed({
+    status: 401,
+    code: "RECOVERY_FRESH_READ_AUTHORIZATION_USED",
+  }), false);
+
+  for (const code of [
+    "RECOVERY_FRESH_AUTHORIZATION_REQUIRED",
+    "RECOVERY_FRESH_AUTHORIZATION_INVALID",
+  ]) {
+    assert.equal(isRecoveryFreshAuthorizationRejected({ status: 401, code }), true);
+    assert.equal(isRecoveryFreshAuthorizationRejected({ status: 409, code }), false);
+  }
+  assert.equal(isRecoveryFreshAuthorizationRejected({
+    status: 401,
+    code: "RECOVERY_CHALLENGE_EXPIRED",
+  }), false);
+});
+
 test("only response-identity mismatches trigger a live config refresh", () => {
   assert.equal(isRecoveryResponseMismatch({ code: "RECOVERY_RESPONSE_MISMATCH" }), true);
   assert.equal(isRecoveryResponseMismatch({ code: "RECOVERY_CHALLENGE_EXPIRED" }), false);
@@ -411,7 +444,17 @@ test("ready config requires a canonical origin, campaign amount, settlement, and
     config({ lineage: { scope: "sponsor", releasesUnlocked: true, predecessor: null } }),
     config({ lineage: { scope: "campaign", releasesUnlocked: false, predecessor: null } }),
     config({ capabilities: { selfServePairIntake: false } }),
-    config({ consent: { scope: "hosted-relayer", protocolEnforced: true } }),
+    config({ consent: {
+      scope: "hosted-relayer",
+      protocolEnforced: true,
+      freshReadAdmission: "anonymous-v1",
+    } }),
+    config({ consent: { scope: "hosted-relayer", protocolEnforced: false } }),
+    config({ consent: {
+      scope: "hosted-relayer",
+      protocolEnforced: false,
+      freshReadAdmission: "unknown-v1",
+    } }),
     config({ featuredCase: { wallet: WALLET_A, failedTransactionHash: "0x01", successfulTransactionHash: "0x02" } }),
     { ...config(), enabled: "true" },
     { ...config(), enabled: 1 },
@@ -435,6 +478,12 @@ test("ready config requires a canonical origin, campaign amount, settlement, and
   const disabled = {
     enabled: false,
     waking: false,
+    capabilities: { selfServePairIntake: true, walletNativeDiscovery: true },
+    consent: {
+      scope: "hosted-relayer",
+      protocolEnforced: false,
+      freshReadAdmission: "anonymous-v1",
+    },
     publicOrigin: null,
     poolAddress: null,
     campaignNumber: null,
@@ -462,6 +511,14 @@ test("a fully claimed campaign remains a valid closed state after its deadline",
 
   assert.equal(closed.campaign.releaseState, "closed");
   assert.equal(recoveryCampaignAvailability(closed), "closed");
+});
+
+test("provider-neutral isolated staging is readable but cannot authorize release", () => {
+  const isolated = validateRecoveryConfigResponse(readOnlyConfig({ readOnlyReason: "isolated-readonly-staging" }));
+  assert.equal(isolated.enabled, false);
+  assert.equal(isRecoveryConfigReadable(isolated), true);
+  assert.equal(canContinueRecoveryAuthorization({ operationCurrent: true, initialConfig: isolated, currentConfig: isolated }), false);
+  assert.throws(() => validateRecoveryConfigResponse({ ...isolated, enabled: true }), isRecoveryResponseMismatch);
 });
 
 test("read-only staging preserves authenticated inspection without enabling release", () => {
@@ -590,6 +647,13 @@ test("a mode or availability switch stops a deferred authorization before signin
     ["deadline changed", "campaign-changed", validateRecoveryConfigResponse(config({
       campaign: { deadline: 2_000_000_100 },
     }))],
+    ["fresh admission changed", "campaign-changed", validateRecoveryConfigResponse(config({
+      consent: {
+        scope: "hosted-relayer",
+        protocolEnforced: false,
+        freshReadAdmission: "pair-signature-v1",
+      },
+    }))],
     ["closed", "campaign-closed", validateRecoveryConfigResponse(config({
       campaign: { open: false, releaseState: "closed" },
     }))],
@@ -635,23 +699,27 @@ test("a mode or availability switch stops a deferred authorization before signin
   }
 
   const postSignatureCases = [
-    ["unchanged", null, initialConfig, true, true, true],
+    ["unchanged", null, initialConfig, initialConfig, true, 1, true, true],
     ...transitions.map(([label, expectedFlow, transitionedConfig]) => [
       label,
       expectedFlow,
       transitionedConfig,
+      transitionedConfig,
       true,
+      0,
       false,
       false,
     ]),
-    ["account changed", null, initialConfig, false, false, false],
-    ["authorization expired after fresh fetch", null, initialConfig, true, true, false],
+    ["account changed", null, initialConfig, initialConfig, false, 0, false, false],
+    ["authorization expired after fresh fetch", null, initialConfig, initialConfig, true, 1, true, false],
   ];
   for (const [
     label,
     expectedFlow,
+    configAfterSignature,
     freshConfig,
     operationCurrent,
+    expectedFreshConfigCalls,
     authorizationContinues,
     submissionStarts,
   ] of postSignatureCases) {
@@ -680,6 +748,17 @@ test("a mode or availability switch stops a deferred authorization before signin
       })) return;
       personalSignCalls += 1;
       await signature;
+      if (!canContinueRecoveryAuthorization({
+        operationCurrent,
+        initialConfig,
+        currentConfig: configAfterSignature,
+      })) {
+        interruptionFlow = recoveryAuthorizationInterruptionFlow({
+          operationCurrent,
+          currentConfig: configAfterSignature,
+        });
+        return;
+      }
       const currentConfig = await fetchFreshConfig();
       if (!canContinueRecoveryAuthorization({
         operationCurrent,
@@ -707,7 +786,11 @@ test("a mode or availability switch stops a deferred authorization before signin
     await authorization;
 
     assert.equal(personalSignCalls, 1, `${label} transition occurs while personal_sign is pending`);
-    assert.equal(freshConfigCalls, 1, `${label} transition must fetch fresh post-sign campaign truth`);
+    assert.equal(
+      freshConfigCalls,
+      expectedFreshConfigCalls,
+      `${label} transition must not start a stale fresh campaign read`,
+    );
     assert.equal(
       canContinueRecoveryAuthorization({ operationCurrent, initialConfig, currentConfig: freshConfig }),
       authorizationContinues,
@@ -1066,6 +1149,51 @@ test("challenge validation accepts only the exact canonical five-minute consent"
       eligibility,
       config: liveConfig,
       currentOrigin: "https://preview.pages.dev",
+    }),
+    (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
+  );
+
+  const signedConfig = validateRecoveryConfigResponse(config({
+    consent: {
+      scope: "hosted-relayer",
+      protocolEnforced: false,
+      freshReadAdmission: "pair-signature-v1",
+    },
+  }));
+  const signedChallenge = {
+    ...challenge,
+    freshReadReceipt: "v1." + "A".repeat(43),
+  };
+  assert.equal(validateChallengeResponse({
+    response: signedChallenge,
+    wallet: WALLET_A,
+    eligibility,
+    config: signedConfig,
+    currentOrigin: signedConfig.publicOrigin,
+  }), signedChallenge);
+  for (const response of [
+    challenge,
+    { ...challenge, freshReadReceipt: "v1.short" },
+    { ...challenge, freshReadReceipt: "v2." + "A".repeat(43) },
+  ]) {
+    assert.throws(
+      () => validateChallengeResponse({
+        response,
+        wallet: WALLET_A,
+        eligibility,
+        config: signedConfig,
+        currentOrigin: signedConfig.publicOrigin,
+      }),
+      (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
+    );
+  }
+  assert.throws(
+    () => validateChallengeResponse({
+      response: signedChallenge,
+      wallet: WALLET_A,
+      eligibility,
+      config: liveConfig,
+      currentOrigin: liveConfig.publicOrigin,
     }),
     (error) => error.code === "RECOVERY_RESPONSE_MISMATCH",
   );

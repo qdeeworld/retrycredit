@@ -48,6 +48,10 @@ test("the public shell is a multi-route Recovery Dispatch, not the old cockpit",
 });
 
 test("Recovery leads with campaign truth and wallet-native discovery with pair fallback", () => {
+  assert.match(app, /manifest\?\.promise\.label \?\? "Campaign terms unavailable"/);
+  assert.match(app, /function recoveryManifest\(config\) \{\s+if \(!isRecoveryConfigReadable\(config\)\) return null;/);
+  assert.match(app, /manifest\.promise\.disclosure/);
+  assert.match(app, /Campaign sponsor/);
   assert.match(app, /A completed mint can unlock one fixed credit\./);
   for (const label of ["Fixed amount", "Capacity", "Source window", "Claim deadline"]) {
     assert.match(app, new RegExp(label));
@@ -124,6 +128,7 @@ test("the pair desk includes every required resilient state", () => {
     "pair-changed",
     "service-unavailable",
     "rate-limited",
+    "fresh-authorization-used",
     "retryable-error",
     "account-changed",
     "campaign-changed",
@@ -201,6 +206,13 @@ test("Cases keeps recovered, observed, and controlled evidence distinct", () => 
   assert.match(app, /0\.01 tCTC/);
 });
 
+test("prior recovery cannot look like a pending continuation payout", () => {
+  assert.match(app, /const priorRecovery = eligibility\?\.status === "claimed"\s*&& recoveryRecordMatchesConfig\(eligibility, config\)/);
+  assert.match(app, /title=\{release\s*\? "Fixed credit released"\s*: priorRecovery\s*\? "Earlier recovery blocks another credit"/);
+  assert.match(app, /Prior use stays excluded after settlement opens/);
+  assert.match(app, /No new release will be created for this recovered wallet or evidence/);
+});
+
 test("Protocol states the exact predicate, payout, and truth limits", () => {
   assert.match(app, /dedicated paid SeaDrop pair/);
   assert.match(app, /canonical <code>mintSigned<\/code>/);
@@ -212,6 +224,9 @@ test("Protocol states the exact predicate, payout, and truth limits", () => {
   assert.match(app, /does not prove a human-readable revert reason/);
   assert.match(app, /market demand/);
   assert.match(app, /exact gas refund/);
+  assert.match(app, /One recovery boundary, two reference adapters/);
+  assert.match(app, /organic mainnet evidence/);
+  assert.match(app, /archived controlled lab/);
 });
 
 test("the open-pair API surface is bounded and archived helpers remain available", () => {
@@ -259,6 +274,8 @@ test("the interface keeps the public accessibility and responsive floor", () => 
   assert.match(styles, /\.evidence-step ul \{[^}]*font-size:12px/s);
   assert.match(styles, /@media\(max-width:480px\)[\s\S]*\.service-state \{ grid-row:3;/);
   assert.match(app, /aria-invalid=\{error \? "true" : "false"\}/);
+  assert.match(app, /const invalidFieldId = validation.errors.failedTransactionHash\s*\? "failed-transaction" : "successful-transaction"/);
+  assert.match(app, /requestAnimationFrame\(\(\) => document\.getElementById\(invalidFieldId\)\?\.focus\(\)\)/);
   assert.match(app, /aria-describedby=\{`\$\{helperId\}/);
   assert.match(app, /<form className="pair-intake" onSubmit=\{onCheckPair\} noValidate aria-busy=\{busy\}>/);
   assert.match(app, /id="eligibility-heading" tabIndex="-1"/);
@@ -315,7 +332,8 @@ test("the public release carries a license and Cloudflare security policy", () =
 
 test("self-serve rollout fails closed and live campaign availability changes every action surface", () => {
   assert.match(uiState, /response\?\.capabilities\?\.selfServePairIntake !== true/);
-  assert.match(uiState, /response\?\.consent\?\.scope !== "hosted-relayer"/);
+  assert.match(uiState, /response\?\.consent\?\.scope === "hosted-relayer"/);
+  assert.match(uiState, /RECOVERY_FRESH_READ_ADMISSION_MODES\.has\(response\?\.consent\?\.freshReadAdmission\)/);
   assert.match(uiState, /config\.campaign\.open === true && remaining > 0/);
   assert.match(app, /campaignFull \? "This recovery campaign has filled\." : "This recovery campaign has closed\."/);
   assert.match(app, /\["campaign-closed", "campaign-full"\]\.includes\(flow\)/);
@@ -340,10 +358,13 @@ test("open tabs refresh campaign truth and never overstate unfinished browser ch
   const challengeRequest = app.indexOf("await requestRecoveryIntakeChallenge");
   const liveModeRecheck = app.indexOf("canContinueRecoveryAuthorization", challengeRequest);
   const signatureRequest = app.indexOf('method: "personal_sign"', challengeRequest);
-  const postSignatureRefresh = app.indexOf("fetchRecoveryConfig({ forceFresh: true })", signatureRequest);
+  const preFreshRecheck = app.indexOf("const postSignatureAuthorizationConfig", signatureRequest);
+  const freshAuthorizationBuild = app.indexOf("createRecoveryFreshReadAuthorization", preFreshRecheck);
+  const postSignatureRefresh = app.indexOf("postSignatureConfig = await fetchRecoveryConfig({", freshAuthorizationBuild);
+  const usedAuthorizationBranch = app.indexOf("isRecoveryFreshAuthorizationUsed(nextError)", postSignatureRefresh);
   const postSignatureApply = app.indexOf("applyRecoveryConfig(postSignatureConfig)", postSignatureRefresh);
   const postApplyOperationRecheck = app.indexOf("const postSignatureOperationCurrent", postSignatureApply);
-  const postSignatureRecheck = app.indexOf("canContinueRecoveryAuthorization", postSignatureRefresh);
+  const postSignatureRecheck = app.indexOf("canContinueRecoveryAuthorization", postApplyOperationRecheck);
   const releaseRequest = app.indexOf("await releaseRecoveryPairWhenReady", signatureRequest);
   const onSubmittingCallback = app.indexOf("onSubmitting: () => {", releaseRequest);
   const submittedAtMarker = app.indexOf("submittedRecoveryStartedAt.current = Date.now()", signatureRequest);
@@ -354,7 +375,10 @@ test("open tabs refresh campaign truth and never overstate unfinished browser ch
   assert.ok(challengeRequest >= 0);
   assert.ok(liveModeRecheck > challengeRequest);
   assert.ok(signatureRequest > liveModeRecheck);
-  assert.ok(postSignatureRefresh > signatureRequest);
+  assert.ok(preFreshRecheck > signatureRequest);
+  assert.ok(freshAuthorizationBuild > preFreshRecheck);
+  assert.ok(postSignatureRefresh > freshAuthorizationBuild);
+  assert.ok(usedAuthorizationBranch > postSignatureRefresh);
   assert.ok(postSignatureApply > postSignatureRefresh);
   assert.ok(postApplyOperationRecheck > postSignatureApply);
   assert.ok(postSignatureRecheck > postApplyOperationRecheck);
@@ -372,9 +396,27 @@ test("open tabs refresh campaign truth and never overstate unfinished browser ch
   assert.match(postChallengeGuard, /updateFlow\(interruptionFlow\)/);
   const postSignatureFetch = app.slice(postSignatureRefresh, postSignatureApply);
   assert.match(postSignatureFetch, /catch \(nextError\)[\s\S]*operationIsCurrent\(operation, walletOperation\)/);
+  assert.match(postSignatureFetch, /canAttempt: \(\) => operationIsCurrent\(operation, walletOperation\)/);
+  assert.match(postSignatureFetch, /freshAuthorization/);
   assert.match(postSignatureFetch, /setConfigState\("unavailable"\)/);
-  assert.match(postSignatureFetch, /updateFlow\("service-unavailable"\)/);
+  assert.match(postSignatureFetch, /updateEligibility\(null\)/);
+  assert.match(postSignatureFetch, /setReleaseResult\(null\)/);
+  assert.match(postSignatureFetch, /updateFlow\(isRecoveryRateLimited\(nextError\) \? "rate-limited" : "service-unavailable"\)/);
   assert.match(postSignatureFetch, /return/);
+  const usedAuthorizationHandling = app.slice(
+    app.indexOf("} else if (isRecoveryFreshAuthorizationUsed(nextError))", postSignatureRefresh),
+    app.indexOf("} else if (isRecoveryFreshAuthorizationRejected(nextError))", postSignatureRefresh),
+  );
+  assert.match(usedAuthorizationHandling, /updateEligibility\(null\)/);
+  assert.match(usedAuthorizationHandling, /setReleaseResult\(null\)/);
+  assert.match(usedAuthorizationHandling, /updateFlow\("fresh-authorization-used"\)/);
+  assert.match(usedAuthorizationHandling, /getElementById\("eligibility-heading"\)/);
+  assert.doesNotMatch(
+    usedAuthorizationHandling,
+    /releaseSubmitted|persistSubmittedRecovery|saveRecoveryResumeState|setPairDraft|pairDraftRef/,
+  );
+  assert.equal((app.match(/method: "personal_sign"/g) ?? []).length, 1);
+  assert.match(app, /configState === "unavailable" && flow !== "rate-limited"/);
   const postSignatureGuard = app.slice(postSignatureRecheck, releaseRequest);
   assert.match(postSignatureGuard, /initialConfig: liveConfig/);
   assert.match(postSignatureGuard, /currentConfig: postSignatureConfig/);

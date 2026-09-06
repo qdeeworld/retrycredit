@@ -1,0 +1,29 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "retrycredit-fresh-read-test",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-09-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "TEST_NOW_MS": "1800000000000",
+    "TEST_PUBLIC_ORIGIN": "https://retrycredit.example",
+    "TEST_POOL_ADDRESS": "0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa",
+    "TEST_CAMPAIGN_NUMBER": "7",
+    "TEST_OBSERVATION_IDENTITY": "recovery-v2-observer-test:v1",
+    "TEST_REVISION": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "FRESH_READ_TEST",
+        "class_name": "FreshReadTestCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["FreshReadTestCoordinator"]
+    }
+  ]
+}

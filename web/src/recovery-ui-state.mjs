@@ -5,7 +5,9 @@ const RECOVERY_CONSENT_FINAL_LINE = "Authorize proof and relayer submission for 
 const ETHEREUM_MAINNET_CHAIN_ID = 1;
 const ETHEREUM_ATTESTCOIN_CHAIN_KEY = 3;
 const CREDITCOIN_TESTNET_CHAIN_ID = 102031;
-const RECOVERY_READ_ONLY_REASON = "isolated-cloudflare-staging";
+const RECOVERY_READ_ONLY_REASONS = new Set(["isolated-cloudflare-staging", "isolated-readonly-staging"]);
+const RECOVERY_FRESH_READ_ADMISSION_MODES = new Set(["anonymous-v1", "pair-signature-v1"]);
+const RECOVERY_FRESH_READ_RECEIPT_PATTERN = /^v1\.[A-Za-z0-9_-]{43}$/;
 const ROUTESCAN_ATTRIBUTION = Object.freeze({
   label: "Powered by Routescan.io APIs",
   url: "https://routescan.io/",
@@ -119,6 +121,17 @@ export function isRecoveryRateLimited(error) {
   return error?.rateLimited === true || error?.status === 429 || error?.code === "RECOVERY_BUSY";
 }
 
+export function isRecoveryFreshAuthorizationUsed(error) {
+  return error?.status === 409 && error?.code === "RECOVERY_FRESH_READ_AUTHORIZATION_USED";
+}
+
+export function isRecoveryFreshAuthorizationRejected(error) {
+  return error?.status === 401 && [
+    "RECOVERY_FRESH_AUTHORIZATION_REQUIRED",
+    "RECOVERY_FRESH_AUTHORIZATION_INVALID",
+  ].includes(error?.code);
+}
+
 export function recoveryConfigsMatch(left, right) {
   const leftIdentity = recoveryConfigIdentity(left);
   const rightIdentity = recoveryConfigIdentity(right);
@@ -135,7 +148,7 @@ export function isRecoveryConfigReadable(config) {
   return config?.enabled === true || Boolean(
     config?.enabled === false
     && config?.readOnly === true
-    && config?.readOnlyReason === RECOVERY_READ_ONLY_REASON
+    && RECOVERY_READ_ONLY_REASONS.has(config?.readOnlyReason)
   );
 }
 
@@ -220,6 +233,9 @@ export function validateRecoveryConfigResponse(response) {
   const hasFeaturedIdentity = isAddress(response?.featuredCase?.wallet)
     && isHash(response?.featuredCase?.failedTransactionHash)
     && isHash(response?.featuredCase?.successfulTransactionHash);
+  const hasExpectedConsent = response?.consent?.scope === "hosted-relayer"
+    && response?.consent?.protocolEnforced === false
+    && RECOVERY_FRESH_READ_ADMISSION_MODES.has(response?.consent?.freshReadAdmission);
   if (!response.enabled && !readOnly) {
     if (
       response.waking !== false
@@ -230,11 +246,12 @@ export function validateRecoveryConfigResponse(response) {
       || response.campaign !== null
       || response.rule !== null
       || response.capacity !== null
+      || !hasExpectedConsent
       || !hasFeaturedIdentity
     ) throw responseMismatch();
     return Object.freeze({ ...response });
   }
-  if (readOnly && response.readOnlyReason !== RECOVERY_READ_ONLY_REASON) throw responseMismatch();
+  if (readOnly && !RECOVERY_READ_ONLY_REASONS.has(response.readOnlyReason)) throw responseMismatch();
   const publicOrigin = normalizeOrigin(response.publicOrigin);
   const totalCapacity = Number(response?.capacity?.total);
   const claimedCapacity = Number(response?.capacity?.claimed);
@@ -315,8 +332,7 @@ export function validateRecoveryConfigResponse(response) {
     ))
     || (contractVersion === "v2" && !response.lineage.releasesUnlocked && response.campaign.open)
     || response?.capabilities?.selfServePairIntake !== true
-    || response?.consent?.scope !== "hosted-relayer"
-    || response?.consent?.protocolEnforced !== false
+    || !hasExpectedConsent
     || !hasFeaturedIdentity
   ) {
     throw responseMismatch();
@@ -417,6 +433,17 @@ export function validateChallengeResponse({ response, wallet, eligibility, confi
     expiresAt: response.expiresAt,
   });
   if (response.message !== expectedMessage) throw responseMismatch();
+  const freshReadAdmission = config?.consent?.freshReadAdmission;
+  if (
+    (freshReadAdmission === "pair-signature-v1"
+      && (
+        typeof response.freshReadReceipt !== "string"
+        || !RECOVERY_FRESH_READ_RECEIPT_PATTERN.test(response.freshReadReceipt)
+      ))
+    || (freshReadAdmission === "anonymous-v1" && response.freshReadReceipt !== undefined)
+  ) {
+    throw responseMismatch();
+  }
   return response;
 }
 
@@ -840,6 +867,7 @@ function recoveryAuthorizationStateIdentity(config) {
   if (!campaignIdentity || !campaign || !rule || !capacity) return "";
   return JSON.stringify([
     campaignIdentity,
+    config?.consent?.freshReadAdmission,
     normalizeWallet(config.verifierAddress),
     normalizeWallet(config.predicateAddress),
     normalizeWallet(campaign.sponsor),

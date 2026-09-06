@@ -1,4 +1,9 @@
 const MAX_BODY_BYTES = 16_384;
+export const FRESH_READ_MINIMUM_INTERVAL_MS = 5_000;
+
+export const FRESH_READ_NOT_BEFORE_KEY = "fresh-config:not-before-ms:v1";
+const FRESH_READ_AUTHORIZATION_SCHEME = "RetryCreditFresh";
+const MAX_FRESH_READ_AUTHORIZATION_HEADER_LENGTH = 2_080;
 
 const ROUTES = Object.freeze(new Map([
   ["GET /api/recovery/config", Object.freeze({ operation: "configuration", body: false })],
@@ -16,12 +21,84 @@ const COORDINATOR_OPERATIONS = Object.freeze(new Set(
 const WRITE_OPERATIONS = Object.freeze(new Set(["intakeRelease", "release"]));
 
 export class CloudflareApiError extends Error {
-  constructor(code, message, status = 500, cause) {
+  constructor(code, message, status = 500, cause, retryAfter = null) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "CloudflareApiError";
     this.code = code;
     this.status = status;
+    this.retryAfter = normalizeRetryAfter(retryAfter);
   }
+}
+
+export function createFreshReadDutyCycle({
+  storage,
+  now = Date.now,
+  minimumIntervalMs = FRESH_READ_MINIMUM_INTERVAL_MS,
+} = {}) {
+  if (!storage || typeof storage.transaction !== "function") {
+    throw new TypeError("Durable Object transactional storage is required");
+  }
+  if (typeof now !== "function") throw new TypeError("now must be a function");
+  if (
+    !Number.isSafeInteger(minimumIntervalMs)
+    || minimumIntervalMs < 1_000
+    || minimumIntervalMs > 60_000
+    || minimumIntervalMs % 1_000 !== 0
+  ) {
+    throw new TypeError("minimumIntervalMs must be a whole number of seconds from 1 to 60");
+  }
+
+  return async function admitFreshRead() {
+    const requestedAtMs = now();
+    if (!Number.isSafeInteger(requestedAtMs) || requestedAtMs < 0) {
+      throw freshReadGateUnavailable();
+    }
+
+    let decision;
+    try {
+      decision = await storage.transaction(async (transaction) => {
+        if (!transaction || typeof transaction.get !== "function" || typeof transaction.put !== "function") {
+          throw new TypeError("Durable Object transaction is unavailable");
+        }
+        const notBeforeMs = await transaction.get(FRESH_READ_NOT_BEFORE_KEY);
+        if (
+          notBeforeMs !== undefined
+          && (
+            !Number.isSafeInteger(notBeforeMs)
+            || notBeforeMs < 0
+            || notBeforeMs > requestedAtMs + minimumIntervalMs
+          )
+        ) {
+          throw new CloudflareApiError(
+            "RECOVERY_FRESH_READ_STATE_INVALID",
+            "Fresh campaign data cannot be checked right now",
+            503,
+          );
+        }
+        if (notBeforeMs !== undefined && requestedAtMs < notBeforeMs) {
+          return {
+            admitted: false,
+            retryAfter: String(Math.max(1, Math.ceil((notBeforeMs - requestedAtMs) / 1_000))),
+          };
+        }
+        await transaction.put(FRESH_READ_NOT_BEFORE_KEY, requestedAtMs + minimumIntervalMs);
+        return { admitted: true };
+      });
+    } catch (error) {
+      if (error instanceof CloudflareApiError) throw error;
+      throw freshReadGateUnavailable(error);
+    }
+
+    if (decision?.admitted !== true) {
+      throw new CloudflareApiError(
+        "RECOVERY_FRESH_READ_THROTTLED",
+        "Fresh campaign data was just checked. Try again in a few seconds.",
+        429,
+        undefined,
+        decision?.retryAfter,
+      );
+    }
+  };
 }
 
 export function createCloudflareApiHandler({
@@ -56,7 +133,13 @@ export function createCloudflareApiHandler({
         return responseWithHeaders(null, 204, { requestId, allowedOrigin });
       }
       if (request.method === "GET" && url.pathname === "/health/recovery-v2") {
-        const observation = await observeRecoveryV2(env);
+        let observation;
+        try {
+          observation = await observeRecoveryV2(env);
+        } catch (error) {
+          logSafeFailure("recovery_v2_observation_unavailable", error);
+          observation = unavailableRecoveryV2Observation(env);
+        }
         return responseWithHeaders({
           ...observation.body,
           workerVersion: workerVersionMetadata(env),
@@ -88,12 +171,12 @@ export function createCloudflareApiHandler({
       if (!route) {
         throw new CloudflareApiError("NOT_FOUND", "Route not found", 404);
       }
-      const coordinator = coordinatorFor(env);
       const body = route.body
         ? await readJson(request)
         : route.operation === "configuration"
-          ? { fresh: url.searchParams.get("fresh") === "1" }
+          ? configurationRequestBody(request, url)
           : {};
+      const coordinator = coordinatorFor(env);
       const result = await coordinator.execute({
         operation: route.operation,
         body,
@@ -115,25 +198,39 @@ export function createCloudflareApiHandler({
       }, handled.status, {
         requestId,
         allowedOrigin,
-        retryAfter: handled.status === 429 || handled.status === 425 ? "5" : null,
+        retryAfter: handled.status === 429 || handled.status === 425
+          ? handled.retryAfter ?? "5"
+          : null,
       });
     }
   };
 }
 
-export function createCoordinatorRuntime({ serviceFactory, env } = {}) {
+export function createCoordinatorRuntime({ serviceFactory, freshReadControl, env } = {}) {
   if (typeof serviceFactory !== "function") {
     throw new TypeError("serviceFactory is required");
   }
+  if (
+    !freshReadControl
+    || typeof freshReadControl.admit !== "function"
+    || typeof freshReadControl.issueReceipt !== "function"
+  ) {
+    throw new TypeError("freshReadControl is required");
+  }
   let servicePromise = null;
 
-  function service() {
+  function initializeService(initializer = async (candidate) => {
+    await candidate.readiness();
+    return undefined;
+  }) {
+    let started = false;
     if (!servicePromise) {
+      started = true;
       servicePromise = Promise.resolve()
         .then(() => serviceFactory(env))
         .then(async (candidate) => {
-          await candidate.readiness();
-          return candidate;
+          const initialValue = await initializer(candidate);
+          return { candidate, initialValue };
         })
         .catch((error) => {
           servicePromise = null;
@@ -141,13 +238,13 @@ export function createCoordinatorRuntime({ serviceFactory, env } = {}) {
           throw error;
         });
     }
-    return servicePromise;
+    return { promise: servicePromise, started };
   }
 
   async function health() {
     if (env?.RETRYCREDIT_RECOVERY_ENABLED !== "true") return { state: "disabled" };
     try {
-      await service();
+      await initializeService().promise;
       return { state: "ready" };
     } catch {
       return { state: "error" };
@@ -167,7 +264,23 @@ export function createCoordinatorRuntime({ serviceFactory, env } = {}) {
           410,
         );
       }
-      const value = await callService(await service(), input.operation, input.body);
+      const freshConfiguration = input.operation === "configuration" && input.body?.fresh === true;
+      if (freshConfiguration) {
+        await freshReadControl.admit(input.body?.authorization);
+      }
+      const initialization = initializeService(freshConfiguration
+        ? (candidate) => callService(candidate, input.operation, input.body)
+        : undefined);
+      const initialized = await initialization.promise;
+      let value = initialization.started && freshConfiguration
+        ? initialized.initialValue
+        : await callService(initialized.candidate, input.operation, input.body);
+      if (input.operation === "intakeChallenge") {
+        value = {
+          ...value,
+          freshReadReceipt: await freshReadControl.issueReceipt(value),
+        };
+      }
       return { status: 200, body: configurationForMode(value, input.operation) };
     } catch (error) {
       const handled = normalizeApiError(error);
@@ -177,7 +290,9 @@ export function createCoordinatorRuntime({ serviceFactory, env } = {}) {
       return {
         status: handled.status,
         body: { error: { code: handled.code, message: handled.message, requestId: input?.requestId ?? null } },
-        ...(handled.status === 429 || handled.status === 425 ? { retryAfter: "5" } : {}),
+        ...(handled.status === 429 || handled.status === 425
+          ? { retryAfter: handled.retryAfter ?? "5" }
+          : {}),
       };
     }
   }
@@ -203,10 +318,35 @@ function configurationForMode(value, operation) {
   if (operation !== "configuration") return value;
   return {
     ...value,
+    consent: {
+      ...value.consent,
+      freshReadAdmission: "pair-signature-v1",
+    },
     enabled: false,
     readOnly: true,
     readOnlyReason: "isolated-cloudflare-staging",
   };
+}
+
+function configurationRequestBody(request, url) {
+  const fresh = url.searchParams.get("fresh") === "1";
+  if (!fresh) return { fresh: false };
+  const authorization = request.headers.get("authorization");
+  const prefix = FRESH_READ_AUTHORIZATION_SCHEME + " ";
+  if (
+    typeof authorization !== "string"
+    || authorization.length <= prefix.length
+    || authorization.length > MAX_FRESH_READ_AUTHORIZATION_HEADER_LENGTH
+    || !authorization.startsWith(prefix)
+    || authorization.slice(prefix.length).includes(" ")
+  ) {
+    throw new CloudflareApiError(
+      "RECOVERY_FRESH_AUTHORIZATION_REQUIRED",
+      "A signed campaign-check authorization is required.",
+      401,
+    );
+  }
+  return { fresh: true, authorization: authorization.slice(prefix.length) };
 }
 
 async function readJson(request) {
@@ -263,7 +403,7 @@ function responseWithHeaders(body, status, { requestId, allowedOrigin, retryAfte
     "x-content-type-options": "nosniff",
     "x-request-id": requestId,
     "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-headers": "authorization, content-type",
     "access-control-expose-headers": "retry-after, x-request-id",
   });
   if (allowedOrigin) headers.set("access-control-allow-origin", allowedOrigin);
@@ -295,7 +435,22 @@ function normalizeApiError(error) {
     : typeof error?.message === "string" && error.message.length <= 240
       ? error.message
       : "The request could not be processed";
-  return new CloudflareApiError(code, message, status);
+  return new CloudflareApiError(code, message, status, undefined, error?.retryAfter);
+}
+
+function normalizeRetryAfter(value) {
+  if (typeof value !== "string" || !/^[1-9][0-9]{0,2}$/.test(value)) return null;
+  const seconds = Number(value);
+  return seconds <= 300 ? value : null;
+}
+
+function freshReadGateUnavailable(cause) {
+  return new CloudflareApiError(
+    "RECOVERY_FRESH_READ_GATE_UNAVAILABLE",
+    "Fresh campaign data cannot be checked right now",
+    503,
+    cause,
+  );
 }
 
 function requireOrigin(value, name) {
@@ -314,6 +469,24 @@ function requireOrigin(value, name) {
 
 function normalizeRevision(value) {
   return typeof value === "string" && /^[0-9a-f]{40}$/.test(value) ? value : null;
+}
+
+function unavailableRecoveryV2Observation(env) {
+  return {
+    status: 503,
+    body: {
+      ok: false,
+      service: "retrycredit",
+      network: 102031,
+      recoveryV2: {
+        mode: "observation-only",
+        state: "blocked",
+        publicProfile: "v1",
+        reason: "RECOVERY_V2_OBSERVATION_FAILED",
+      },
+      revision: normalizeRevision(env?.RETRYCREDIT_DEPLOYMENT_REVISION),
+    },
+  };
 }
 
 function workerVersionMetadata(env) {
