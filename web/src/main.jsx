@@ -64,6 +64,7 @@ import {
   saveRecoveryResumeState,
 } from "./recovery-resume-state.mjs";
 import { buildRecoveryCampaignManifest, RECOVERY_ADAPTERS } from "./recovery-campaign-manifest.mjs";
+import { requestRecoveryAccounts } from "./recovery-wallet-connection.mjs";
 import "./styles.css";
 
 const ETHEREUM_EXPLORER = "https://etherscan.io";
@@ -554,7 +555,7 @@ function App() {
     if (!window.ethereum) throw new Error(discovery
       ? "Install an EVM wallet to search its public Ethereum history."
       : "Install an EVM wallet to authorize this qualifying source pair.");
-    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+    const accounts = await requestRecoveryAccounts(window.ethereum);
     const next = safeAddress(accounts?.[0]);
     if (!next) throw new Error("The wallet did not return an Ethereum address.");
     updateConnectedAccount(next);
@@ -569,7 +570,7 @@ function App() {
       || needsReleaseStatusCheck(flowRef.current)
     ) return;
     let walletOperation;
-    updateFlow("discovering");
+    updateFlow("discovery-connecting");
     setError("");
     setDiscoveryResult(null);
     updateEligibility(null);
@@ -579,6 +580,7 @@ function App() {
       const wallet = await connectWallet({ discovery: true });
       if (!wallet) throw new Error("The wallet did not return an Ethereum address.");
       walletOperation = walletOperations.current.begin(wallet);
+      updateFlow("discovering");
       const liveConfig = configState === "ready" ? config : await refreshConfig();
       if (!walletOperations.current.isCurrent(walletOperation)) return;
       if (!isRecoveryConfigReadable(liveConfig)) throw new TemporaryUnavailableError();
@@ -1380,10 +1382,10 @@ function EligibilityDesk({
           || configState !== "ready"
           || !config?.capabilities?.walletNativeDiscovery
           || needsStatusCheck}
-        aria-busy={flow === "discovering"}
+        aria-busy={["discovery-connecting", "discovering"].includes(flow)}
       >
-        <span>{flow === "discovering" ? "Searching wallet history" : account ? "Search this wallet's retries" : "Connect wallet and find my retry"}</span>
-        {flow === "discovering" ? <LoaderCircle className="spin" aria-hidden="true" /> : <Wallet aria-hidden="true" />}
+        <span>{flow === "discovery-connecting" ? "Open wallet to connect" : flow === "discovering" ? "Searching wallet history" : account ? "Search this wallet's retries" : "Connect wallet and find my retry"}</span>
+        {["discovery-connecting", "discovering"].includes(flow) ? <LoaderCircle className="spin" aria-hidden="true" /> : <Wallet aria-hidden="true" />}
       </button>
       <p>Connection reveals only the selected public address. RetryCredit searches a bounded history, then independently rechecks any match before it can qualify.</p>
     </div>}
@@ -1908,6 +1910,7 @@ function deskCopy(flow, eligibility, releaseResult, config) {
       ? ["This pair qualifies in read-only staging", `The live-derived source wallet matches one ${formatCredit(eligibility?.creditAmount)} campaign slot. Signing and release stay disabled here.`]
       : ["This pair qualifies", `The live-derived source wallet can authorize one ${formatCredit(eligibility?.creditAmount)} release. Connect only that wallet to continue.`],
     "wrong-wallet": ["Switch to the derived source wallet", "The connected account is not the wallet established by this pair. Switch accounts inside your wallet extension, then try again. No proof or release request was sent."],
+    "discovery-connecting": ["Open your wallet to connect", "Choose an account in your wallet. No history is searched until it responds; this request does not ask for a signature or transaction."],
     "wallet-connecting": ["Connecting the source wallet", "Approve the account request. RetryCredit will continue only if it matches the wallet derived from this exact pair."],
     "authorization-requested": ["Authorization requested", "Confirm the exact-pair, campaign, origin, and five-minute consent in the source wallet."],
     "proof-queued": ["Proof request queued", "The signed pair is queued for Attestcoin native-batch work. Keep this pair unchanged."],
@@ -1975,7 +1978,7 @@ function authorizationLabel(flow, account, derivedWallet) {
 function stateIcon(flow) {
   if (flow === "released" || flow === "already-claimed") return <Check />;
   if (flow === "qualifying") return <ShieldCheck />;
-  if (["checking", "discovering", "wallet-connecting", "authorization-requested", "proof-queued", "proof-building", "release-relaying", "loading-config"].includes(flow)) return <LoaderCircle className="spin" />;
+  if (["checking", "discovery-connecting", "discovering", "wallet-connecting", "authorization-requested", "proof-queued", "proof-building", "release-relaying", "loading-config"].includes(flow)) return <LoaderCircle className="spin" />;
   if (["malformed", "semantic-mismatch", "discovery-empty", "discovery-unavailable", "retryable-error", "service-unavailable", "rate-limited", "fresh-authorization-used", "offline", "campaign-changed", "campaign-closed", "campaign-full", "pair-changed", "release-uncertain"].includes(flow)) return <AlertCircle />;
   if (flow === "continuation-waiting") return <LockKeyhole />;
   if (flow === "release-processing") return <LoaderCircle className="spin" />;
@@ -2144,7 +2147,7 @@ function hasPairDraft(pair) {
 }
 
 function isBusyFlow(flow) {
-  return ["checking", "discovering", "wallet-connecting", "authorization-requested", "proof-queued", "proof-building", "release-relaying"].includes(flow);
+  return ["checking", "discovery-connecting", "discovering", "wallet-connecting", "authorization-requested", "proof-queued", "proof-building", "release-relaying"].includes(flow);
 }
 
 function needsReleaseStatusCheck(flow) {
