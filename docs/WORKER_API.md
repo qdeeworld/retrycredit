@@ -6,6 +6,33 @@ The wallet does not submit a transaction, switch networks, deposit an asset, or 
 
 ## Run locally
 
+### V2 activation runtime (not yet deployed)
+
+The reviewed deployment can be observed without retaining a signing or broadcast
+controller. Explicit V2 activation requires `RETRYCREDIT_RECOVERY_ENABLED=true`,
+`RETRYCREDIT_RECOVERY_CONTRACT_VERSION=v2`, the canonical V2 pool
+`0x3Eee179eDD6Fe6e40D7d23f0110ea639f2DA82B8`, campaign `1`, and
+`RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE=observation-only`. A valid full
+`RENDER_GIT_COMMIT` identifies the running release. V2 never inherits V1 pool
+defaults. The existing Google/Git deployment account settings are unrelated to
+these application settings.
+
+This mode never constructs the deployment controller or receives its private key,
+arm digest, or broadcast window. It observes the already-deployed transaction and
+runtime through the two canonical CC3 endpoints, initially on startup and then
+30 seconds after each completed observation. HTTP health checks read the latest
+sample without additional RPC work. Failed refreshes, samples at least 45 seconds
+old, and stopped observers fail closed. This is per-process provider cadence,
+not a distributed rate-limit guarantee across replicas or restarts.
+
+`/health/recovery-v2` reports `publicProfile: "v2"` and returns 200 only for a
+current two-provider observation. All V2 recovery API routes refuse with
+`503 RECOVERY_V2_NOT_VERIFIED` while verification is unavailable. Observation
+confirms deployment identity, not campaign eligibility or unlock: the existing
+campaign service and contract still enforce predecessor closure, funding, consent,
+proofs, and replay. The predecessor deadline does not change API configuration.
+Production remains V1 until a separately authorized, verified cutover.
+
 Install dependencies and create a local environment file:
 
 ```bash

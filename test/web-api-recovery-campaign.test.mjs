@@ -105,6 +105,50 @@ test("production public mode selects the reviewed recovery release without dashb
   );
 });
 
+test("V2 bootstrap refuses inherited V1 defaults and partial activation", () => {
+  const env = { RETRYCREDIT_RECOVERY_ENABLED: "true", RETRYCREDIT_RECOVERY_CONTRACT_VERSION: "v2" };
+  for (const overrides of [
+    {},
+    { RETRYCREDIT_RECOVERY_POOL_ADDRESS: wallet },
+    { RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER: "1" },
+    { RETRYCREDIT_RECOVERY_POOL_ADDRESS: " ", RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER: "1" },
+  ]) {
+    assert.throws(() => resolveRecoveryBootstrap({ ...env, ...overrides }), /explicit pool address and campaign/);
+  }
+  assert.throws(() => resolveRecoveryBootstrap({
+    RETRYCREDIT_RECOVERY_CONTRACT_VERSION: "v2",
+    RETRYCREDIT_PUBLIC_ENABLED: "true",
+    PUBLIC_ORIGIN: RECOVERY_RELEASE_DEFAULTS.publicOrigin,
+  }), /explicit pool address and campaign/);
+});
+
+test("V2 bootstrap rejects the rollback pool and malformed explicit identities", () => {
+  const env = {
+    RETRYCREDIT_RECOVERY_ENABLED: "true",
+    RETRYCREDIT_RECOVERY_CONTRACT_VERSION: "v2",
+    RETRYCREDIT_RECOVERY_POOL_ADDRESS: wallet,
+    RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER: "1",
+    RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE: "observation-only",
+  };
+  for (const pool of [RECOVERY_RELEASE_DEFAULTS.poolAddress, RECOVERY_RELEASE_DEFAULTS.poolAddress.toLowerCase(),
+    "0x0000000000000000000000000000000000000000", "not-an-address"]) {
+    assert.throws(() => resolveRecoveryBootstrap({ ...env, RETRYCREDIT_RECOVERY_POOL_ADDRESS: pool }), /pool|address/);
+  }
+  for (const campaign of ["0", "01", "-1", "1.0", "1e2", "9007199254740992"]) {
+    assert.throws(() => resolveRecoveryBootstrap({ ...env, RETRYCREDIT_RECOVERY_CAMPAIGN_NUMBER: campaign }), /positive campaign/);
+  }
+  assert.deepEqual(resolveRecoveryBootstrap(env), {
+    enabled: true, poolAddress: wallet, campaignNumber: "1", productionDefault: false,
+  });
+});
+
+test("disabled V2 configuration stays inert without filling activation defaults", () => {
+  assert.deepEqual(resolveRecoveryBootstrap({
+    RETRYCREDIT_RECOVERY_ENABLED: "false",
+    RETRYCREDIT_RECOVERY_CONTRACT_VERSION: "v2",
+  }), { enabled: false, poolAddress: null, campaignNumber: null, productionDefault: false });
+});
+
 test("health exposes only an exact normalized Render revision", async () => {
   const revision = "AB".repeat(20);
   assert.equal(normalizeDeploymentRevision(` ${revision} `), revision.toLowerCase());
@@ -587,6 +631,47 @@ test("invalid JSON and disabled release never become internal errors", async () 
     assert.equal(intake.status, 503);
     assert.equal((await intake.json()).error.code, "RECOVERY_DISABLED");
   });
+});
+
+test("V2 endpoints require fresh read-only verification and health reports the selected profile", async () => {
+  let calls = 0;
+  let ready = true;
+  const recoveryV2 = { readiness() { return {
+    ready, statusCode: ready ? 200 : 503, mode: "observation-only",
+    deploymentState: ready ? "observed" : "blocked", publicProfile: "v2",
+    reason: ready ? "CANONICAL_DEPLOYMENT_OBSERVED_PLUS_TWO" : "RECOVERY_V2_OBSERVATION_FAILED",
+    observers: ready ? 2 : 0,
+  }; } };
+  const service = { contractVersion: "v2",
+    async configuration() { calls++; return { contractVersion: "v2" }; },
+    async intakeRelease() { calls++; return { released: true }; },
+    async release() { calls++; return { released: true }; },
+  };
+  await withServer({ state: "ready", service }, async base => {
+    const health = await fetch(`${base}/health/recovery-v2`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).recoveryV2.publicProfile, "v2");
+    assert.equal((await fetch(`${base}/api/recovery/config`)).status, 200);
+    assert.equal((await post(base, "/api/recovery/intake/release", {})).status, 200);
+    assert.equal(calls, 2);
+    ready = false;
+    for (const path of ["/api/recovery/intake/release", "/api/recovery/release", "/api/recovery/challenge",
+      "/api/recovery/intake/challenge", "/api/recovery/discover", "/api/recovery/eligibility"]) {
+      const response = await post(base, path, {});
+      assert.equal(response.status, 503);
+      assert.equal((await response.json()).error.code, "RECOVERY_V2_NOT_VERIFIED");
+    }
+    assert.equal((await fetch(`${base}/api/recovery/config`)).status, 503);
+    assert.equal((await fetch(`${base}/health/recovery-v2`)).status, 503);
+    assert.equal(calls, 2);
+  }, { recoveryV2 });
+});
+
+test("V1 deployment proof cannot authorize a V2 service", async () => {
+  const recoveryV2 = fixedRecoveryV2Readiness({ ready: true, statusCode: 200, mode: "armed",
+    deploymentState: "finalized", publicProfile: "v1", reason: "FINALIZED_PLUS_TWO_VERIFIED" });
+  await withServer({ state: "ready", service: { contractVersion: "v2", release() { assert.fail("dispatched"); } } },
+    async base => assert.equal((await post(base, "/api/recovery/release", {})).status, 503), { recoveryV2 });
 });
 
 async function withServer(recovery, callback, handlerOptions = {}) {

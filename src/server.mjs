@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { JsonRpcProvider } from "ethers";
+import { JsonRpcProvider, getAddress } from "ethers";
 import { proofProvider } from "@gluwa/usc-sdk";
 import { RuleDropWorker, WorkerError, createEthereumProviders } from "./proof-worker.mjs";
 import { selectPoolAbi } from "./pool-abi.mjs";
@@ -13,6 +13,7 @@ import {
   RecoveryCampaignService,
 } from "./recovery-campaign-service.mjs";
 import { createRecoveryV2DeploymentSupervisor } from "./recovery-v2-deployment-supervisor.mjs";
+import { createRecoveryV2LiveObserver } from "./recovery-v2-live-observer.mjs";
 
 const POOL_ADDRESS = process.env.RULEDROP_POOL_ADDRESS ?? "0x6f8dE7e1599A0c8D38eB25996cB841a4920ed999";
 const CREDITCOIN_RPC = process.env.CREDITCOIN_RPC ?? "https://rpc.cc3-testnet.creditcoin.network";
@@ -37,7 +38,9 @@ export const RECOVERY_RELEASE_DEFAULTS = Object.freeze({
 });
 const recoveryBootstrap = resolveRecoveryBootstrap(process.env);
 const staticRoot = fileURLToPath(new URL("../dist", import.meta.url));
-const recoveryV2Deployment = createRecoveryV2DeploymentSupervisor({
+const recoveryV2Deployment = process.env.RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE === "observation-only"
+  ? createRecoveryV2LiveObserver({ env: process.env })
+  : createRecoveryV2DeploymentSupervisor({
   env: process.env,
   controllerOptions: { privateKey: process.env.RETRYCREDIT_DEMO_PRIVATE_KEY },
 });
@@ -115,6 +118,7 @@ if (recoveryBootstrap.enabled) {
 }
 
 export function resolveRecoveryBootstrap(env = {}) {
+  const contractVersion = resolveRecoveryContractVersion(env);
   const mode = optionalEnvironmentValue(env.RETRYCREDIT_RECOVERY_ENABLED);
   const publicOrigin = env.PUBLIC_ORIGIN ?? env.ALLOWED_ORIGIN ?? "http://localhost:3000";
   const configuredPoolAddress = optionalEnvironmentValue(env.RETRYCREDIT_RECOVERY_POOL_ADDRESS);
@@ -131,6 +135,33 @@ export function resolveRecoveryBootstrap(env = {}) {
     ?? (releaseDefaultsRequested ? RECOVERY_RELEASE_DEFAULTS.campaignNumber : null);
   const enabled = mode !== "false"
     && (mode === "true" || Boolean(poolAddress) || Boolean(campaignNumber));
+
+  // V1 defaults are rollback defaults, never a V2 activation manifest. Check
+  // before constructing a signer-backed service, not after its first RPC call.
+  if (enabled && contractVersion === "v2") {
+    if (!configuredPoolAddress || !configuredCampaignNumber) {
+      throw new Error("Recovery V2 requires an explicit pool address and campaign number");
+    }
+    let normalizedPool;
+    try {
+      normalizedPool = getAddress(configuredPoolAddress);
+    } catch {
+      throw new Error("Recovery V2 requires a valid pool address");
+    }
+    if (
+      normalizedPool === getAddress(RECOVERY_RELEASE_DEFAULTS.poolAddress)
+      || normalizedPool === "0x0000000000000000000000000000000000000000"
+    ) {
+      throw new Error("Recovery V2 cannot use the V1 rollback pool or zero address");
+    }
+    if (!/^[1-9][0-9]*$/.test(configuredCampaignNumber)
+      || !Number.isSafeInteger(Number(configuredCampaignNumber))) {
+      throw new Error("Recovery V2 requires a canonical positive campaign number");
+    }
+    if (env.RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE !== "observation-only") {
+      throw new Error("Recovery V2 activation requires observation-only deployment verification");
+    }
+  }
 
   return Object.freeze({ enabled, poolAddress, campaignNumber, productionDefault });
 }
@@ -178,6 +209,12 @@ export function createAppHandler({
     }
 
     const url = new URL(request.url, "http://localhost");
+    if (url.pathname.startsWith("/api/recovery/") && recovery.service?.contractVersion === "v2") {
+      const health = recoveryV2HealthSnapshot(recoveryV2);
+      if (health.statusCode !== 200 || health.publicState.publicProfile !== "v2") {
+        throw new WorkerError("RECOVERY_V2_NOT_VERIFIED", "Recovery V2 verification is temporarily unavailable", 503);
+      }
+    }
     if (request.method === "GET" && url.pathname === "/health") {
       const recoveryV2Health = recoveryV2HealthSnapshot(recoveryV2);
       sendJson(response, 200, {
@@ -421,7 +458,7 @@ export function recoveryV2HealthSnapshot(supervisor) {
   } catch {
     value = null;
   }
-  const mode = ["disabled", "prepare", "armed"].includes(value?.mode)
+  const mode = ["disabled", "prepare", "armed", "observation-only"].includes(value?.mode)
     ? value.mode
     : "armed";
   const deploymentState = typeof value?.deploymentState === "string"
@@ -450,11 +487,15 @@ export function recoveryV2HealthSnapshot(supervisor) {
     && deploymentState === "prepared"
     && value?.publicProfile === "v1"
     && prepared !== null;
-  const statusCode = exactArmedFinality || inactiveReady || exactPrepared ? 200 : 503;
+  const observed = mode === "observation-only" && value?.ready === true
+    && value?.statusCode === 200 && deploymentState === "observed"
+    && reason === "CANONICAL_DEPLOYMENT_OBSERVED_PLUS_TWO"
+    && value?.publicProfile === "v2" && value?.observers === 2;
+  const statusCode = exactArmedFinality || inactiveReady || exactPrepared || observed ? 200 : 503;
   const publicState = {
     mode,
     state: deploymentState,
-    publicProfile: "v1",
+    publicProfile: mode === "observation-only" ? "v2" : "v1",
   };
   if (reason) publicState.reason = reason;
   if (mode === "prepare" && deploymentState === "prepared" && prepared) {
