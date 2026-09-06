@@ -5,7 +5,7 @@ const RECOVERY_CONSENT_FINAL_LINE = "Authorize proof and relayer submission for 
 const ETHEREUM_MAINNET_CHAIN_ID = 1;
 const ETHEREUM_ATTESTCOIN_CHAIN_KEY = 3;
 const CREDITCOIN_TESTNET_CHAIN_ID = 102031;
-const RECOVERY_READ_ONLY_REASON = "isolated-cloudflare-staging";
+const RECOVERY_READ_ONLY_REASONS = new Set(["isolated-cloudflare-staging", "isolated-readonly-staging"]);
 const RECOVERY_FRESH_READ_ADMISSION_MODES = new Set(["anonymous-v1", "pair-signature-v1"]);
 const RECOVERY_FRESH_READ_RECEIPT_PATTERN = /^v1\.[A-Za-z0-9_-]{43}$/;
 const ROUTESCAN_ATTRIBUTION = Object.freeze({
@@ -148,7 +148,7 @@ export function isRecoveryConfigReadable(config) {
   return config?.enabled === true || Boolean(
     config?.enabled === false
     && config?.readOnly === true
-    && config?.readOnlyReason === RECOVERY_READ_ONLY_REASON
+    && RECOVERY_READ_ONLY_REASONS.has(config?.readOnlyReason)
   );
 }
 
@@ -251,7 +251,7 @@ export function validateRecoveryConfigResponse(response) {
     ) throw responseMismatch();
     return Object.freeze({ ...response });
   }
-  if (readOnly && response.readOnlyReason !== RECOVERY_READ_ONLY_REASON) throw responseMismatch();
+  if (readOnly && !RECOVERY_READ_ONLY_REASONS.has(response.readOnlyReason)) throw responseMismatch();
   const publicOrigin = normalizeOrigin(response.publicOrigin);
   const totalCapacity = Number(response?.capacity?.total);
   const claimedCapacity = Number(response?.capacity?.claimed);

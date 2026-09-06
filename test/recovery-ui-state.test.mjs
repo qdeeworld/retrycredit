@@ -513,6 +513,14 @@ test("a fully claimed campaign remains a valid closed state after its deadline",
   assert.equal(recoveryCampaignAvailability(closed), "closed");
 });
 
+test("provider-neutral isolated staging is readable but cannot authorize release", () => {
+  const isolated = validateRecoveryConfigResponse(readOnlyConfig({ readOnlyReason: "isolated-readonly-staging" }));
+  assert.equal(isolated.enabled, false);
+  assert.equal(isRecoveryConfigReadable(isolated), true);
+  assert.equal(canContinueRecoveryAuthorization({ operationCurrent: true, initialConfig: isolated, currentConfig: isolated }), false);
+  assert.throws(() => validateRecoveryConfigResponse({ ...isolated, enabled: true }), isRecoveryResponseMismatch);
+});
+
 test("read-only staging preserves authenticated inspection without enabling release", () => {
   const readOnly = validateRecoveryConfigResponse(readOnlyConfig());
   const eligibilityResponse = {
