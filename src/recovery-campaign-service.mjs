@@ -2106,6 +2106,7 @@ async function resolvePairFromEthereum({
     );
   }
   let responsiveProvider = false;
+  let incompleteProvider = false;
   let semanticFailure = null;
   for (const provider of ethereumProviders.slice(0, maximumProviderAttempts)) {
     try {
@@ -2120,8 +2121,15 @@ async function resolvePairFromEthereum({
           provider.getTransaction(discovery.successfulTransactionHash),
           provider.getTransactionReceipt(discovery.successfulTransactionHash),
         ]);
+      const returnedFacts = [failedTransaction, failedReceipt, successfulTransaction, successfulReceipt];
+      if (returnedFacts.some(fact => !fact)) {
+        // Hosted RPCs can return mined transactions while their receipt backend
+        // is unavailable. Missing receipts are not evidence of ineligibility.
+        if (returnedFacts.some(Boolean)) incompleteProvider = true;
+        else responsiveProvider = true;
+        continue;
+      }
       responsiveProvider = true;
-      if (!failedTransaction || !failedReceipt || !successfulTransaction || !successfulReceipt) continue;
       const facts = { failedTransaction, failedReceipt, successfulTransaction, successfulReceipt };
       try {
         if (Number(failedTransaction.type) !== 2 || Number(successfulTransaction.type) !== 2) {
@@ -2157,7 +2165,7 @@ async function resolvePairFromEthereum({
       // A cohort row never becomes authoritative merely because one RPC fails; try the next RPC.
     }
   }
-  if (responsiveProvider) {
+  if (semanticFailure || (responsiveProvider && !incompleteProvider)) {
     throw new WorkerError(
       "RECOVERY_PAIR_INVALID",
       "Both exact Ethereum transactions and receipts must form the funded retry rule.",

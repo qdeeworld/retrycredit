@@ -829,6 +829,40 @@ test("open-pair source resolution retries another provider after a complete sema
   assert.equal(networkChecks, 2);
 });
 
+test("missing receipts for returned transactions are retryable and never negatively cached", async () => {
+  let receiptAvailable = false;
+  let reads = 0;
+  const ethereumProvider = {
+    async getNetwork() { return { chainId: 1n }; },
+    async getTransaction() { reads++; return { type: 0 }; },
+    async getTransactionReceipt() { return receiptAvailable ? {} : null; },
+  };
+  const fixture = serviceFixture({ useEthereumResolver: true, ethereumProviders: [ethereumProvider] });
+  await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), { code: "RECOVERY_SOURCE_UNAVAILABLE", status: 503 });
+  receiptAvailable = true;
+  // Complete type-0 facts still fail the actual predicate. They must be reread,
+  // not hidden by a cached semantic verdict from the incomplete first response.
+  await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), { code: "RECOVERY_PAIR_INVALID", status: 422 });
+  assert.equal(reads, 4);
+});
+
+test("discovery cannot report an empty match when a candidate has unavailable receipts", async () => {
+  const fixture = serviceFixture({
+    useEthereumResolver: true,
+    ethereumProviders: [{
+      async getNetwork() { return { chainId: 1n }; },
+      async getTransaction() { return { type: 2 }; },
+      async getTransactionReceipt() { return null; },
+    }, {
+      async getNetwork() { return { chainId: 1n }; },
+      async getTransaction() { return null; },
+      async getTransactionReceipt() { return null; },
+    }],
+    walletDiscovery: async () => ({ transactions: [], pages: 1, truncated: false, pairs: [pairIdentity()] }),
+  });
+  await assert.rejects(fixture.service.discover(source.address), { code: "RECOVERY_SOURCE_UNAVAILABLE", status: 503 });
+});
+
 test("open-pair release queue rejects overflow before a second proof starts", async () => {
   const proofGate = deferred();
   const secondPair = pairIdentity(`0x${"a9".repeat(32)}`, `0x${"b9".repeat(32)}`);
