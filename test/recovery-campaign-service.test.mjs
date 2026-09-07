@@ -29,6 +29,7 @@ import {
 } from "../src/pool-abi.mjs";
 import { MINT_SIGNED_SELECTOR, SEA_DROP_MAINNET } from "../src/seadrop-recovery.mjs";
 import { WorkerError } from "../src/proof-worker.mjs";
+import { isRetryableRecoveryStartupError } from "../src/recovery-startup-lifecycle.mjs";
 
 const source = new Wallet(`0x${"a1".repeat(32)}`);
 const secondSource = new Wallet(`0x${"a2".repeat(32)}`);
@@ -1398,6 +1399,41 @@ test("readiness rejects a verifier that is not bound to the configured predicate
     fixture.service.readiness(),
     (error) => error instanceof WorkerError && error.code === "RECOVERY_MISCONFIGURED",
   );
+});
+
+test("same-instance V2 readiness recovers transport failures without retaining a rejected authentication", async (t) => {
+  for (const phase of ["runtime", "partial-bindings", "campaign"]) {
+    await t.test(phase, async () => {
+      let campaignCalls = 0;
+      const failure = Object.assign(new Error("temporary RPC interruption"), { code: "TIMEOUT" });
+      const fixture = serviceFixture({
+        configOverride: { contractVersion: "v2" },
+        campaignReaderOverride: phase === "campaign" ? ({ campaign }) => {
+          if (++campaignCalls === 1) throw failure;
+          return { ...campaign };
+        } : undefined,
+      });
+      if (phase !== "campaign") {
+        const object = phase === "runtime" ? fixture.service.ccProvider : fixture.service.verifier;
+        const method = phase === "runtime" ? "getCode" : "predicate";
+        const original = object[method].bind(object);
+        let calls = 0;
+        object[method] = (...args) => {
+          if (++calls === 1) return Promise.reject(failure);
+          return original(...args);
+        };
+      }
+      await assert.rejects(fixture.service.readiness(), isRetryableRecoveryStartupError);
+      const ready = await fixture.service.readiness();
+      assert.equal(ready.verifierAddress, verifierAddress);
+      const config = await fixture.service.configuration();
+      assert.equal(config.contractVersion, "v2");
+      assert.equal(config.enabled, true);
+      assert.equal(fixture.proofCalls, 0);
+      assert.equal(fixture.staticCalls, 0);
+      assert.equal(fixture.releaseCalls, 0);
+    });
+  }
 });
 
 test("batch normalization rejects unexpected hashes and keeps the exact two-entry contract shape", () => {

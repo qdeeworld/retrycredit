@@ -15,6 +15,7 @@ import {
 import { createRecoveryV2DeploymentSupervisor } from "./recovery-v2-deployment-supervisor.mjs";
 import { createRecoveryV2LiveObserver } from "./recovery-v2-live-observer.mjs";
 import { createRecoverySourceProvider } from "./recovery-source-provider.mjs";
+import { createRecoveryStartupLifecycle } from "./recovery-startup-lifecycle.mjs";
 
 const POOL_ADDRESS = process.env.RULEDROP_POOL_ADDRESS ?? "0x6f8dE7e1599A0c8D38eB25996cB841a4920ed999";
 const CREDITCOIN_RPC = process.env.CREDITCOIN_RPC ?? "https://rpc.cc3-testnet.creditcoin.network";
@@ -115,11 +116,7 @@ if (recoveryBootstrap.enabled) {
           if (RECOVERY_CONTRACT_VERSION === "v2") requireVerifiedV2(recoveryV2Deployment);
         },
       });
-      recoveryLifecycle = { state: "waking", service, error: null };
-      service.readiness().then(
-        () => { Object.assign(recoveryLifecycle, { state: "ready", service, error: null }); },
-        (error) => { Object.assign(recoveryLifecycle, { state: "error", service, error }); },
-      );
+      recoveryLifecycle = createRecoveryStartupLifecycle({ service });
     } catch (error) {
       recoveryLifecycle = {
         state: "error",
@@ -412,14 +409,19 @@ export function createAppHandler({
 
 export function startServer(options = {}) {
   const recoveryV2 = options.recoveryV2 ?? recoveryV2Deployment;
-  const server = createServer(createAppHandler({ ...options, recoveryV2 }));
-  server.listen(PORT, HOST, () => {
-    console.log(`RetryCredit service listening on http://${HOST}:${PORT}`);
+  const recovery = options.recovery ?? recoveryLifecycle;
+  const host = options.host ?? HOST;
+  const port = options.port ?? PORT;
+  const server = createServer(createAppHandler({ ...options, recovery, recoveryV2 }));
+  server.listen(port, host, () => {
+    console.log(`RetryCredit service listening on http://${host}:${server.address().port}`);
+    recovery.start?.();
     if (typeof recoveryV2?.start === "function") {
       Promise.resolve(recoveryV2.start()).catch(() => {});
     }
   });
   server.once("close", () => {
+    recovery.stop?.();
     if (typeof recoveryV2?.stop === "function") recoveryV2.stop();
   });
   return server;
