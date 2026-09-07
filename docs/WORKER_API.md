@@ -1,12 +1,12 @@
 # RetryCredit Recovery Campaign API
 
-The active API operates the live V1 pre-funded Recovery Campaign for paid Ethereum-mainnet SeaDrop failure-to-completion pairs. Its namespaced Open Pair Intake accepts an exact failed/successful transaction-hash pair, derives the source wallet from live Ethereum facts, authenticates the deployed Creditcoin bindings, asks that wallet for a five-minute offchain consent, builds one pair-local Attestcoin batch, simulates the immutable campaign, and relays the fixed release. A finalized, funded V2 continuation is deployed but remains predecessor-locked, so production intentionally reports `contractVersion: "v1"` until the reviewed cutover. The earlier three-address discovery index remains a public example and staged-compatibility path; it is not eligibility authority for the intake routes.
+The API operates the selected pre-funded Recovery Campaign for paid Ethereum-mainnet SeaDrop failure-to-completion pairs. Its namespaced Open Pair Intake accepts an exact failed/successful transaction-hash pair, derives the source wallet from live Ethereum facts, authenticates the deployed Creditcoin bindings, and, only when the campaign permits release, asks that wallet for a five-minute offchain consent, builds one pair-local Attestcoin batch, simulates the immutable campaign, and relays the fixed release. Public `/api/recovery/config` identifies the selected contract version and pool. A verified V2 profile can serve discovery and pair checks while predecessor-locked, but cannot authorize or release before its immutable boundary. The earlier three-address discovery index remains a public example and staged-compatibility path; it is not eligibility authority for the intake routes.
 
 The wallet does not submit a transaction, switch networks, deposit an asset, or choose a destination. The contract derives the beneficiary from the proven Ethereum sender. Earlier Sepolia/Uniswap V3 endpoints remain available as an API-level predecessor and for archived evidence. The current Recovery Campaign interface does not fall back to those routes automatically, so their availability alone is not a product rollback.
 
 ## Run locally
 
-### V2 activation runtime (not yet deployed)
+### V2 activation runtime
 
 The reviewed deployment can be observed without retaining a signing or broadcast
 controller. Explicit V2 activation requires `RETRYCREDIT_RECOVERY_ENABLED=true`,
@@ -41,7 +41,7 @@ Observation
 confirms deployment identity, not campaign eligibility or unlock: the existing
 campaign service and contract still enforce predecessor closure, funding, consent,
 proofs, and replay. The predecessor deadline does not change API configuration.
-Production remains V1 until a separately authorized, verified cutover.
+Changing the selected version requires an authorized, verified API cutover; it does not require bypassing or waiting to display the immutable predecessor lock.
 
 #### Optional authenticated audit RPC (Node V2 observer only)
 
@@ -115,7 +115,7 @@ The guarded one-time V2 deployment supervisor also recognizes `RETRYCREDIT_RECOV
 
 Hosted recovery can explicitly select `RETRYCREDIT_RECOVERY_ETHEREUM_PROVIDER=thirdweb` with server-only `THIRDWEB_RPC_CLIENT_ID` and `THIRDWEB_RPC_SECRET`. This replaces only the Recovery Campaign's Ethereum read providers; it does not change the Creditcoin signer or payout transport. Do not combine it with `ETHEREUM_RPC_URLS`. Requests are restricted to account-independent chain, transaction, and receipt reads at the exact Ethereum endpoint, check chain ID in every bounded batch, refuse redirects, and time out after six seconds. Public RPCs remain the default. Incomplete transaction/receipt responses are retryable service failures, not proof that a pair is ineligible.
 
-The reviewed release also carries the active pool and campaign as source defaults. They are selected only when recovery is explicitly enabled with no address override, or when the existing public V3 service runs at the exact production origin with no recovery override. This keeps the isolated production service reproducible without weakening partial-configuration checks. Set `RETRYCREDIT_RECOVERY_ENABLED=false` to disable recovery immediately without removing the archived V3 read, challenge, and status routes. Archived prepare, execute, and release remain HTTP `410` unless their separate write switch is explicitly enabled. The V2 interface will report that recovery is unavailable; it does not rebind itself to the V3 journey.
+The reviewed release carries the V1 predecessor pool and campaign as source defaults, never as implicit V2 activation values. They are selected only when recovery is explicitly enabled with no address override, or when the existing public V3 service runs at the exact production origin with no recovery override. This keeps the isolated production service reproducible without weakening partial-configuration checks. Set `RETRYCREDIT_RECOVERY_ENABLED=false` to disable recovery immediately without removing the archived V3 read, challenge, and status routes. Archived prepare, execute, and release remain HTTP `410` unless their separate write switch is explicitly enabled. The V2 interface will report that recovery is unavailable; it does not rebind itself to the V3 journey.
 
 ## Hosting and rollback
 
@@ -149,6 +149,8 @@ After either operation, verify the exact deployed source, `GET /health`, both co
 ### `GET /health`
 
 Returns process identity, Creditcoin network `102031`, legacy-service configuration, the Recovery Campaign lifecycle state (`disabled`, `waking`, `ready`, or `error`), and `revision`. The revision is the normalized 40-character Git commit supplied by Render, or `null` when that exact deployment identity is unavailable. This is process health and rollout identity, not a live reserve measurement.
+
+Node Recovery Campaign startup retries recognizable transient RPC failures at most five times, with completion-relative delays of 15, 30, 60, and 60 seconds. Configuration and binding failures do not retry. Every attempt has a 60-second watchdog; because a pending readiness operation cannot be cancelled, watchdog expiry is terminal and late completion cannot admit requests or start overlapping work. Until success, the lifecycle remains `waking` and actions return HTTP `425`; exhaustion or timeout returns a safe HTTP `503`. Server close cancels startup timers. Check `recoveryState` and public configuration, not `/health` status alone, before routing traffic. The separately configured archived service retains its existing fail-fast process startup; this retry policy applies only to Recovery Campaign initialization.
 
 ### `GET /health/recovery-v2`
 

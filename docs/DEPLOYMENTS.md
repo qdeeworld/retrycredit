@@ -1,6 +1,6 @@
 # RetryCredit Recovery Campaign deployments
 
-This page records the live V1 Recovery Campaign, its exact public-chain lifecycle, and the finalized lineage-aware V2 continuation deployed on August 27, 2026.
+This page records the V1 predecessor Recovery Campaign, its exact public-chain lifecycle, and the finalized lineage-aware V2 continuation deployed on August 27, 2026. The public [`/api/recovery/config`](https://retrycredit-api.onrender.com/api/recovery/config) identifies the selected pool and current release state; deployment history does not identify the currently selected API profile.
 
 - Public app: <https://retrycredit.dolepee.com>
 - Proof and execution API: <https://retrycredit-api.onrender.com>
@@ -33,7 +33,7 @@ The Cloudflare implementation isolates `/health/recovery-v2` in a fixed observat
 
 The verifier calls Creditcoin's native Attestcoin query verifier at `0x0000000000000000000000000000000000000FD2`. The campaign reads Ethereum's registered chain-key-`3`, chain-ID-`1`, EVM-encoding identity through native ChainInfo at `0x0000000000000000000000000000000000000FD3`.
 
-## Campaign #1 and public E2 execution chain
+## V1 predecessor campaign #1 and public E2 execution chain
 
 Campaign `#1` was created in [`0x8f81…eca2`](https://creditcoin-testnet.blockscout.com/tx/0x8f819ae535d4801513d1a701c7cd8432b9dfc89ab499cc6f1a24ff51b3f1eca2) with these immutable terms:
 
@@ -62,12 +62,12 @@ The initial V2 campaign has these immutable terms:
 - An expanded Ethereum source window from block `15527904` through `25836490` (V1 is bound to blocks `25805168` through `25835360`).
 - Deadline September 23, 2026 at 23:59 UTC, covering the submission and judging schedule.
 - An immutable predecessor binding to V1 pool `0x646c…dF66`, campaign `#1`, its sponsor, terms, source window, and deadline.
-- Releases remain locked until the predecessor reaches its exact deadline or all three V1 claims are consumed.
+- Releases remain locked until the predecessor deadline has strictly passed or all three V1 claims are consumed. V1 can still release at its exact deadline timestamp.
 - Sponsor-wide replay prevents a wallet, Attestcoin query, or exact failure/success pair used in the sponsor's V1 or V2 lineage from receiving another V2 credit.
 
-Both the primary CC3 RPC and the independent Blockscout audit RPC agree on the type-2 creation transaction, successful receipt, canonical block hash, two deployment events, contract nonce `1`, and the exact `9,139`-byte runtime hash `0xd0770affc097e8922811def99af7cda6ac7f863f2eaae09eea684e2af737ce07`. The guarded Render supervisor reports `FINALIZED_PLUS_TWO_VERIFIED` while the public profile remains V1.
+At deployment verification, the primary CC3 RPC and the separate Blockscout audit endpoint agreed on the type-2 creation transaction, successful receipt, canonical block hash, two deployment events, contract nonce `1`, and the exact `9,139`-byte runtime hash `0xd0770affc097e8922811def99af7cda6ac7f863f2eaae09eea684e2af737ce07`. The guarded Render supervisor reached `FINALIZED_PLUS_TWO_VERIFIED` with a V1 public profile. Separate endpoints do not by themselves prove independent underlying nodes.
 
-The production config intentionally continues to report `contractVersion: "v1"` and pool `0x646c…dF66` while the predecessor is active. Do not present the V2 deployment as a public V2 completion, independent use, adoption, or demand evidence.
+A reviewed V2 API cutover may select pool `0x3Eee…82B8` before its predecessor unlocks. That profile can authenticate discovery and pair checks while reporting `continuation-waiting`; it cannot authorize or release a V2 credit before the immutable boundary. Verify the selected version, pool, live capacity, and lineage in public configuration. Do not present the V2 deployment or read-only checks as a public V2 completion, independent use, adoption, or demand evidence.
 
 ## What is enforced
 
