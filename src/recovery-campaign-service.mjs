@@ -30,7 +30,7 @@ import {
   validateSeaDropRecoveryPair,
 } from "./seadrop-recovery.mjs";
 import { PUBLIC_CC3_RELAYER_ROLE, deriveRoleKey } from "./role-key.mjs";
-import { discoverWalletSeaDropPairs } from "./seadrop-wallet-discovery.mjs";
+import { discoverHostedWalletSeaDropPairs } from "./seadrop-wallet-discovery.mjs";
 import {
   RECOVERY_CHALLENGE_LIFETIME_SECONDS,
   RECOVERY_MAXIMUM_CLOCK_SKEW_SECONDS,
@@ -343,7 +343,7 @@ export class RecoveryCampaignService {
     predecessorPoolContract,
     contractFactory = (address, abi) => new Contract(address, abi, ccProvider),
     discoveryIndex = RECOVERY_DISCOVERY_INDEX,
-    walletDiscovery = discoverWalletSeaDropPairs,
+    walletDiscovery = discoverHostedWalletSeaDropPairs,
     pairResolver,
     beforeBroadcast = () => {},
     now = () => Math.floor(Date.now() / 1000),

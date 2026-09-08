@@ -17,6 +17,19 @@ function normalizeWallet(value) {
   return typeof value === "string" ? value.toLowerCase() : "";
 }
 
+export function recoveryDiscoveryFailure(error, { searchStarted = false } = {}) {
+  if (searchStarted) {
+    return {
+      flow: "discovery-unavailable",
+      message: "Wallet history search could not finish. Retry the search or enter exact transaction hashes below; no credit was authorized.",
+    };
+  }
+  return {
+    flow: error?.temporaryUnavailable ? "service-unavailable" : "discovery-unavailable",
+    message: null,
+  };
+}
+
 function normalizeHash(value) {
   return typeof value === "string" ? value.toLowerCase() : "";
 }
