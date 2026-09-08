@@ -17,6 +17,7 @@ import {
   recoveryAuthorizationInterruptionFlow,
   recoveryCampaignAvailability,
   recoveryCampaignsMatch,
+  recoveryDiscoveryFailure,
   recoveryEligibleAccountUpdateFlow,
   recoveryEligibleInspectionFlow,
   recoveryRecordMatchesConfig,
@@ -36,6 +37,22 @@ import {
 } from "../web/src/recovery-ui-state.mjs";
 
 const WALLET_A = "0x1111111111111111111111111111111111111111";
+
+test("advisory discovery transport failures do not claim a submitted pair or global outage", () => {
+  for (const error of [new Error("network"), { temporaryUnavailable: true }, { status: 503 }]) {
+    const result = recoveryDiscoveryFailure(error, { searchStarted: true });
+    assert.equal(result.flow, "discovery-unavailable");
+    assert.match(result.message, /Retry the search or enter exact transaction hashes/);
+    assert.doesNotMatch(result.message, /submitted pair|pair is preserved|service is unavailable/);
+  }
+});
+
+test("discovery retains real pre-search configuration failure and wallet error classification", () => {
+  assert.equal(recoveryDiscoveryFailure({ temporaryUnavailable: true }).flow, "service-unavailable");
+  assert.deepEqual(recoveryDiscoveryFailure(new Error("wallet unavailable")), {
+    flow: "discovery-unavailable", message: null,
+  });
+});
 const WALLET_B = "0x2222222222222222222222222222222222222222";
 const POOL_A = getAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 const POOL_B = getAddress("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");

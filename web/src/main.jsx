@@ -42,6 +42,7 @@ import {
   normalizeEthereumTransactionReference,
   recoveryCampaignAvailability,
   recoveryCampaignsMatch,
+  recoveryDiscoveryFailure,
   recoveryAuthorizationInterruptionFlow,
   recoveryEligibleAccountUpdateFlow,
   recoveryEligibleInspectionFlow,
@@ -570,6 +571,7 @@ function App() {
       || needsReleaseStatusCheck(flowRef.current)
     ) return;
     let walletOperation;
+    let searchStarted = false;
     updateFlow("discovery-connecting");
     setError("");
     setDiscoveryResult(null);
@@ -584,6 +586,7 @@ function App() {
       const liveConfig = configState === "ready" ? config : await refreshConfig();
       if (!walletOperations.current.isCurrent(walletOperation)) return;
       if (!isRecoveryConfigReadable(liveConfig)) throw new TemporaryUnavailableError();
+      searchStarted = true;
       const response = await discoverRecoveryWallet({ apiOrigin: API_ORIGIN, wallet });
       if (!walletOperations.current.isCurrent(walletOperation)) return;
       if (
@@ -636,8 +639,9 @@ function App() {
         updateFlow("empty");
         return;
       }
-      setError(cleanError(nextError));
-      updateFlow(nextError instanceof TemporaryUnavailableError ? "service-unavailable" : "discovery-unavailable");
+      const failure = recoveryDiscoveryFailure(nextError, { searchStarted });
+      setError(failure.message ?? cleanError(nextError));
+      updateFlow(failure.flow);
     }
   }
 
@@ -1901,7 +1905,7 @@ function deskCopy(flow, eligibility, releaseResult, config) {
     empty: ["Find a paid retry", "Connect the source wallet to search its public history, or enter the exact failed and completed transactions yourself."],
     discovering: ["Searching public wallet history", "RetryCredit is looking for a paid SeaDrop failure followed by the matching completed retry. Discovery alone cannot authorize a credit."],
     "discovery-empty": ["No retry found in the checked history", "Try the exact transaction hashes below, especially if the wallet has older activity outside the bounded search."],
-    "discovery-unavailable": ["Wallet search is temporarily unavailable", "Manual pair checking still works and remains the authority path for live Ethereum facts."],
+    "discovery-unavailable": ["Wallet search is temporarily unavailable", "Retry wallet search or enter exact transaction hashes below. Pair checks run independently."],
     editing: ["Complete the ordered pair", "Both transactions must belong to the same source wallet and paid SeaDrop action."],
     malformed: ["Fix the transaction references", "Each field needs a full transaction hash or canonical etherscan.io transaction URL."],
     checking: ["Checking the live pair", "RetryCredit is deriving the wallet, receipts, mint facts, order, and campaign fit from Ethereum."],

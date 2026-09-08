@@ -7,12 +7,37 @@ import {
   ROUTESCAN_ATTRIBUTION,
   ROUTESCAN_ETHEREUM_API,
   discoverWalletSeaDropPairsResilient,
+  discoverHostedWalletSeaDropPairs,
   discoverSeaDropPairs,
   fetchWalletTransactions,
   fetchWalletTransactionsV2,
 } from "../src/seadrop-wallet-discovery.mjs";
 
 const wallet = new Wallet(`0x${"a7".repeat(32)}`).address;
+
+test("shared hosted discovery pins both provider budgets and preserves fallback", async () => {
+  const attempts = [];
+  const result = await discoverHostedWalletSeaDropPairs({
+    wallet, startBlock: 100, endBlock: 200, maxBlockGap: 5, maxQuantity: 2,
+    timeoutMs: 999_999, maxPages: 20,
+    historyFetchers: [
+      async (options) => { attempts.push(options); throw new Error("primary unavailable"); },
+      async (options) => {
+        attempts.push(options);
+        return { transactions: [], truncated: false, pages: 1 };
+      },
+    ],
+  });
+  assert.equal(attempts.length, 2);
+  for (const options of attempts) {
+    assert.equal(options.timeoutMs, 6_000);
+    assert.equal(options.maxPages, 6);
+    assert.equal(options.wallet, wallet);
+    assert.equal(options.startBlock, 100);
+    assert.equal(options.endBlock, 200);
+  }
+  assert.deepEqual(result.pairs, []);
+});
 const nft = getAddress("0x1111111111111111111111111111111111111111");
 const feeRecipient = getAddress("0x0000a26b00c1F0DF003000390027140000fAa719");
 const interface_ = new Interface([

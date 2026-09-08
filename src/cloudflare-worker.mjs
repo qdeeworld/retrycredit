@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 import { RecoveryCampaignService } from "./recovery-campaign-service.mjs";
-import { discoverWalletSeaDropPairsResilient } from "./seadrop-wallet-discovery.mjs";
+import { discoverHostedWalletSeaDropPairs } from "./seadrop-wallet-discovery.mjs";
 import {
   RECOVERY_V2_OBSERVATION,
   observeRecoveryV2 as observeRecoveryV2FromProviders,
@@ -120,13 +120,7 @@ function createRecoveryService(env) {
     // Discovery is advisory. RouteScan supplies an exact block-bounded history
     // query, Blockscout is the independent fallback, and every candidate still
     // has to pass the authoritative Ethereum RPC checks below.
-    walletDiscovery: (options) => discoverWalletSeaDropPairsResilient({
-      ...options,
-      // Two bounded history attempts plus one 20-second live-validation budget
-      // must remain inside the service's 35-second discovery deadline.
-      timeoutMs: 6_000,
-      maxPages: 6,
-    }),
+    walletDiscovery: discoverHostedWalletSeaDropPairs,
     config: {
       contractVersion: requiredString(
         env.RETRYCREDIT_RECOVERY_CONTRACT_VERSION,

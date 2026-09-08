@@ -55,6 +55,12 @@ export async function discoverWalletSeaDropPairsV2(options = {}) {
   });
 }
 
+// Shared hosted profile: two six-second history attempts leave room for the
+// service's authoritative validation inside its 35-second discovery deadline.
+export function discoverHostedWalletSeaDropPairs(options = {}) {
+  return discoverWalletSeaDropPairsResilient({ ...options, timeoutMs: 6_000, maxPages: 6 });
+}
+
 export async function discoverWalletSeaDropPairsResilient({
   historyFetchers = DEFAULT_HISTORY_FETCHERS,
   ...options
