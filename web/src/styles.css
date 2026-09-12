@@ -96,6 +96,9 @@ a:hover { text-decoration-thickness:2px; }
 .helper-operation p { color:var(--muted); font-size:12px; line-height:1.55; }
 .helper-operation .secondary-action,.helper-operation .example-action { width:100%; min-height:48px; text-align:start; }
 .helper-desk .helper-availability-note { padding:12px; border:1px solid var(--rule); background:var(--sheet); }
+.hosted-admission-note { min-width:0; margin-block-start:18px; padding:14px; border:1px solid var(--rule); background:var(--sheet); }
+.hosted-admission-note p { margin:0 0 10px; color:var(--muted); font-size:12px; line-height:1.55; overflow-wrap:anywhere; }
+.hosted-admission-note .example-action { width:100%; min-height:48px; }
 .campaign-file { grid-area:campaign; position:relative; min-width:0; min-height:486px; align-self:stretch; display:flex; flex-direction:column; padding:clamp(28px,4.2vw,64px); border-block:4px solid var(--ink); border-inline-start:1px solid var(--ink); background:var(--sheet); }
 .file-registration { position:absolute; inset-block-start:-12px; inset-inline-start:24px; min-height:20px; display:flex; align-items:center; padding-inline:9px; color:var(--muted); background:var(--sheet); font:600 9px "IBM Plex Mono",monospace; text-transform:uppercase; letter-spacing:.05em; }
 .campaign-file h2 { max-width:15ch; margin:0; font-size:clamp(42px,5.7vw,76px); line-height:.94; letter-spacing:-.035em; text-wrap:balance; }

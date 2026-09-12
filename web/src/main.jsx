@@ -46,6 +46,9 @@ import {
   recoveryAuthorizationInterruptionFlow,
   recoveryEligibleAccountUpdateFlow,
   recoveryEligibleInspectionFlow,
+  recoveryHostedAdmissionState,
+  recoveryHostedAdmissionMessage,
+  recoveryUsesHostedAdmission,
   recoveryRecordMatchesConfig,
   recoveryConfigsMatch,
   selectDiscoveryAttribution,
@@ -69,7 +72,8 @@ import { requestRecoveryAccounts } from "./recovery-wallet-connection.mjs";
 import { createRecoveryPairLink, normalizeRecoveryInspectionAddress, readRecoveryPairLink } from "./recovery-pair-handoff.mjs";
 import { recoveryIncidentExport, validateRecoveryIncidentReport } from "./recovery-incident-report.mjs";
 import { HelperRecoveryDesk } from "./HelperRecoveryDesk.jsx";
-import { helperEnabled, readHelperResume } from "./recovery-helper-state.mjs";
+import { helperEnabled, readHelperResume, validateHelperOperation } from "./recovery-helper-state.mjs";
+import { readHelperOperation } from "./recovery-helper-api.mjs";
 import "./styles.css";
 
 const ETHEREUM_EXPLORER = "https://etherscan.io";
@@ -875,7 +879,7 @@ function App() {
       || isBusyFlow(flowRef.current)
       || ["release-processing", "release-uncertain", "continuation-waiting", "campaign-closed", "campaign-full"].includes(flowRef.current)
     ) return;
-    const liveEligibility = eligibilityRef.current;
+    let liveEligibility = eligibilityRef.current;
     if (!liveEligibility?.eligible) return;
     const liveConfig = configRef.current;
     if (!liveConfig?.enabled) {
@@ -897,6 +901,12 @@ function App() {
       updateFlow("campaign-changed");
       return;
     }
+    const initialAdmission = recoveryHostedAdmissionState({ config: liveConfig, eligibility: liveEligibility });
+    if (initialAdmission !== "available") {
+      setError(recoveryHostedAdmissionMessage(initialAdmission));
+      updateFlow("hosted-admission-blocked");
+      return;
+    }
     const pair = {
       failedTransactionHash: liveEligibility.pair.failedTransactionHash,
       successfulTransactionHash: liveEligibility.pair.successfulTransactionHash,
@@ -907,8 +917,37 @@ function App() {
     authorizationInFlight.current = true;
     setAuthorizationPending(true);
     setError("");
-    updateFlow("wallet-connecting");
+    updateFlow(recoveryUsesHostedAdmission(liveConfig) ? "checking" : "wallet-connecting");
     try {
+      if (recoveryUsesHostedAdmission(liveConfig)) {
+        // Admission is advisory, but a fresh source reservation/global budget
+        // read must precede even the owner wallet prompt. Challenge issuance
+        // independently rechecks again immediately before personal_sign.
+        const response = await checkRecoveryPairEligibility({ apiOrigin: API_ORIGIN, pair });
+        if (!operationIsCurrent(operation)) return;
+        const refreshed = validatePairEligibilityResponse({ response, requestedPair: pair, config: liveConfig });
+        if (!walletsMatch(refreshed.wallet, liveEligibility.wallet)) {
+          throw Object.assign(new Error("The source wallet changed during admission checks."), { code: "RECOVERY_RESPONSE_MISMATCH" });
+        }
+        liveEligibility = refreshed;
+        updateEligibility(refreshed);
+        if (!refreshed.eligible) {
+          setReleaseResult(refreshed.release ? refreshed : null);
+          updateFlow(refreshed.status === "claimed" ? "already-claimed" : refreshed.status === "processing" ? "release-processing"
+            : refreshed.status === "full" ? "campaign-full" : refreshed.status === "closed" ? "campaign-closed" : "continuation-waiting");
+          return;
+        }
+        const currentConfig = configRef.current;
+        if (!canContinueRecoveryAuthorization({ operationCurrent: operationIsCurrent(operation), initialConfig: liveConfig,
+          currentConfig, eligibility: liveEligibility })) {
+          const admission = recoveryHostedAdmissionState({ config: currentConfig, eligibility: liveEligibility });
+          if (admission !== "available") setError(recoveryHostedAdmissionMessage(admission));
+          const interruption = recoveryAuthorizationInterruptionFlow({ operationCurrent: operationIsCurrent(operation), currentConfig, eligibility: liveEligibility });
+          if (interruption) updateFlow(interruption);
+          return;
+        }
+      }
+      updateFlow("wallet-connecting");
       let wallet = walletOperations.current.currentAccount();
       if (!walletsMatch(wallet, liveEligibility.wallet)) {
         try {
@@ -939,10 +978,12 @@ function App() {
         operationCurrent: authorizationOperationCurrent,
         initialConfig: liveConfig,
         currentConfig: currentAuthorizationConfig,
+        eligibility: liveEligibility,
       })) {
         const interruptionFlow = recoveryAuthorizationInterruptionFlow({
           operationCurrent: authorizationOperationCurrent,
           currentConfig: currentAuthorizationConfig,
+          eligibility: liveEligibility,
         });
         if (interruptionFlow) {
           if (["campaign-changed", "service-unavailable"].includes(interruptionFlow)) {
@@ -970,10 +1011,12 @@ function App() {
         operationCurrent: postSignatureAuthorizationCurrent,
         initialConfig: liveConfig,
         currentConfig: postSignatureAuthorizationConfig,
+        eligibility: liveEligibility,
       })) {
         const interruptionFlow = recoveryAuthorizationInterruptionFlow({
           operationCurrent: postSignatureAuthorizationCurrent,
           currentConfig: postSignatureAuthorizationConfig,
+          eligibility: liveEligibility,
         });
         if (interruptionFlow) {
           if (["campaign-changed", "service-unavailable"].includes(interruptionFlow)) {
@@ -1019,10 +1062,12 @@ function App() {
         operationCurrent: postSignatureOperationCurrent,
         initialConfig: liveConfig,
         currentConfig: postSignatureConfig,
+        eligibility: liveEligibility,
       })) {
         const interruptionFlow = recoveryAuthorizationInterruptionFlow({
           operationCurrent: postSignatureOperationWasCurrent,
           currentConfig: postSignatureConfig,
+          eligibility: liveEligibility,
         });
         if (interruptionFlow) {
           if (["campaign-changed", "service-unavailable"].includes(interruptionFlow)) {
@@ -1135,6 +1180,13 @@ function App() {
         setError(cleanError(nextError));
         updateFlow("pair-changed");
         return;
+      } else if (recoveryUsesHostedAdmission(liveConfig) && (["HELPER_LEDGER_PAUSED", "HELPER_LEDGER_BUSY", "HELPER_LEDGER_BUDGET_EXHAUSTED", "RECOVERY_PROCESSING", "RECOVERY_HELPER_UNAVAILABLE"].includes(nextError?.code)
+        || nextError instanceof TemporaryUnavailableError)) {
+        const admissionState = { HELPER_LEDGER_PAUSED: "paused", HELPER_LEDGER_BUSY: "busy", HELPER_LEDGER_BUDGET_EXHAUSTED: "budget-exhausted" }[nextError.code] ?? "unavailable";
+        updateEligibility({ ...liveEligibility, hostedAdmission: { available: false, admissionState, operation: null } });
+        setError(cleanError(nextError));
+        updateFlow("hosted-admission-blocked");
+        return;
       } else {
         setError(cleanError(nextError));
       }
@@ -1154,6 +1206,37 @@ function App() {
     }
   }
 
+  async function refreshOwnerAdmission(event) {
+    event?.preventDefault?.();
+    if (!online || recoveryModeRef.current !== "owner" || helperLockRef.current
+      || authorizationInFlight.current || isBusyFlow(flowRef.current)) return;
+    const initialEligibility = eligibilityRef.current;
+    const initialConfig = configRef.current;
+    const existing = initialEligibility?.hostedAdmission?.operation;
+    if (existing && ["admitted", "broadcast-prepared"].includes(existing.state)) {
+      const check = pairOperations.current.begin(initialEligibility.pair);
+      updateFlow("checking");
+      setError("");
+      try {
+        const response = await readHelperOperation({ apiOrigin: API_ORIGIN, operationId: existing.operationId });
+        if (!operationIsCurrent(check) || !recoveryCampaignsMatch(initialConfig, configRef.current)) return;
+        const reconciled = validateHelperOperation(response, existing, initialConfig);
+        if (reconciled.mode !== existing.mode || !walletsMatch(reconciled.requester, existing.requester)) {
+          throw new Error("The existing operation's requester or role changed unexpectedly.");
+        }
+      } catch {
+        if (!operationIsCurrent(check)) return;
+        setError("The existing operation could not be reconciled. Its source reservation remains locked. Refresh public availability again; no signature or release was requested.");
+        updateFlow("hosted-admission-blocked");
+        return;
+      }
+      // GET reconciliation may have persisted the exact receipt after a restart.
+      // A fresh normal pair check now determines the source/replay result.
+      updateFlow("hosted-admission-blocked");
+    }
+    await checkPair();
+  }
+
   async function walletControl() {
     const expectedEligibility = eligibilityRef.current;
     if (
@@ -1163,6 +1246,7 @@ function App() {
       || needsReleaseStatusCheck(flowRef.current)
       || flowRef.current === "continuation-waiting"
       || isContinuationWaiting(configRef.current)
+      || recoveryHostedAdmissionState({ config: configRef.current, eligibility: expectedEligibility }) !== "available"
     ) return;
     const operation = pairOperations.current.begin(expectedEligibility.pair);
     updateFlow("wallet-connecting");
@@ -1271,8 +1355,9 @@ function App() {
     && !busy
     && !needsReleaseStatusCheck(flow)
     && (
-      config?.capabilities?.walletNativeDiscovery
-      || (eligibility?.eligible && campaignAvailability === "open" && !continuationWaiting)
+      (eligibility?.eligible && campaignAvailability === "open" && !continuationWaiting
+        && recoveryHostedAdmissionState({ config, eligibility }) === "available")
+      || (!eligibility?.eligible && config?.capabilities?.walletNativeDiscovery)
     )
   );
 
@@ -1293,6 +1378,7 @@ function App() {
         {...context}
         onAuthorize={authorizeAndRelease}
         onCheckPair={checkPair}
+        onRefreshAdmission={refreshOwnerAdmission}
         onDiscover={discoverConnectedWallet}
         onInspectAddress={discoverPublicWallet}
         onLoadExample={loadRecoveredExample}
@@ -1491,6 +1577,7 @@ function EligibilityDesk({
   online,
   onAuthorize,
   onCheckPair,
+  onRefreshAdmission,
   onDiscover,
   onInspectAddress,
   onLoadExample,
@@ -1501,7 +1588,9 @@ function EligibilityDesk({
   discoveryResult,
   pairDiagnostics,
 }) {
-  const copy = deskCopy(flow, eligibility, releaseResult, config);
+  const hostedAdmissionState = recoveryHostedAdmissionState({ config, eligibility });
+  const hostedAdmissionBlocked = eligibility?.eligible === true && hostedAdmissionState !== "available";
+  const copy = deskCopy(hostedAdmissionBlocked && !busy && !needsReleaseStatusCheck(flow) ? "hosted-admission-blocked" : flow, eligibility, releaseResult, config);
   const isTerminal = flow === "released" || flow === "already-claimed";
   const hasQualifyingResult = Boolean(eligibility?.eligible);
   const needsStatusCheck = needsReleaseStatusCheck(flow);
@@ -1515,6 +1604,7 @@ function EligibilityDesk({
     || flow === "continuation-waiting"
     || ["campaign-closed", "campaign-full"].includes(flow)
     || needsStatusCheck
+    || hostedAdmissionBlocked
     || !hasQualifyingResult;
   const campaignAcceptsAuthorization = configState === "ready"
     && config?.enabled === true
@@ -1564,7 +1654,7 @@ function EligibilityDesk({
 
     {!hasQualifyingResult && !isTerminal && <div className="manual-divider"><span>or enter the exact pair</span></div>}
 
-    <form className="pair-intake" onSubmit={onCheckPair} noValidate aria-busy={busy}>
+    <form className="pair-intake" onSubmit={needsStatusCheck && eligibility?.hostedAdmission?.operation ? onRefreshAdmission : onCheckPair} noValidate aria-busy={busy}>
       <fieldset>
         <legend>Ordered Ethereum pair</legend>
         <TransactionField
@@ -1642,6 +1732,17 @@ function EligibilityDesk({
 
     {releaseResult?.release && <ReleaseReceipt result={releaseResult} />}
 
+    {hostedAdmissionBlocked && !needsStatusCheck && <div className="hosted-admission-note" id="owner-admission-note" role="status">
+      <p>{recoveryHostedAdmissionMessage(hostedAdmissionState)}</p>
+      {eligibility.hostedAdmission?.operation && <>
+        <p>Existing {eligibility.hostedAdmission.operation.mode === "owner" ? "source-owner" : "community-helper"} operation · {eligibility.hostedAdmission.operation.state}</p>
+        <p>Requester: <code>{eligibility.hostedAdmission.operation.requester}</code></p>
+        <p>Operation: <code>{eligibility.hostedAdmission.operation.operationId}</code></p>
+        {eligibility.hostedAdmission.operation.transactionHash && <ExplorerLink chain="creditcoin" hash={eligibility.hostedAdmission.operation.transactionHash}>Inspect the existing transaction</ExplorerLink>}
+      </>}
+      <button className="example-action" type="button" onClick={onRefreshAdmission} disabled={checkDisabled}>Refresh recovery availability <Search aria-hidden="true" /></button>
+    </div>}
+
     {hasQualifyingResult && !needsStatusCheck && !config?.readOnly && <button
       id="authorization-action"
       className="primary-action authorization-action"
@@ -1649,9 +1750,9 @@ function EligibilityDesk({
       onClick={onAuthorize}
       disabled={authorizationDisabled || !campaignAcceptsAuthorization}
       aria-busy={busy}
-      aria-describedby="authorization-scope-note"
+      aria-describedby={hostedAdmissionBlocked ? "owner-admission-note authorization-scope-note" : "authorization-scope-note"}
     >
-      <span>{authorizationLabel(flow, account, eligibility.wallet)}</span>
+      <span>{hostedAdmissionBlocked ? "Recovery admission unavailable" : authorizationLabel(flow, account, eligibility.wallet)}</span>
       {busy ? <LoaderCircle className="spin" aria-hidden="true" /> : <Wallet aria-hidden="true" />}
     </button>}
 
@@ -1857,8 +1958,11 @@ function EvidenceBand({ config, eligibility, flow, releaseResult, helperMode = f
   const mintPrice = formatEthValue(pair?.mintPriceWei);
   const continuationWaiting = isContinuationWaiting(config);
   const readOnly = config?.readOnly === true;
+  const hostedAdmissionState = recoveryHostedAdmissionState({ config, eligibility });
+  const hostedAdmissionBlocked = eligibility?.eligible === true && hostedAdmissionState !== "available";
   const releaseAvailable = eligibility?.eligible === true
     && !helperOperation
+    && recoveryHostedAdmissionState({ config, eligibility }) === "available"
     && config?.enabled === true
     && !readOnly
     && recoveryRecordMatchesConfig(eligibility, config)
@@ -1927,6 +2031,7 @@ function EvidenceBand({ config, eligibility, flow, releaseResult, helperMode = f
               ? "Continuation release is waiting"
               : readOnly && eligibility?.eligible
                 ? "Pair qualifies; release disabled here"
+                : hostedAdmissionBlocked ? "Shared recovery admission is unavailable"
                 : releaseAvailable ? "Fixed release awaits authorization" : "No new release available"}
         subtitle="Creditcoin Testnet · source-derived payout"
         hash={release?.transactionHash}
@@ -1949,6 +2054,7 @@ function EvidenceBand({ config, eligibility, flow, releaseResult, helperMode = f
                 ? "Predecessor must fill or pass its deadline"
                 : readOnly && eligibility?.eligible
                   ? "Read-only staging stops before signing"
+                  : hostedAdmissionBlocked ? recoveryHostedAdmissionMessage(hostedAdmissionState)
                   : releaseAvailable ? "Hosted-relayer authorization available" : "Campaign closed or full",
         ]}
       />
@@ -2185,6 +2291,7 @@ function deskCopy(flow, eligibility, releaseResult, config) {
     qualifying: config?.readOnly
       ? ["This pair qualifies in read-only staging", `The live-derived source wallet matches one ${formatCredit(eligibility?.creditAmount)} campaign slot. Signing and release stay disabled here.`]
       : ["This pair qualifies", `The live-derived source wallet can authorize one ${formatCredit(eligibility?.creditAmount)} release. Connect only that wallet to continue.`],
+    "hosted-admission-blocked": ["The pair qualifies; release admission is unavailable", recoveryHostedAdmissionMessage(recoveryHostedAdmissionState({ config, eligibility }))],
     "wrong-wallet": ["Switch to the derived source wallet", "The connected account is not the wallet established by this pair. Switch accounts inside your wallet extension, then try again. No proof or release request was sent."],
     "discovery-connecting": ["Open your wallet to connect", "Choose an account in your wallet. No history is searched until it responds; this request does not ask for a signature or transaction."],
     "wallet-connecting": ["Connecting the source wallet", "Approve the account request. RetryCredit will continue only if it matches the wallet derived from this exact pair."],

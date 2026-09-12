@@ -32,6 +32,7 @@ const config = {
 const rawEligibility = {
   wallet: source, campaignNumber: 1, creditAmount: config.campaign.creditAmount,
   eligible: true, status: "eligible", reason: "The exact source pair is eligible.", release: null,
+  hostedAdmission: { available: true, admissionState: "available", operation: null },
   lineage: { scope: "sponsor", status: "unused" },
   pair: { ...pair, sourceChainId: 1, sourceChainKey: 3, nftContract: other, quantity: "2", mintPriceWei: "1000", valueWei: "2000",
     failed: { blockNumber: 101, nonce: 1 }, successful: { blockNumber: 103, nonce: 2, mintedTokenIds: ["1", "2"] } },
@@ -43,7 +44,8 @@ function challenge() {
   const issuedAt = Math.floor(now / 1000);
   const operationId = helperOperationIdentity(config, source, pair);
   const value = { mode: RECOVERY_HELPER_MODE, requester, sourceWallet: source, poolAddress: pool, campaignNumber: 1,
-    pair: { ...pair }, operationId, issuedAt, expiresAt: issuedAt + 300 };
+    pair: { ...pair }, operationId, issuedAt, expiresAt: issuedAt + 300,
+    hostedAdmission: { available: true, admissionState: "available", operation: null } };
   value.message = formatRecoveryHelperMessage({ origin: config.publicOrigin, settlementChainId: 102031,
     ...value, ...pair });
   return value;

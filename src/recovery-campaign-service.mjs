@@ -643,11 +643,11 @@ export class RecoveryCampaignService {
   }
 
   async configuration({ fresh = false } = {}) {
-    const [infrastructure, state, helperAvailability] = await Promise.all([
+    const [infrastructure, state] = await Promise.all([
       this.#authenticateInfrastructure(),
       this.#campaignState({ fresh: fresh === true }),
-      this.helperLedger ? this.#helperAvailability() : null,
     ]);
+    const helperAvailability = this.helperLedger ? await this.#helperAvailability(state.campaign) : null;
     return {
       enabled: true,
       waking: false,
@@ -793,8 +793,9 @@ export class RecoveryCampaignService {
     const context = await this.intakePool.run(
       () => this.#eligibilityContext(wallet, discovery),
     );
-    const eligibility = this.#publicEligibility(context);
+    const eligibility = await this.#publicEligibility(context);
     if (!eligibility.eligible) throw eligibilityError(eligibility);
+    this.#assertHostedAdmission(context, eligibility.hostedAdmission);
     const issuedAt = this.now();
     const expiresAt = issuedAt + this.config.challengeLifetimeSeconds;
     const message = recoveryChallengeMessage({
@@ -818,6 +819,7 @@ export class RecoveryCampaignService {
         failedTransactionHash: eligibility.pair.failedTransactionHash,
         successfulTransactionHash: eligibility.pair.successfulTransactionHash,
       },
+      ...(this.helperLedger ? { hostedAdmission: eligibility.hostedAdmission } : {}),
     };
   }
 
@@ -826,17 +828,22 @@ export class RecoveryCampaignService {
     const context = await this.intakePool.run(
       () => this.#openPairEligibilityContext(pairInput),
     );
-    const eligibility = this.#publicEligibility(context);
+    const eligibility = await this.#publicEligibility(context);
     if (!eligibility.eligible) throw eligibilityError(eligibility);
-    return this.#challengeFor({ wallet: eligibility.wallet, discovery: context.discovery });
+    this.#assertHostedAdmission(context, eligibility.hostedAdmission);
+    return {
+      ...this.#challengeFor({ wallet: eligibility.wallet, discovery: context.discovery }),
+      ...(this.helperLedger ? { hostedAdmission: eligibility.hostedAdmission } : {}),
+    };
   }
 
   #requireHelper() {
     if (!this.helperLedger) throw new WorkerError("RECOVERY_HELPER_DISABLED", "Community helper requests are not enabled.", 503);
   }
 
-  async #helperAvailability() {
+  async #helperAvailability(campaign) {
     try {
+      if (campaign) this.#assertHelperCampaignPolicy(campaign);
       const snapshot = await this.#ledger("inspect", {});
       if (typeof snapshot.enabled !== "boolean" || !Number.isSafeInteger(snapshot.attempts)
         || !Number.isSafeInteger(snapshot.payouts) || snapshot.attempts < 0 || snapshot.payouts < 0
@@ -845,7 +852,7 @@ export class RecoveryCampaignService {
       const limits = this.helperPolicy.limits;
       const exhausted = snapshot.attempts >= limits.maxAttempts || snapshot.payouts >= limits.maxPayouts
         || BigInt(snapshot.reservedFeeWei) + this.helperMaxFeeWei > BigInt(limits.maxTotalFeeWei);
-      const admissionState = !snapshot.enabled ? "paused" : exhausted ? "budget-exhausted"
+      const admissionState = !snapshot.enabled || this.now() >= limits.expiresAt ? "paused" : exhausted ? "budget-exhausted"
         : snapshot.activeOperationId ? "busy" : "available";
       return { available: admissionState === "available", admissionState };
     } catch {
@@ -853,6 +860,42 @@ export class RecoveryCampaignService {
       // Never imply that a new funded action is currently admitted in that state.
       return { available: false, admissionState: "unavailable" };
     }
+  }
+
+  async #hostedAdmission(context) {
+    try {
+      this.#assertHelperCampaignPolicy(context.campaign);
+      // No proof, reservation or receipt reconciliation occurs in this advisory read.
+      // Source locks outlive a failed operation, including across different pairs.
+      const [availability, existing] = await Promise.all([
+        this.#helperAvailability(context.campaign),
+        this.#ledger("readSource", { sourceWallet: context.wallet }),
+      ]);
+      if (!existing || !Object.hasOwn(existing, "operation")) throw new Error("invalid source admission snapshot");
+      if (existing.operation) {
+        const operation = publicHelperOperation(existing.operation);
+        if (operation.sourceWallet !== context.wallet) throw new Error("mismatched source admission snapshot");
+        return { available: false, admissionState: "source-reserved", operation };
+      }
+      return { ...availability, operation: null };
+    } catch {
+      return { available: false, admissionState: "unavailable", operation: null };
+    }
+  }
+
+  #assertHostedAdmission(context, admission) {
+    if (!this.helperLedger) return;
+    this.#assertHelperCampaignPolicy(context.campaign);
+    if (admission?.available === true && admission.admissionState === "available" && admission.operation === null) return;
+    const reasons = {
+      paused: ["HELPER_LEDGER_PAUSED", "Hosted recovery is paused or its spending window has ended. No signature is needed now.", 503],
+      busy: ["HELPER_LEDGER_BUSY", "Another hosted recovery is being processed. Wait for its status to resolve before signing.", 409],
+      "budget-exhausted": ["HELPER_LEDGER_BUDGET_EXHAUSTED", "The bounded hosted recovery budget has been allocated. No signature is needed.", 409],
+      "source-reserved": ["RECOVERY_PROCESSING", "This source wallet already has a durable recovery operation. Check its status instead of signing again.", 409],
+      unavailable: ["RECOVERY_HELPER_UNAVAILABLE", "Hosted recovery availability cannot be verified. Source eligibility is unchanged; no signature is needed now.", 503],
+    };
+    const [code, message, status] = reasons[admission?.admissionState] ?? reasons.unavailable;
+    throw new WorkerError(code, message, status);
   }
 
   async #ledger(method, input) {
@@ -877,6 +920,8 @@ export class RecoveryCampaignService {
     const context = await this.intakePool.run(() => this.#openPairEligibilityContext(pair));
     requireDistinctHelper(requester, context.wallet);
     if (!context.eligible) throw eligibilityError(publicEligibility(context));
+    const hostedAdmission = await this.#hostedAdmission(context);
+    this.#assertHostedAdmission(context, hostedAdmission);
     const sourceWallet = context.wallet;
     const operationId = this.#helperOperationId(sourceWallet, pair);
     const issuedAt = this.now();
@@ -884,6 +929,7 @@ export class RecoveryCampaignService {
     return {
       mode: RECOVERY_HELPER_MODE, requester, sourceWallet, pair, operationId, issuedAt, expiresAt,
       poolAddress: this.poolAddress, campaignNumber: this.campaignNumber,
+      hostedAdmission,
       message: this.#helperMessage({ requester, sourceWallet, pair, operationId, issuedAt, expiresAt }),
     };
   }
@@ -907,10 +953,11 @@ export class RecoveryCampaignService {
       try {
         const context = await this.intakePool.run(() => this.#openPairEligibilityContext(pair, { freshState: true }));
         if (!context.eligible) continue;
-        const existing = await this.#ledger("readSource", { sourceWallet: context.wallet });
-        if (existing?.operation) continue;
+        const match = await this.#publicEligibility(context);
+        if (match.hostedAdmission.admissionState === "source-reserved") continue;
+        if (match.hostedAdmission.admissionState === "unavailable") { unavailable = true; continue; }
         return { status: "found", checkedCandidates, totalCandidates, moreCandidates: totalCandidates > checkedCandidates,
-          match: publicEligibility(context) };
+          match };
       } catch (error) {
         if (!(error instanceof WorkerError) || error.status >= 500 || error.status === 429) unavailable = true;
       }
@@ -1231,8 +1278,11 @@ export class RecoveryCampaignService {
     return flight;
   }
 
-  #publicEligibility(context) {
+  async #publicEligibility(context) {
     const eligibility = publicEligibility(context);
+    if (this.helperLedger) {
+      return { ...eligibility, hostedAdmission: await this.#hostedAdmission(context) };
+    }
     if (
       eligibility.status === "eligible"
       && this.releaseFlights.has(this.#releaseFlightKey(context.wallet, context.discovery))

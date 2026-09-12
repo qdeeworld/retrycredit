@@ -165,7 +165,70 @@ export function isRecoveryConfigReadable(config) {
   );
 }
 
-export function canContinueRecoveryAuthorization({ operationCurrent, initialConfig, currentConfig } = {}) {
+export function recoveryUsesHostedAdmission(config) {
+  return config?.helper?.enabled === true || config?.capabilities?.communityHelper === true;
+}
+
+export function validateRecoveryHostedAdmission(admission, { config, wallet } = {}) {
+  if (admission === undefined && !recoveryUsesHostedAdmission(config)) return null;
+  const states = new Set(["available", "paused", "busy", "budget-exhausted", "unavailable", "source-reserved"]);
+  if (!admission || typeof admission !== "object" || Array.isArray(admission)
+    || Object.keys(admission).some((key) => !["available", "admissionState", "operation"].includes(key))
+    || !states.has(admission.admissionState) || admission.available !== (admission.admissionState === "available")) throw responseMismatch();
+  const operation = admission.operation;
+  if (admission.admissionState !== "source-reserved") {
+    if (operation !== null) throw responseMismatch();
+    return Object.freeze({ available: admission.available, admissionState: admission.admissionState, operation: null });
+  }
+  const terminal = ["settled", "reverted"].includes(operation?.state);
+  const hasTransaction = terminal || operation?.state === "broadcast-prepared";
+  if (!operation || !isNonzeroHash(operation.operationId) || !walletsMatch(operation.sourceWallet, wallet)
+    || !isAddress(operation.requester) || !["owner", "community-helper-v1"].includes(operation.mode)
+    || operation.recipientConsent !== (operation.mode === "owner") || operation.helperReceivesCredit !== false
+    || (operation.mode === "owner") !== walletsMatch(operation.requester, operation.sourceWallet)
+    || !["admitted", "broadcast-prepared", "settled", "reverted", "stopped"].includes(operation.state)
+    || !isHash(operation.pair?.failedTransactionHash) || !isHash(operation.pair?.successfulTransactionHash)
+    || normalizeHash(operation.pair.failedTransactionHash) === normalizeHash(operation.pair.successfulTransactionHash)
+    || (hasTransaction ? !isNonzeroHash(operation.transactionHash) : operation.transactionHash !== null)
+    || (terminal ? !Number.isSafeInteger(operation.blockNumber) || operation.blockNumber <= 0 : operation.blockNumber !== null)
+    || (operation.state === "stopped"
+      ? !["eligibility-changed", "proof-unavailable", "proof-invalid", "simulation-rejected", "fee-cap", "prebroadcast-failed", "operator-abandoned"].includes(operation.reason)
+      : operation.reason !== null)) throw responseMismatch();
+  return Object.freeze({ available: false, admissionState: "source-reserved", operation: Object.freeze({
+    operationId: operation.operationId, state: operation.state, mode: operation.mode,
+    requester: getAddress(operation.requester), sourceWallet: getAddress(operation.sourceWallet),
+    pair: Object.freeze({ failedTransactionHash: normalizeHash(operation.pair.failedTransactionHash), successfulTransactionHash: normalizeHash(operation.pair.successfulTransactionHash) }),
+    transactionHash: operation.transactionHash, blockNumber: operation.blockNumber, reason: operation.reason,
+    recipientConsent: operation.recipientConsent, helperReceivesCredit: false,
+  }) });
+}
+
+export function recoveryHostedAdmissionState({ config, eligibility } = {}) {
+  if (!recoveryUsesHostedAdmission(config)) return "available";
+  let admission;
+  try { admission = validateRecoveryHostedAdmission(eligibility?.hostedAdmission, { config, wallet: eligibility?.wallet }); }
+  catch { return "unavailable"; }
+  if (admission.admissionState === "source-reserved") return "source-reserved";
+  const global = config?.helper;
+  if (config.contractVersion !== "v2" || config?.capabilities?.communityHelper !== true || global?.enabled !== true
+    || global.mode !== "community-helper-v1" || global.recipientConsent !== false || global.helperReceivesCredit !== false) return "unavailable";
+  if (global.available !== true || global.admissionState !== "available") {
+    return ["paused", "busy", "budget-exhausted", "unavailable"].includes(global.admissionState) ? global.admissionState : "unavailable";
+  }
+  return admission.admissionState;
+}
+
+export function recoveryHostedAdmissionMessage(state) {
+  return {
+    paused: "The shared sponsor service is paused or its admission window has ended. Owner and helper requests are both disabled; no signature is needed.",
+    busy: "The sponsor is processing another recovery. Owner and helper requests share this limit. Refresh availability before connecting or signing.",
+    "budget-exhausted": "The shared sponsor proof or gas budget is fully allocated. Reserved capacity may not have been spent; new owner and helper requests are disabled.",
+    "source-reserved": "This source wallet already has a durable recovery operation, possibly for another pair. Its reservation cannot be bypassed by switching to owner recovery or signing again.",
+    unavailable: "Fresh shared-service availability could not be confirmed. Refresh availability before connecting or signing; the source pair remains inspectable.",
+  }[state] ?? "The shared sponsor service is available. Final admission is checked again before work starts.";
+}
+
+export function canContinueRecoveryAuthorization({ operationCurrent, initialConfig, currentConfig, eligibility } = {}) {
   const initialState = recoveryAuthorizationStateIdentity(initialConfig);
   const currentState = recoveryAuthorizationStateIdentity(currentConfig);
   return Boolean(operationCurrent === true
@@ -173,16 +236,18 @@ export function canContinueRecoveryAuthorization({ operationCurrent, initialConf
     && currentConfig?.readOnly !== true
     && recoveryCampaignsMatch(initialConfig, currentConfig)
     && recoveryCampaignAvailability(currentConfig) === "open"
+    && recoveryHostedAdmissionState({ config: currentConfig, eligibility }) === "available"
     && initialState
     && initialState === currentState);
 }
 
-export function recoveryAuthorizationInterruptionFlow({ operationCurrent, currentConfig } = {}) {
+export function recoveryAuthorizationInterruptionFlow({ operationCurrent, currentConfig, eligibility } = {}) {
   if (operationCurrent !== true) return null;
   if (!isRecoveryConfigReadable(currentConfig)) return "service-unavailable";
   const availability = recoveryCampaignAvailability(currentConfig);
   if (availability === "full") return "campaign-full";
   if (availability === "closed") return "campaign-closed";
+  if (recoveryHostedAdmissionState({ config: currentConfig, eligibility }) !== "available") return "hosted-admission-blocked";
   return "campaign-changed";
 }
 
@@ -384,7 +449,9 @@ export function validatePairEligibilityResponse({ response, requestedPair, confi
   }
   if (typeof response?.reason !== "string" || response.reason.trim() === "") throw responseMismatch();
   requireCreditAmount(response, config);
-  return bindRecoveryBoundary(response, boundary);
+  const hostedAdmission = (response.eligible || response.hostedAdmission !== undefined)
+    ? validateRecoveryHostedAdmission(response.hostedAdmission, { config, wallet: response.wallet }) : null;
+  return bindRecoveryBoundary(hostedAdmission ? { ...response, hostedAdmission } : response, boundary);
 }
 
 export function validateEligibilityResponse({ response, requestedWallet, config, expectedPair } = {}) {
@@ -456,6 +523,10 @@ export function validateChallengeResponse({ response, wallet, eligibility, confi
     || (freshReadAdmission === "anonymous-v1" && response.freshReadReceipt !== undefined)
   ) {
     throw responseMismatch();
+  }
+  if (recoveryUsesHostedAdmission(config)) {
+    const admission = validateRecoveryHostedAdmission(response.hostedAdmission, { config, wallet });
+    if (admission?.available !== true) throw responseMismatch();
   }
   return response;
 }
@@ -881,6 +952,11 @@ function recoveryAuthorizationStateIdentity(config) {
   return JSON.stringify([
     campaignIdentity,
     config?.consent?.freshReadAdmission,
+    recoveryUsesHostedAdmission(config),
+    config?.helper?.enabled,
+    config?.helper?.mode,
+    config?.helper?.available,
+    config?.helper?.admissionState,
     normalizeWallet(config.verifierAddress),
     normalizeWallet(config.predicateAddress),
     normalizeWallet(campaign.sponsor),

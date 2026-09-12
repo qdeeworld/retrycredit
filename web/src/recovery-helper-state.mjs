@@ -1,6 +1,6 @@
 import { AbiCoder, getAddress, keccak256 } from "ethers";
 import { formatRecoveryHelperMessage, RECOVERY_HELPER_MODE } from "../../src/recovery-helper-consent.mjs";
-import { recoveryCampaignAvailability, recoveryCampaignsMatch, recoveryPairsMatch, recoveryRecordMatchesConfig, validatePairEligibilityResponse, walletsMatch } from "./recovery-ui-state.mjs";
+import { recoveryCampaignAvailability, recoveryCampaignsMatch, recoveryPairsMatch, recoveryRecordMatchesConfig, validatePairEligibilityResponse, validateRecoveryHostedAdmission, walletsMatch } from "./recovery-ui-state.mjs";
 
 export { RECOVERY_HELPER_MODE };
 export const HELPER_RESUME_KEY = "retrycredit.community-helper.public-operation.v1";
@@ -59,6 +59,7 @@ export function validateHelperChallenge({ response, requester, eligibility, conf
     || !positiveInteger(response?.issuedAt) || !positiveInteger(response?.expiresAt)
     || response.expiresAt !== response.issuedAt + 300
     || response.issuedAt > Math.floor(now / 1_000) + 60 || response.expiresAt <= Math.floor(now / 1_000)) throw mismatch();
+  if (validateRecoveryHostedAdmission(response.hostedAdmission, { config, wallet: eligibility.wallet })?.available !== true) throw mismatch();
   const expectedId = helperOperationIdentity(config, eligibility.wallet, eligibility.pair);
   if (response.operationId !== expectedId) throw mismatch();
   const expectedMessage = formatRecoveryHelperMessage({

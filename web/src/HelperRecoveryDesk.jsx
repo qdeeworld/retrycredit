@@ -4,7 +4,7 @@ import { AlertCircle, ArrowRight, Check, ChevronRight, ExternalLink, LoaderCircl
 import { checkRecoveryPairEligibility } from "./api.mjs";
 import { discoverHelperRecovery, readHelperOperation, requestHelperChallenge, submitHelperRecovery } from "./recovery-helper-api.mjs";
 import { canContinueHelperAuthorization, clearHelperResume, helperAdmissionAvailable, helperEnabled, helperErrorCopy, helperOperationIsTerminal, helperRequestDefinitelyRefused, readHelperResume, RECOVERY_HELPER_MODE, saveHelperResume, validateHelperChallenge, validateHelperDiscovery, validateHelperOperation } from "./recovery-helper-state.mjs";
-import { recoveryCampaignsMatch, validatePairEligibilityResponse, validateRecoveryPairDraft, walletsMatch } from "./recovery-ui-state.mjs";
+import { recoveryCampaignsMatch, recoveryHostedAdmissionMessage, recoveryHostedAdmissionState, validatePairEligibilityResponse, validateRecoveryPairDraft, walletsMatch } from "./recovery-ui-state.mjs";
 import { readRecoveryPairLink } from "./recovery-pair-handoff.mjs";
 
 const EMPTY_PAIR = { failedTransactionHash: "", successfulTransactionHash: "" };
@@ -42,6 +42,8 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
   const unresolved = Boolean(submitted.current && !helperOperationIsTerminal(operation));
   const locked = busy || unresolved;
   const available = configState === "ready" && helperAdmissionAvailable(config) && online;
+  const pairAdmissionState = eligibility?.eligible ? recoveryHostedAdmissionState({ config, eligibility }) : "available";
+  const pairAdmissionBlocked = pairAdmissionState !== "available";
   const display = helperDeskCopy({ phase, operation, eligibility, config, online });
 
   function setOperationState(next) {
@@ -213,6 +215,11 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
 
   async function authorize() {
     if (!available || !eligibility?.eligible || eligibility.status !== "eligible") return;
+    const admissionState = recoveryHostedAdmissionState({ config: configRef.current, eligibility });
+    if (admissionState !== "available") {
+      setNotice(recoveryHostedAdmissionMessage(admissionState));
+      return;
+    }
     const token = beginAction("connecting");
     if (token === null) return;
     const initialConfig = configRef.current;
@@ -387,11 +394,12 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
 
     {!submitted.current && eligibility?.eligible && <>
       <p className="helper-wallet-note">{account ? <>{connectedSource ? "Connected source owner" : "Connected helper"}: <code>{account}</code></> : "Connect your own wallet to request this recovery. You do not need Creditcoin funds or a network switch."}</p>
-      <button className="primary-action authorization-action" type="button" onClick={connectedSource ? () => onOwnerPair(exactPair(eligibility.pair)) : authorize} disabled={busy || (!connectedSource && !available)} aria-busy={busy} aria-describedby="helper-authorization-note">
-        <span>{connectedSource ? "Continue with owner recovery" : phase === "connecting" ? "Connect your helper wallet" : phase === "signing" ? "Review helper request in your wallet" : account ? "Authorize recovery for this source wallet" : "Connect and help this source wallet"}</span>
+      <button className="primary-action authorization-action" type="button" onClick={connectedSource ? () => onOwnerPair(exactPair(eligibility.pair)) : authorize} disabled={busy || (!connectedSource && (!available || pairAdmissionBlocked))} aria-busy={busy} aria-describedby="helper-authorization-note">
+        <span>{connectedSource ? "Continue with owner recovery" : pairAdmissionBlocked ? "Recovery admission unavailable" : phase === "connecting" ? "Connect your helper wallet" : phase === "signing" ? "Review helper request in your wallet" : account ? "Authorize recovery for this source wallet" : "Connect and help this source wallet"}</span>
         {busy ? <LoaderCircle className="spin" aria-hidden="true" /> : <Wallet aria-hidden="true" />}
       </button>
-      <p id="helper-authorization-note" className="destination-note"><LockKeyhole aria-hidden="true" />{connectedSource ? "Switching to owner recovery only prefills this pair. You will check it again before any owner authorization." : "Explicit helper signature only. The sponsor pays relayer gas; the contract fixes the source wallet as recipient."}</p>
+      <p id="helper-authorization-note" className="destination-note"><LockKeyhole aria-hidden="true" />{connectedSource ? "Switching to owner recovery only prefills this pair. You will check it again before any owner authorization." : pairAdmissionBlocked ? recoveryHostedAdmissionMessage(pairAdmissionState) : "Explicit helper signature only. The sponsor pays relayer gas; the contract fixes the source wallet as recipient."}</p>
+      {pairAdmissionBlocked && <button className="example-action" type="button" onClick={checkPair} disabled={!available || busy}>Refresh recovery availability <Search aria-hidden="true" /></button>}
     </>}
 
     {submitted.current && <section className="helper-operation" aria-label="Public recovery operation">
@@ -404,7 +412,7 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
       {helperOperationIsTerminal(operation) && <button className="secondary-action" type="button" onClick={startAnother}>Start another recovery <ArrowRight aria-hidden="true" /></button>}
     </section>}
 
-    {!available && <p className="helper-availability-note" role="status">{!online ? "You are offline. The current pair is preserved; reconnect to check status." : !helperEnabled(config) ? "Helper admission is unavailable in this release. Saved operation identities remain available for status checks." : config?.helper?.admissionState === "budget-exhausted" ? "The bounded sponsor budget is spent. New requests are disabled; existing operations can still be checked." : config?.helper?.admissionState === "busy" ? "The sponsor is processing another recovery. New requests are temporarily disabled." : "New helper requests are currently paused or the campaign is not open. Public status checks remain available."}</p>}
+    {!available && <p className="helper-availability-note" role="status">{!online ? "You are offline. The current pair is preserved; reconnect to check status." : !helperEnabled(config) ? "Helper admission is unavailable in this release. Saved operation identities remain available for status checks." : config?.helper?.admissionState === "budget-exhausted" ? "The bounded sponsor budget is fully allocated. Reserved capacity may not have been spent. New requests are disabled; existing operations can still be checked." : config?.helper?.admissionState === "busy" ? "The sponsor is processing another recovery. New requests are temporarily disabled." : "New helper requests are currently paused or the campaign is not open. Public status checks remain available."}</p>}
   </section>;
 }
 

@@ -4,7 +4,7 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { getAddress, hexlify, toUtf8Bytes } from "ethers";
 import { canContinueHelperAuthorization, helperErrorCopy, helperOperationIsTerminal, helperRequestDefinitelyRefused, RECOVERY_HELPER_MODE } from "../web/src/recovery-helper-state.mjs";
-import { recoveryCampaignsMatch, validateRecoveryPairDraft, walletsMatch } from "../web/src/recovery-ui-state.mjs";
+import { recoveryCampaignsMatch, recoveryHostedAdmissionMessage, recoveryHostedAdmissionState, validateRecoveryPairDraft, walletsMatch } from "../web/src/recovery-ui-state.mjs";
 
 const SOURCE = readFileSync(new URL("../web/src/HelperRecoveryDesk.jsx", import.meta.url), "utf8");
 const requester = "0x2222222222222222222222222222222222222222";
@@ -33,6 +33,28 @@ test("actual helper authorize handler persists public identity before exactly on
   assert.equal(harness.calls.status, 1);
   assert.equal(harness.context.submitted.current.sourceWallet, recipient);
   assert.equal(harness.state.locked, true);
+});
+
+test("known shared/source admission refusals never open a helper wallet prompt", async () => {
+  const states = ["paused", "busy", "budget-exhausted", "unavailable", "source-reserved"];
+  for (const admissionState of states) {
+    const harness = createHarness();
+    harness.context.eligibility.hostedAdmission = { available: false, admissionState,
+      operation: admissionState === "source-reserved" ? { ...admitted, state: "stopped", reason: "proof-unavailable" } : null };
+    await harness.authorize();
+    assert.equal(harness.calls.connect, 0, admissionState);
+    assert.equal(harness.calls.challenge, 0, admissionState);
+    assert.equal(harness.calls.sign, 0, admissionState);
+    assert.equal(harness.calls.release, 0, admissionState);
+    assert.equal(harness.state.locked, false, admissionState);
+    assert.equal(harness.context.submitted.current, null, admissionState);
+    assert.equal(harness.state.notice, recoveryHostedAdmissionMessage(admissionState));
+  }
+  const missing = createHarness();
+  delete missing.context.eligibility.hostedAdmission;
+  await missing.authorize();
+  assert.equal(missing.calls.connect, 0);
+  assert.match(SOURCE, /disabled=\{busy \|\| \(!connectedSource && \(!available \|\| pairAdmissionBlocked\)\)\}/);
 });
 
 test("duplicate helper clicks share the in-flight action and cannot open another wallet prompt", async () => {
@@ -188,7 +210,8 @@ function createHarness({ signature = "signed-helper-request", signatureError, ch
   const events = [];
   const state = { phase: "eligible", locked: false, notice: "", providerAccount: connectedWallet, operation: null };
   const context = {
-    available: true, eligibility: { eligible: true, status: "eligible", wallet: recipient, pair }, apiOrigin: "https://api.example",
+    available: true, eligibility: { eligible: true, status: "eligible", wallet: recipient, pair,
+      hostedAdmission: { available: true, admissionState: "available", operation: null } }, apiOrigin: "https://api.example",
     configRef: { current: config }, accountRef: { current: requester }, walletGeneration: { current: 0 },
     generation: { current: 0 }, active: { current: true }, actionBusy: { current: false },
     submitted: { current: null }, submittedConfig: { current: null }, operationRef: { current: null },
@@ -210,6 +233,7 @@ function createHarness({ signature = "signed-helper-request", signatureError, ch
       throw new Error("Unexpected wallet action");
     } } },
     getAddress, hexlify, toUtf8Bytes, walletsMatch, recoveryCampaignsMatch, canContinueHelperAuthorization,
+    recoveryHostedAdmissionState, recoveryHostedAdmissionMessage,
     helperOperationIsTerminal, helperRequestDefinitelyRefused, helperErrorCopy, RECOVERY_HELPER_MODE,
   };
   for (const name of ["setOperationState", "beginAction", "finishAction", "current", "acceptOperation"]) {
