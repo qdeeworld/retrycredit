@@ -98,4 +98,3 @@ export const RECOVERY_HELPER_CANDIDATES = Object.freeze([
 ].map(([failedTransactionHash, successfulTransactionHash]) => Object.freeze({
   failedTransactionHash, successfulTransactionHash,
 })));
-
