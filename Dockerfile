@@ -5,6 +5,7 @@ RUN npm ci
 COPY vite.config.mjs ./
 COPY scripts/cloudflare-headers.mjs scripts/verify-web-build-origin.mjs ./scripts/
 COPY web ./web
+COPY src/recovery-pair-report.mjs ./src/recovery-pair-report.mjs
 RUN npm run build:web
 
 FROM node:22-alpine AS runtime
