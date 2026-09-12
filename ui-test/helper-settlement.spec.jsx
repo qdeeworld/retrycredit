@@ -2,6 +2,7 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { HelperRecoveryDesk } from "../web/src/HelperRecoveryDesk.jsx";
+import { HelperEvidenceConflict } from "../web/src/HelperEvidenceConflict.jsx";
 
 const mocks = vi.hoisted(() => ({ read: vi.fn(), check: vi.fn(), evidence: vi.fn(), lock: vi.fn(), submit: vi.fn(), challenge: vi.fn() }));
 vi.mock("../web/src/api.mjs", () => ({ checkRecoveryPairEligibility: mocks.check }));
@@ -28,6 +29,7 @@ const saved = { sourceWallet: source, requester, operationId: `0x${"c".repeat(64
   pair: { failedTransactionHash: hash, successfulTransactionHash: `0x${"b".repeat(64)}` }, createdAt: Date.now() };
 const settled = { ...saved, state: "settled", transactionHash: hash, mode: "community-helper", blockNumber: 12 };
 const receipt = { wallet: source, status: "claimed", eligible: false, pair: saved.pair, release: { transactionHash: hash } };
+const config = { poolAddress: source, campaignNumber: 1, campaign: { creditAmount: "100000000000000000" } };
 let container, root;
 beforeEach(() => {
   vi.clearAllMocks();
@@ -39,11 +41,17 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
 async function mount() {
-  await act(async () => root.render(<HelperRecoveryDesk
-    config={{ poolAddress: source, campaignNumber: 1, campaign: { creditAmount: "100000000000000000" } }}
+  function Harness() {
+    const [evidence, setEvidence] = React.useState({});
+    const acceptEvidence = React.useCallback((value) => { mocks.evidence(value); setEvidence(value); }, []);
+    return <><HelperRecoveryDesk
+    config={config}
     configState="ready" account={requester} online apiOrigin="https://api.example"
-    onConnect={vi.fn()} onOwnerPair={vi.fn()} onLockChange={mocks.lock} onEvidenceChange={mocks.evidence}
-    TransactionField={({ id, label, disabled }) => <label>{label}<input id={id} disabled={disabled} /></label>} />));
+    onConnect={vi.fn()} onOwnerPair={vi.fn()} onLockChange={mocks.lock} onEvidenceChange={acceptEvidence}
+    TransactionField={({ id, label, disabled }) => <label>{label}<input id={id} disabled={disabled} /></label>} />
+    {evidence.helperOperation?.receiptCheck === "conflict" && <HelperEvidenceConflict operation={evidence.helperOperation} />}</>;
+  }
+  await act(async () => root.render(<Harness />));
 }
 const heading = () => container.querySelector("h1").textContent;
 const button = (text) => [...container.querySelectorAll("button")].find((item) => item.textContent.includes(text));
@@ -79,6 +87,9 @@ test.each([
   expect(heading()).toBe("Recovery evidence does not match");
   expect(container.textContent).not.toContain("tCTC released to this source wallet");
   expect(container.querySelector('[role="alert"]').textContent).toContain("conflict");
+  expect(container.querySelector(`a[href="https://etherscan.io/tx/${saved.pair.failedTransactionHash}"]`)).not.toBeNull();
+  expect(container.querySelector(`a[href="https://etherscan.io/tx/${saved.pair.successfulTransactionHash}"]`)).not.toBeNull();
+  expect(container.textContent).not.toContain("No analyzed source pair");
   expectStatusOnly();
   await refresh(); expect(heading()).toBe("Credit reached the source wallet");
 });
