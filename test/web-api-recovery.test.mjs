@@ -64,6 +64,27 @@ test("default config wake still stops after three unavailable responses", async 
   assert.deepEqual(starts, [0, 3_000, 30_000]);
 });
 
+test("signed-fresh and legacy config retain their short default retry schedules", async () => {
+  for (const kind of ["signed-fresh", "legacy"]) {
+    let elapsed = 0;
+    const starts = [];
+    const options = {
+      now: () => elapsed,
+      sleep: async (ms) => { elapsed += ms; },
+      fetchImpl: async (url, request) => {
+        starts.push(elapsed);
+        assert.equal(url, kind === "signed-fresh" ? "/api/recovery/config?fresh=1" : "/api/retry-credit/config");
+        assert.equal(request.headers?.authorization, kind === "signed-fresh" ? "RetryCreditFresh credential" : undefined);
+        return new Response(JSON.stringify({ error: { code: "RECOVERY_UNAVAILABLE", message: "Unavailable" } }), { status: 503 });
+      },
+    };
+    await assert.rejects(kind === "signed-fresh"
+      ? wakeRecoveryConfig({ ...options, fresh: true, freshAuthorization: "RetryCreditFresh credential" })
+      : wakeConfig(options), TemporaryUnavailableError);
+    assert.deepEqual(starts, [0, 3_000, 8_000]);
+  }
+});
+
 test("a timed JSON request bounds both the fetch and response body", async () => {
   const startedAt = Date.now();
 

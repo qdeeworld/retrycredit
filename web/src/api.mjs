@@ -1,10 +1,11 @@
 export const TEMPORARY_UNAVAILABLE_MESSAGE = "RetryCredit is temporarily unavailable. Please try again shortly.";
 export const CONFIG_WAKE_TOTAL_TIMEOUT_MS = 45_000;
 export const CONFIG_WAKE_REQUEST_TIMEOUT_MS = 38_000;
-// Preserve one late retry: a slow first response can outlast both early
-// offsets while the backend is still starting. Keep three reads and the
-// existing 45-second total budget; this does not retry release requests.
-export const CONFIG_WAKE_ATTEMPT_OFFSETS_MS = [0, 3_000, 30_000];
+export const CONFIG_WAKE_ATTEMPT_OFFSETS_MS = [0, 3_000, 8_000];
+// Only unsigned recovery startup reads reserve a late retry. Signed-fresh
+// requests retain their short schedule so stale authorizations do not hold
+// the UI's shared configuration flight for an extra 22 seconds.
+export const RECOVERY_COLD_WAKE_ATTEMPT_OFFSETS_MS = [0, 3_000, 30_000];
 export const RELEASE_TOTAL_TIMEOUT_MS = 15 * 60_000;
 export const RELEASE_REQUEST_TIMEOUT_MS = 150_000;
 export const RELEASE_RETRY_DELAY_MS = 15_000;
@@ -65,6 +66,9 @@ export async function wakeRecoveryConfig({ fresh = false, freshAuthorization, ..
     throw new TypeError("freshAuthorization is invalid");
   }
   return wakeEndpoint({
+    attemptOffsetsMs: fresh === true
+      ? CONFIG_WAKE_ATTEMPT_OFFSETS_MS
+      : RECOVERY_COLD_WAKE_ATTEMPT_OFFSETS_MS,
     ...options,
     path: fresh === true ? "/api/recovery/config?fresh=1" : "/api/recovery/config",
     requestOptions: freshAuthorization === undefined
