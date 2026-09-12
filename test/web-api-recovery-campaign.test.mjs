@@ -731,6 +731,77 @@ test("V2 endpoints require fresh read-only verification and health reports the s
   }, { recoveryV2 });
 });
 
+test("helper routes preserve public read, challenge and async release contracts", async () => {
+  const operationId = `0x${"ab".repeat(32)}`;
+  const operation = { operationId, state: "admitted", mode: "community-helper-v1", requester: wallet };
+  const calls = [];
+  const service = {
+    async helperDiscover(body) { calls.push(["discover", body]); return { status: "found", match: { pair } }; },
+    async helperChallenge(body) { calls.push(["challenge", body]); return { operationId, pair }; },
+    async helperRelease(body) { calls.push(["release", body]); return operation; },
+    async helperOperation(id) { calls.push(["operation", id]); return operation; },
+  };
+  await withServer({ state: "ready", service }, async base => {
+    const discovery = await post(base, "/api/recovery/helper/discover", {});
+    assert.equal(discovery.status, 200);
+    assert.equal((await discovery.json()).status, "found");
+    const challenge = await post(base, "/api/recovery/helper/challenge", { requester: wallet, pair });
+    assert.equal(challenge.status, 200);
+    const release = await post(base, "/api/recovery/helper/release", { operationId, pair });
+    assert.equal(release.status, 202);
+    assert.deepEqual(await release.json(), operation);
+    const read = await fetch(`${base}/api/recovery/helper/operations/${operationId}`);
+    assert.equal(read.status, 200);
+    assert.equal(read.headers.get("cache-control"), "no-store");
+    assert.equal(read.headers.get("access-control-allow-origin"), origin);
+    assert.deepEqual(await read.json(), operation);
+    assert.deepEqual(calls, [["discover", {}], ["challenge", { requester: wallet, pair }],
+      ["release", { operationId, pair }], ["operation", operationId]]);
+    assert.equal((await fetch(`${base}/api/recovery/helper/operations/not-an-operation`)).status, 404);
+    assert.equal(calls.length, 4);
+  });
+});
+
+test("a helper runtime blocks archived proof and payment work even under injected legacy write flags", async () => {
+  let reads = 0;
+  const forbidden = () => assert.fail("archived paid work bypassed helper budget");
+  const campaignWorker = { prepareClaim: forbidden, async getCampaign() { reads++; return { id: 1 }; } };
+  const legacyRetryCreditService = { prepare: forbidden, execute: forbidden, release: forbidden };
+  for (const runtime of [
+    { state: "error", service: null },
+    { state: "ready", service: { helperLedger: {} } },
+  ]) await withServer(runtime, async base => {
+    const proof = await post(base, "/api/campaigns/1/prepare-claim", {});
+    assert.equal(proof.status, 503);
+    assert.equal((await proof.json()).error.code, "LEGACY_PROOF_DISABLED");
+    for (const path of ["/api/retry-credit/prepare", "/api/retry-credit/1/execute", "/api/retry-credit/1/release"]) {
+      const response = await post(base, path, {});
+      assert.equal(response.status, 410);
+    }
+    assert.equal((await fetch(`${base}/api/retry-credit/config`).then(r => r.json())).writesEnabled, false);
+    assert.equal((await fetch(`${base}/api/campaigns/1`)).status, 200);
+  }, { campaignWorker, legacyRetryCreditService, legacyWritesEnabled: true, helperModeConfigured: true });
+  assert.equal(reads, 2);
+});
+
+test("helper actions and public operation reads inherit disabled, waking and V2 verification guards", async () => {
+  const operationId = `0x${"ab".repeat(32)}`;
+  for (const state of ["disabled", "waking", "unverified-v2"]) {
+    const fail = () => assert.fail("guarded helper work must not dispatch");
+    const service = { helperDiscover: fail, helperChallenge: fail, helperRelease: fail, helperOperation: fail,
+      ...(state === "unverified-v2" ? { contractVersion: "v2" } : {}) };
+    const recovery = { state: state === "unverified-v2" ? "ready" : state, service: state === "disabled" ? null : service };
+    const options = state === "unverified-v2" ? { recoveryV2: fixedRecoveryV2Readiness({ ready: false, statusCode: 503 }) } : {};
+    await withServer(recovery, async base => {
+      for (const method of ["discover", "challenge", "release"]) {
+        const response = await post(base, `/api/recovery/helper/${method}`, {});
+        assert.equal(response.status, state === "waking" ? 425 : 503);
+      }
+      assert.equal((await fetch(`${base}/api/recovery/helper/operations/${operationId}`)).status, state === "waking" ? 425 : 503);
+    }, options);
+  }
+});
+
 test("V1 deployment proof cannot authorize a V2 service", async () => {
   const recoveryV2 = fixedRecoveryV2Readiness({ ready: true, statusCode: 200, mode: "armed",
     deploymentState: "finalized", publicProfile: "v1", reason: "FINALIZED_PLUS_TWO_VERIFIED" });

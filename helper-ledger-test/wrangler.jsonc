@@ -1,0 +1,16 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "retrycredit-helper-ledger-test",
+  "main": "../src/helper-ledger-worker.mjs",
+  "compatibility_date": "2026-09-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "HELPER_LEDGER_ENABLED": "true",
+    "HELPER_LEDGER_TOKEN": "test-only-helper-ledger-credential-not-for-deployment",
+    "HELPER_LEDGER_POLICY": "{\"identity\":{\"chainId\":102031,\"poolAddress\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"campaignNumber\":1,\"relayerAddress\":\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"limits\":{\"maxAttempts\":3,\"maxPayouts\":3,\"maxTotalFeeWei\":\"6000000000000000\",\"maxFeeWei\":\"2000000000000000\",\"creditWei\":\"100000000000000000\",\"expiresAt\":2000000000}}"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "HELPER_LEDGER", "class_name": "HelperSpendingLedger" }]
+  },
+  "migrations": [{ "tag": "helper-ledger-sqlite-v1", "new_sqlite_classes": ["HelperSpendingLedger"] }]
+}

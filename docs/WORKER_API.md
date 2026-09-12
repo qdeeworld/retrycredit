@@ -2,7 +2,7 @@
 
 The API operates the selected pre-funded Recovery Campaign for paid Ethereum-mainnet SeaDrop failure-to-completion pairs. Its namespaced Open Pair Intake accepts an exact failed/successful transaction-hash pair, derives the source wallet from live Ethereum facts, authenticates the deployed Creditcoin bindings, and, only when the campaign permits release, asks that wallet for a five-minute offchain consent, builds one pair-local Attestcoin batch, simulates the immutable campaign, and relays the fixed release. Public `/api/recovery/config` identifies the selected contract version and pool. A verified V2 profile can serve discovery and pair checks while predecessor-locked, but cannot authorize or release before its immutable boundary. The earlier three-address discovery index remains a public example and staged-compatibility path; it is not eligibility authority for the intake routes.
 
-The wallet does not submit a transaction, switch networks, deposit an asset, or choose a destination. The contract derives the beneficiary from the proven Ethereum sender. Earlier Sepolia/Uniswap V3 endpoints remain available as an API-level predecessor and for archived evidence. The current Recovery Campaign interface does not fall back to those routes automatically, so their availability alone is not a product rollback.
+The wallet does not submit a transaction, switch networks, deposit an asset, or choose a destination. The contract derives the beneficiary from the proven Ethereum sender. An explicitly configured `community-helper-v1` workflow additionally permits a helper's own wallet to request recovery for that source wallet; this is not the source owner's consent. Owner consent messages and endpoints retain their original meaning. Earlier Sepolia/Uniswap V3 read endpoints remain available as an API-level predecessor and for archived evidence; their writers and legacy proof preparation are isolated from helper mode. The current Recovery Campaign interface does not fall back to those routes automatically, so their availability alone is not a product rollback.
 
 ## Run locally
 
@@ -108,6 +108,10 @@ npm run app:dev
 | `CREDITCOIN_RPC` | Shared Creditcoin Testnet RPC. |
 | `CREDITCOIN_LOG_RPC` | Independent Creditcoin audit RPC used for release receipts and the two-provider V2 deployment observation. It must not resolve to the same canonical URL as `CREDITCOIN_RPC`. |
 | `ATTESTCOIN_PROOF_BUILDER` | Shared Creditcoin Testnet Attestcoin proof-builder URL. |
+| `RETRYCREDIT_HELPER_ENABLED` | Exact `true` enables the optional helper runtime only with an explicitly enabled V2 recovery profile and no legacy/public writers. Default is disabled. |
+| `RETRYCREDIT_HELPER_LEDGER_URL` | Backend-only HTTPS origin of the dedicated spending coordinator; no path, credentials, query or fragment. |
+| `RETRYCREDIT_HELPER_LEDGER_TOKEN` | Server-only coordinator bearer secret. Never expose through `VITE_*`, API configuration, logs or source. |
+| `RETRYCREDIT_HELPER_LEDGER_POLICY` | JSON containing exact `identity` and `limits`, matching the coordinator's immutable stored policy. See [helper configuration](COMMUNITY_HELPER.md#configuration). |
 
 The guarded one-time V2 deployment supervisor also recognizes `RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_MODE`, `RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_REVISION`, `RETRYCREDIT_RECOVERY_V2_PREPARE_ARM_DIGEST`, `RETRYCREDIT_RECOVERY_V2_EXPECTED_TRANSACTION_HASH`, `RETRYCREDIT_RECOVERY_V2_BROADCAST_NOT_BEFORE`, `RETRYCREDIT_RECOVERY_V2_BROADCAST_NOT_AFTER`, and `RETRYCREDIT_RECOVERY_V2_DEPLOYMENT_ARM_DIGEST`. These values bind a reviewed release, exact signed transaction fingerprint, and short broadcast window; they are not normal product configuration. Production reached the terminal `FINALIZED_PLUS_TWO_VERIFIED` state without exposing the signing key or raw transaction.
 
@@ -118,6 +122,8 @@ Hosted recovery can explicitly select `RETRYCREDIT_RECOVERY_ETHEREUM_PROVIDER=th
 The reviewed release carries the V1 predecessor pool and campaign as source defaults, never as implicit V2 activation values. They are selected only when recovery is explicitly enabled with no address override, or when the existing public V3 service runs at the exact production origin with no recovery override. This keeps the isolated production service reproducible without weakening partial-configuration checks. Set `RETRYCREDIT_RECOVERY_ENABLED=false` to disable recovery immediately without removing the archived V3 read, challenge, and status routes. Archived prepare, execute, and release remain HTTP `410` unless their separate write switch is explicitly enabled. The V2 interface will report that recovery is unavailable; it does not rebind itself to the V3 journey.
 
 ## Hosting and rollback
+
+**Once helper coordination is configured, the containment rules in [Community Helper](COMMUNITY_HELPER.md#containment-and-recovery) take precedence over the older rollback instructions below.** Pause `HELPER_LEDGER_ENABLED` on the coordinator while retaining the Node helper profile and status routes. Do not remove or disable the Node coordinator, switch its namespace, delete its state, change the stored policy, or roll back to an uncoordinated owner writer while a coordinated campaign is active. Node startup rejects a disabled helper flag with nonempty ledger settings and rejects simultaneous legacy/public writers. An emergency full service stop may remove availability, but does not erase or reset ledger authority.
 
 The production API authority is the isolated Render service `retrycredit-api` (`srv-da5n322jobas73f8tp70`) at <https://retrycredit-api.onrender.com>. The similarly named Blueprint-created service `retrycredit-api-6fs3` (`srv-da5nh93m8hqs73da7170`) is a separate, non-authoritative deployment. The checked-in `render.yaml` currently describes that duplicate rather than the stable production service and must not be treated as proof of a production deploy. Its Blueprint relationship must be reconciled in authenticated Render controls before the manifest can become deployment authority.
 
@@ -136,11 +142,11 @@ After either operation, verify the exact deployed source, `GET /health`, both co
 - Errors use `{ "error": { "code", "message", "requestId" } }`.
 - Every response includes `x-request-id` for operational correlation.
 - Browser CORS emits the one configured `ALLOWED_ORIGIN`; the Cloudflare response allows `Authorization` for the signed fresh-read preflight. CORS is not authentication and does not block non-browser clients.
-- Recovery release operations are serialized in-process and replay-safe against campaign-scoped onchain state.
+- Without helper configuration, recovery release operations are serialized in-process. With helper configuration, both owner and helper paid paths additionally share one campaign-wide durable spending coordinator; process restarts or replicas do not reset its budget or source locks. Contract replay checks remain authoritative in both profiles.
 - The whole public intake pipeline is bounded to four active requests and sixteen queued requests; source resolution has its own matching bound. Campaign reads share a short generation-safe flight/cache, identical pair lookups share one flight, successful pair validation is held in a bounded 256-entry ten-minute cache, invalid-pair results are held for thirty seconds, one lookup receives at most three configured Ethereum providers, and a lookup times out after twenty seconds. Saturation returns HTTP `429` / `RECOVERY_BUSY` with `Retry-After: 5`.
 - On the isolated Cloudflare read plane, a successful open-pair challenge also returns a stateless `freshReadReceipt`: an HMAC-SHA-256 receipt made with a private key held in the existing pool-and-campaign Durable Object. The receipt binds the exact origin, pool, campaign, source wallet, pair, timestamps, and fresh-config action. `GET /api/recovery/config?fresh=1` accepts only `Authorization: RetryCreditFresh <base64url-json>` containing that receipt and the same exact EIP-191 wallet signature used for release. The Worker verifies the receipt before the wallet signature, then atomically burns the signed authorization and reserves the persisted five-second window before service initialization or provider work. Replay returns HTTP `409` / `RECOVERY_FRESH_READ_AUTHORIZATION_USED`; additional valid authorizations inside the window return HTTP `429` / `RECOVERY_FRESH_READ_THROTTLED` without being consumed. The reservation and replay record remain after provider failure, lost responses, or object eviction. A cold admitted refresh supplies the readiness state read instead of triggering a second campaign read. Ordinary configuration reads and other operations do not consume or extend the window. Missing/corrupt key state, storage failure, or invalid replay state fails closed with HTTP `503` before provider work. The gate removes anonymous fabricated fresh-read monopolization; it is not a comprehensive API-DoS or per-user fairness system, and challenge/discovery workloads retain their separately documented bounds.
 - Cloudflare routes the anonymous V2 deployment health probe through one deterministic observation-only Durable Object, separate from the pool-and-campaign object. A semantic `200` or `503` result is held for thirty seconds, concurrent callers share one live flight, and a durable lease is committed before any provider request so eviction or a failed result write cannot create a retry storm. One refresh performs six bounded HTTP batches containing fourteen JSON-RPC operations across the two independent Creditcoin providers. An expired success is never served after a failed refresh. The persisted identity binds the schema, interval, RPC URLs, canonical observation facts, normalized Git revision, and Cloudflare's immutable Worker version ID; at least one deployment discriminator must be valid. Per-request IDs and current Worker version metadata remain outside the snapshot, while response headers remain `no-store`. This bounds the public probe to one dual-provider observation per interval; it is not caller authentication or generalized API-DoS fairness, and it does not rate-limit discovery or intake.
-- At most eight hosted release operations may be active or queued. Each queued release freshly re-reads campaign and claimant state before requesting an Attestcoin proof. Replay IDs are then derived and checked after proof construction and before simulation, so a closed, full, already-claimed, or consumed release cannot reach the relay step.
+- At most eight hosted release operations may be active or queued locally. In helper mode, the durable coordinator admits only one unresolved spending operation at a time across writers and permanently reserves its attempt, payout allocation and maximum fee before proof construction. Each queued release freshly re-reads campaign and claimant state before requesting an Attestcoin proof. Replay IDs are then derived and checked after proof construction and before simulation, so a closed, full, already-claimed, or consumed release cannot reach the relay step.
 - Existing release receipts are searched in `10,000`-block chunks across the latest `250,000` Creditcoin blocks. Within that supported window, a concurrent or repeated request returns the existing current-campaign release instead of sending a second credit.
 - If the campaign records a wallet claim but its exact `CreditReleased` event is not discoverable inside that bounded window, the service fails closed with HTTP `503` / `RECOVERY_STATE_INCONSISTENT`. It does not reconstruct unverified evidence or send another credit.
 
@@ -163,6 +169,25 @@ On Cloudflare the semantic body is subject to the bounded server-side observatio
 Returns a stable disabled/waking shape until recovery is ready, then the canonical public origin, dedicated public `relayerAddress`, authenticated source and settlement identities, pool/verifier/predicate addresses, exact `contractVersion`, campaign number, immutable terms, live capacity, featured public case, and discovery size. V1 reports campaign-scoped lineage with no predecessor. V2 reports its exact predecessor boundary, sponsor-scoped lineage, and whether releases are unlocked; a fully funded but locked campaign uses `campaign.releaseState: "continuation-waiting"` and `campaign.open: false`. `capabilities.selfServePairIntake` and `capabilities.walletNativeDiscovery` are exactly `true` when those API contracts are present. `consent.scope` is `hosted-relayer` and `consent.protocolEnforced` is `false`: the wallet signature authorizes this hosted service to build and relay the exact pair, but the deployed permissionless campaign contract does not itself verify that offchain signature. `consent.freshReadAdmission` is an exact rollout discriminator: Render returns `anonymous-v1`, while the Cloudflare coordinator returns `pair-signature-v1`. Unknown or missing values fail closed in the browser; a mode change while authorization is active cancels that operation. The browser uses the origin and returned identities to reconstruct the exact five-minute consent before opening `personal_sign`. The service authenticates the exact active runtime bytecode, the exact V1 predecessor runtime for V2, and all native/source bindings before entering `ready`.
 
 The optional exact query `?fresh=1` requests provider-backed campaign truth and cannot be satisfied from the normal short cache. Render's transition mode remains headerless. When configuration advertises `pair-signature-v1`, the browser sends the exact challenge receipt and signature in the bounded `Authorization` envelope and never falls back to an anonymous retry. It retries only the exact forced-refresh throttle, only when the response includes a valid integer `Retry-After`, and only inside its existing bounded configuration-wake budget; every retry reuses the identical header. It waits at least the advertised delay plus at most 250 milliseconds of positive jitter and abandons later attempts if the active wallet/pair operation changed. A used authorization or unresolved fresh result discards the stale qualifying verdict, sends no release request, preserves the entered pair, and requires a new pair check and signature.
+
+When the Node helper profile is configured, configuration additionally contains:
+
+```json
+{
+  "capabilities": { "communityHelper": true },
+  "helper": {
+    "enabled": true,
+    "mode": "community-helper-v1",
+    "recipientConsent": false,
+    "helperReceivesCredit": false,
+    "maxTransactionFeeWei": "2000000000000000",
+    "available": true,
+    "admissionState": "available"
+  }
+}
+```
+
+This is a partial schema example, not a live status assertion. `enabled` identifies configured routes; `available` is a fresh durable-coordinator snapshot for new paid admissions. `admissionState` is `available`, `busy`, `budget-exhausted`, `paused` or `unavailable`. A ledger outage makes paid availability false without disabling read-only pair checking. Clients must retain operation reconciliation when new admissions are unavailable. A positive snapshot is not a reservation: the actual release can still lose a race or fail campaign checks. The optional helper fields are absent from unconfigured profiles and do not change owner consent semantics.
 
 ### `POST /api/recovery/discover`
 
@@ -191,6 +216,8 @@ Request:
 
 The body accepts only this pair object, and the pair accepts only the two distinct 32-byte hashes. No wallet or destination is accepted as authority. The service re-reads both Ethereum transactions and receipts under bounded source-work limits, validates the exact immutable campaign predicate, and derives the claimant from the live source sender. The response includes that derived `wallet`, the full validated pair, campaign amount, status, lineage status, and any exact current-campaign release. V2 distinguishes `claimed-predecessor` and `claimed-sponsor` from a current-campaign receipt. Status `continuation-waiting` keeps the analyzed pair visible but forbids authorization until the immutable predecessor boundary unlocks. Status `processing` means a valid signed release for this exact wallet/pair is already inside hosted preflight, proof, or relay work; clients must check again instead of requesting another signature.
 
+When helper coordination is configured, namespaced eligibility and discovery additionally return `hostedAdmission: { available, admissionState, operation }`. The coordinator reads shared owner/helper spending totals and that source's operation together in one read-only SQLite transaction, not separate global/source RPC snapshots. This is advisory as of that single snapshot: it does not change source `eligible`, reserve an attempt or guarantee later capacity. `admissionState` is `available`, `paused`, `busy`, `budget-exhausted`, `source-reserved` or `unavailable`. `operation` is null unless the source already has a durable operation; then it uses the public status schema below, preserving the actual requester, mode and pair (which may differ from the currently inspected pair). A stopped operation still reserves the source permanently. An expired spending policy is reported as paused. Clients must require both current configuration availability and source-specific admission before connecting or signing, and show refresh/status access when blocked. Missing admission in a helper-configured response must not be treated as available. Unconfigured profiles omit the field and retain the original in-process `processing` behavior.
+
 #### Advisory incident reports
 
 On a semantic `422` / `RECOVERY_PAIR_INVALID`, exact-pair inspection may additionally return `error.diagnostics`. Schema `retrycredit.pair-diagnostics/1` contains `authority: "advisory-source-check"`, `attestationVerified: false`, original `checkedAt`, exact pair, authenticated campaign terms, selected source receipt facts and thirteen fixed-text checks with `pass`, `fail` or `not-checked` status. This optional report is display/export only. It does not change eligibility, native proof or payout authority. Clients must bind it to the requested pair and current pool, campaign, terms hash, amount, deadline and source rule before showing it. Negative cache hits retain the original check time. Partial/inconsistent source facts, provider failures, challenge and release errors do not expose reports. The stable error code/status/message/requestId contract is unchanged.
@@ -209,6 +236,8 @@ Request:
 ```
 
 The service re-resolves the pair, derives its source wallet, requires current eligibility, and returns a canonical 300-second EIP-191 message bound to the public origin, pool, campaign, derived wallet, and both hashes. The browser must reconstruct that message from its live configuration and response before requesting a signature. Cloudflare additionally returns `freshReadReceipt`; Render's `anonymous-v1` response omits it. The receipt is never persisted in browser resume storage and is accepted only in the signed fresh-config header.
+
+With helper coordination enabled, both owner challenge variants and the helper challenge freshly check source-specific and global admission before returning a signable message. Successful responses include `hostedAdmission` with `available: true`, `admissionState: "available"` and `operation: null`; paused, busy, exhausted, unavailable or already-reserved requests are refused without reserving spending or requesting a proof. The owner browser validates this field before signing and repeats its continuation checks after asynchronous wallet/configuration steps. A positive challenge snapshot still cannot guarantee later admission: only the atomic release reservation resolves races.
 
 ### `POST /api/recovery/intake/release`
 
@@ -231,9 +260,64 @@ The wallet is present only so the service can reconstruct and verify the pair-bo
 
 The hosted consent prevents this service from relaying for an unsigned or pair-mutated request. It does not make wallet consent an onchain invariant: another party with a valid Attestcoin proof can call the current permissionless contract, consume a slot, and send the fixed credit only to the proof-derived source wallet. It still cannot substitute a destination or take the credit.
 
+When helper coordination is enabled, this owner route takes the same durable attempt, payout and fee reservation as helper requests. An existing unresolved canonical operation returns `409 RECOVERY_PROCESSING`; a completed onchain claim remains inspectable without starting another paid action. No owner endpoint is an unmetered bypass around the helper envelope.
+
 Malformed bodies and forbidden destination fields return HTTP `400`; invalid, altered, or expired consent returns HTTP `401`. HTTP `409` covers closed, full, claimed, or replayed state. Non-retryable HTTP `422` covers malformed live pair semantics or missing exact source facts (`RECOVERY_PAIR_INVALID`), a signer that differs from the wallet derived from the pair (`RECOVERY_PAIR_WALLET_MISMATCH`), and a release rejected by immutable campaign simulation (`RECOVERY_SIMULATION_REJECTED`). HTTP `425` covers an active release, Attestcoin lag, or a funded V2 continuation still waiting on its predecessor (`RECOVERY_CONTINUATION_WAITING`). HTTP `429` / `RECOVERY_BUSY` covers intake or release queue saturation. Bounded source/state failure returns HTTP `503`, while proof or relay verification may return safe `502`/`503` domain errors. Every error keeps the stable `{ code, message, requestId }` envelope.
 
 The namespaced routes are additive for API-first rollout. The unnamespaced discovery routes below remain functional until the matching frontend release is verified; the public Open Pair Intake uses only the namespaced routes.
+
+## Optional community-helper routes
+
+These Node routes require explicit helper configuration. No destination field is accepted. They do not imply that any particular public deployment has enabled the feature. See [Community Helper](COMMUNITY_HELPER.md) for the durable policy and operational boundaries.
+
+### `POST /api/recovery/helper/discover`
+
+Request: the exact empty JSON object `{}`. No connected wallet or hash input is required. The service checks at most four entries from the 89-pair advisory public catalog, independently validates source/campaign state, and skips sources already held by any durable operation, including an alternate pair. It neither reserves spending nor requests proofs.
+
+Response fields: `status`, `checkedCandidates`, `totalCandidates`, `moreCandidates`, and `match` (ordinary public eligibility result or `null`). `status` is `found`, `none-in-window`, `exhausted` or `unavailable`. A four-entry miss in a larger catalog is `none-in-window`, not evidence the whole catalog is exhausted. Cursor rotation is advisory and does not consume an entitlement. The 35-second discovery pool and normal source-work bounds apply; manual pair intake and address discovery remain separate fallbacks. Catalog membership proves neither native proof availability nor recipient participation.
+
+### `POST /api/recovery/helper/challenge`
+
+```json
+{
+  "requester": "0x...",
+  "pair": { "failedTransactionHash": "0x...", "successfulTransactionHash": "0x..." }
+}
+```
+
+The server independently derives the eligible `sourceWallet`. The requester must be a different wallet; a source wallet requesting its own credit receives `409 RECOVERY_HELPER_USE_OWNER_FLOW` and should use the owner endpoints. A valid helper challenge returns `mode: "community-helper-v1"`, `requester`, `sourceWallet`, exact `pair`, `operationId`, `message`, `issuedAt`, `expiresAt`, `poolAddress` and `campaignNumber`. Reconstruct the message with `formatRecoveryHelperMessage` from `src/recovery-helper-consent.mjs`, binding the configured public origin and settlement chain as well as these exact fields, before asking the requester to sign. Its lifetime is 300 seconds. The message states that the helper receives no credit, cannot choose the destination, does not supply the source owner's consent, and consumes the source wallet's one-time sponsor entitlement if settlement succeeds. It is a distinct EIP-191 message, not an owner consent or token approval.
+
+### `POST /api/recovery/helper/release`
+
+```json
+{
+  "requester": "0x...",
+  "sourceWallet": "0x...",
+  "pair": { "failedTransactionHash": "0x...", "successfulTransactionHash": "0x..." },
+  "operationId": "0x...",
+  "issuedAt": 0,
+  "expiresAt": 0,
+  "signature": "0x..."
+}
+```
+
+Use only those exact fields. The server verifies the helper signature before new source RPC or proof work, refuses an authenticated same-wallet helper with `409 RECOVERY_HELPER_USE_OWNER_FLOW` before admission, then independently rechecks that the pair establishes `sourceWallet`. That echoed source is a signed assertion to check, never payout authority. The durable policy separately requires distinct helper/source addresses. After durable admission, HTTP `202` returns the public operation directly; proof and release continue independently of the browser connection. This is acceptance/status, not a promise that a transaction was broadcast or settled. A duplicate may return the canonical operation created by another helper or the owner; preserve its actual `requester` and `mode` rather than relabelling it.
+
+### `GET /api/recovery/helper/operations/:operationId`
+
+The ID is an exact 32-byte hash. Response fields are `operationId`, `state`, `mode`, `requester`, `sourceWallet`, `pair`, nullable `transactionHash`, nullable `blockNumber`, nullable `reason`, `recipientConsent` and `helperReceivesCredit`. A helper operation reports recipient consent false; a canonical operation originally admitted through the owner route retains mode `owner` and recipient consent true. Neither the signature, private permit, relayer key nor signed transaction bytes are returned.
+
+| State | Meaning |
+| --- | --- |
+| `admitted` | Attempt and worst-case allocation are durably reserved; no transaction hash has been committed. |
+| `broadcast-prepared` | Exact hash and nonce were persisted before a one-shot broadcast permission. Sending or settlement can still be uncertain. |
+| `settled` | The backend observed and validated the matching successful recovery receipt. |
+| `reverted` | The exact transaction has a status-0 receipt; it released no credit. |
+| `stopped` | The operation stopped before a durable transaction preparation; its internal allocation is not refunded. |
+
+Reasons are `eligibility-changed`, `proof-unavailable`, `proof-invalid`, `simulation-rejected`, `fee-cap`, `prebroadcast-failed`, `operator-abandoned`, or `null`. GET can reconcile a saved transaction after a process restart and while ledger admission is paused or expired. It never builds a proof, signs, rebroadcasts or creates a replacement operation. Missing or inconsistent receipts retain uncertainty; a missing receipt is not permission to retry.
+
+Explicit pre-admission refusals such as invalid consent, source mismatch, `HELPER_LEDGER_BUSY`, `HELPER_LEDGER_SOURCE_RESERVED` or `HELPER_LEDGER_BUDGET_EXHAUSTED` do not create an allocation. A timeout, lost response or unknown `5xx` may follow a successful reservation: preserve the canonical operation ID and check status instead of automatically POSTing again. Even a temporary status `404` does not prove a delayed original request can no longer be admitted. Provider failures after admission appear as operation state, not retry permission. Disabled helper routes return `503 RECOVERY_HELPER_DISABLED`.
 
 ## Indexed compatibility routes
 
@@ -273,7 +357,7 @@ Request:
 
 Destination fields are forbidden. After signature verification, the service requests one Attestcoin batch for the exact pair, validates block/hash/order and native transaction indexes, derives the campaign-scoped query and pair IDs, checks replay, simulates `releaseCredit`, and submits through the configured Creditcoin testnet relayer. It then verifies the exact beneficiary balance delta, event fields, campaign count/accounting, and replay markers.
 
-HTTP `425` means the recovery service is waking or the exact Attestcoin batch is not yet ready. The frontend retries only `425` with bounded backoff. Other errors are terminal for that attempt.
+HTTP `425` means the recovery service is waking or the exact Attestcoin batch is not yet ready. The original uncoordinated profile supports bounded `425` retry behavior. With helper coordination configured, an admitted owner operation consumes the same permanent allocation as a helper operation: inspect its canonical operation state instead of treating proof lag as permission to start another paid attempt. Other errors are terminal for that attempt.
 
 HTTP `409` / `RECOVERY_REPLAYED` means an exact query or pair marker is already consumed in the configured campaign but no current-wallet claim resolved to an existing release. This is a release rejection, not an eligibility status. A normal repeat after a completed current-wallet release returns that existing release instead.
 

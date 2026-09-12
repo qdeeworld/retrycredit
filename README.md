@@ -7,9 +7,10 @@ RetryCredit is a pre-funded recovery campaign for an exact Ethereum transaction 
 - [Use the public recovery app](https://retrycredit.dolepee.com)
 - [Inspect the live contracts and receipts](docs/DEPLOYMENTS.md)
 - [Run or integrate the recovery API](docs/WORKER_API.md)
+- [Understand the optional community-helper workflow](docs/COMMUNITY_HELPER.md)
 - Read the [V2 campaign](contracts/src/RetryCreditRecoveryCampaignV2.sol), [V1 predecessor](contracts/src/RetryCreditRecoveryCampaign.sol), [verifier](contracts/src/AttestcoinSeaDropRetryVerifier.sol), and [predicate](contracts/src/SeaDropPaidRetryPredicateV1.sol)
 
-## The recovery path
+## The owner recovery path
 
 1. Connect the Ethereum wallet that paid for the mint, or inspect a public address without connecting. RetryCredit searches a bounded slice of its public transaction history for an exact failed-then-completed SeaDrop retry; the address is a search input, never a payout instruction.
 2. Every discovered candidate is advisory. RetryCredit independently re-reads both mainnet transactions and receipts, validates the funded rule, and derives the source wallet from live facts before showing it as eligible.
@@ -18,13 +19,23 @@ RetryCredit is a pre-funded recovery campaign for an exact Ethereum transaction 
 5. The relayer builds one pair-local Attestcoin batch and simulates the immutable campaign release.
 6. The contract derives the beneficiary from the proven source transaction and releases exactly `0.1 tCTC`. There is no destination field.
 
-Share an exact pair through the ordinary form: the link contains only its two public hashes in a URL fragment. Opening it prefills the form without checking, signing or releasing automatically. The recipient must recheck current campaign eligibility and use the derived source wallet for hosted-relayer consent. A pending submitted recovery takes precedence over a shared link when the same tab resumes.
+Share an exact pair through the ordinary form: the link contains only its two public hashes in a URL fragment. Opening it prefills the form without checking, signing or releasing automatically. An owner request requires the derived source wallet's consent; an explicitly enabled helper request uses the separate role below. A pending submitted recovery takes precedence over a shared link when the same tab resumes.
 
 When complete source facts establish that a pair does not match, the app offers a structured incident summary: which supported checks passed, failed or could not run, the exact public references, check time and campaign terms. The downloadable JSON is advisory—not an Attestcoin proof, ownership signature, reimbursement promise or alternative eligibility authority. Unavailable RPC data remains unavailable, not a rejection report.
 
 The V1 predecessor campaign is intentionally small: three fixed slots, exactly `0.3 tCTC` funded, and unused funds recoverable only by the sponsor after the deadline. Each wallet, query, and pair is consumed within that campaign. Replay state is campaign-scoped so an outsider cannot poison the official campaign with a dust-funded copy.
 
 A reviewed lineage-aware V2 contract is finalized, selected by the public app and funded on Creditcoin Testnet. Its first campaign was funded with ten `0.1 tCTC` credits through September 23, 2026 at 23:59 UTC. The immutable V1 predecessor deadline has passed, so V2 releases are unlocked. After the September 12 operator settlement, nine slots and `0.9 tCTC` accounted funding remained. The public [`/api/recovery/config`](https://retrycredit-api.onrender.com/api/recovery/config) is the source for current pool, capacity and release state. Deployment, a pair check or an operator settlement is not an independently completed owner journey.
+
+## Optional community-helper path
+
+The code supports a separately configured helper workflow; its presence in this repository is not a claim that a public deployment has enabled it. Check `capabilities.communityHelper`, `helper.enabled` and current `helper.available` in API configuration.
+
+When enabled, a visitor can find a recovery to help with, review the independently derived source wallet and fixed credit, connect their own wallet distinct from that source wallet, and sign one exact helper request. A connected source wallet is directed to the owner recovery path instead. The hosted relayer performs the proof and submission. **The original source wallet receives the credit; the helper wallet receives nothing and cannot redirect it.** The source owner need not participate, and a helper signature does not establish recipient consent, demand, or adoption. A completed release consumes that source wallet's one-time sponsor credit.
+
+Helper discovery rotates through a bounded catalog of **89 advisory public hash pairs**, checking at most four per request against ordinary source and campaign validation. These are not 89 users, guaranteed unused credits, or proof-available incidents. Exact-pair entry and public-address checking remain available as advanced fallbacks.
+
+Enabling helper mode also places the existing owner routes inside the same durable spending envelope: at most nine admissions and payout allocations, `0.1 tCTC` per successful release from existing funding, `0.002 tCTC` maximum transaction fee, and `0.018 tCTC` aggregate reserved fee ceiling. No new contract or funding is required. Failed attempts permanently consume their internal allocation; uncertain broadcasts never automatically retry. See [the helper operating model](docs/COMMUNITY_HELPER.md) for status recovery, configuration and safe containment.
 
 ## Why Attestcoin is load-bearing
 

@@ -4,6 +4,7 @@ import {
   AbiCoder,
   Interface,
   Wallet,
+  Transaction,
   ZeroAddress,
   getAddress,
   id,
@@ -30,6 +31,7 @@ import {
 import { MINT_SIGNED_SELECTOR, SEA_DROP_MAINNET, SEA_DROP_INTERFACE } from "../src/seadrop-recovery.mjs";
 import { WorkerError } from "../src/proof-worker.mjs";
 import { isRetryableRecoveryStartupError } from "../src/recovery-startup-lifecycle.mjs";
+import { formatRecoveryHelperMessage } from "../src/recovery-helper-consent.mjs";
 
 const source = new Wallet(`0x${"a1".repeat(32)}`);
 const secondSource = new Wallet(`0x${"a2".repeat(32)}`);
@@ -1603,6 +1605,523 @@ test("batch normalization rejects unexpected hashes and keeps the exact two-entr
   );
 });
 
+test("helper mode is disabled unless the explicit durable budget and V2 signer are configured", async () => {
+  const fixture = serviceFixture();
+  await assert.rejects(fixture.service.helperChallenge({}), { code: "RECOVERY_HELPER_DISABLED" });
+  for (const options of [{}, { helperMaxFeeWei: "0" }, { helperMaxFeeWei: "2000000000000000", configOverride: { contractVersion: "v1" } }]) {
+    assert.throws(() => serviceFixture({ helperLedger: fakeHelperLedger(), ...options }), { code: "INVALID_RECOVERY_CONFIGURATION" });
+  }
+  const splitReadsOnly = fakeHelperLedger();
+  delete splitReadsOnly.admission;
+  assert.throws(() => helperFixture({ helperLedger: splitReadsOnly }), { code: "INVALID_RECOVERY_CONFIGURATION" });
+});
+
+test("helper consent separates requester from source and binds an identity shared across helpers", async () => {
+  const fixture = helperFixture();
+  const first = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+  const second = await fixture.service.helperChallenge({ requester: secondSource.address, pair: pairIdentity() });
+  assert.equal(first.sourceWallet, source.address);
+  assert.equal(first.requester, outsider.address);
+  assert.equal(first.operationId, second.operationId);
+  assert.notEqual(first.message, second.message);
+  assert.match(first.message, /not the source owner's consent/);
+  assert.match(first.message, /helper receives no credit/);
+  const config = await fixture.service.configuration();
+  assert.equal(config.helper.enabled, true);
+  assert.equal(config.helper.recipientConsent, false);
+});
+
+test("the derived source wallet must use owner consent, not a contradictory helper challenge", async () => {
+  const fixture = helperFixture();
+  await assert.rejects(fixture.service.helperChallenge({ requester: source.address.toLowerCase(), pair: pairIdentity() }),
+    { code: "RECOVERY_HELPER_USE_OWNER_FLOW", status: 409 });
+  assert.equal(fixture.pairCalls, 1);
+  assert.equal(fixture.proofCalls, 0);
+  assert.equal(fixture.releaseCalls, 0);
+  assert.equal(fixture.ledger.rows.size, 0);
+  const ownerChallenge = await fixture.service.intakeChallenge({ pair: pairIdentity() });
+  assert.equal(ownerChallenge.wallet, source.address);
+  assert.match(ownerChallenge.message, /RetryCredit recovery consent/);
+});
+
+test("a correctly signed same-wallet helper request is refused before source, ledger or proof work", async () => {
+  const fixture = helperFixture();
+  const original = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+  const ownerAsHelper = { ...original, requester: source.address };
+  ownerAsHelper.message = formatRecoveryHelperMessage({ ...ownerAsHelper,
+    ...ownerAsHelper.pair, origin: "https://retrycredit.example" });
+  const request = await signedHelperRequest(ownerAsHelper, source);
+  const pairCalls = fixture.pairCalls;
+  fixture.ledger.read = async () => { assert.fail("same-wallet helper must not read or reserve ledger state"); };
+  fixture.ledger.reserve = async () => { assert.fail("same-wallet helper must not reserve spending"); };
+  await assert.rejects(fixture.service.helperRelease(request), { code: "RECOVERY_HELPER_USE_OWNER_FLOW", status: 409 });
+  assert.equal(fixture.pairCalls, pairCalls);
+  assert.equal(fixture.proofCalls, 0);
+  assert.equal(fixture.releaseCalls, 0);
+  assert.equal(fixture.ledger.rows.size, 0);
+  await assert.rejects(fixture.service.helperRelease({ ...request, signature: await outsider.signMessage(ownerAsHelper.message) }),
+    { code: "RECOVERY_SIGNATURE_INVALID", status: 401 });
+});
+
+test("helper policy is bound to the exact writer identity and funded credit before admission", async () => {
+  for (const changed of [
+    { chainId: 1 }, { poolAddress: outsider.address }, { campaignNumber: 8 }, { relayerAddress: outsider.address },
+  ]) {
+    const ledger = fakeHelperLedger();
+    Object.assign(ledger.policy.identity, changed);
+    assert.throws(() => helperFixture({ helperLedger: ledger }), { code: "INVALID_RECOVERY_CONFIGURATION" });
+  }
+  const ledger = fakeHelperLedger();
+  ledger.policy.limits.creditWei = "1";
+  const fixture = helperFixture({ helperLedger: ledger });
+  const challenge = await helperFixture().service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+  await assert.rejects(fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() }), { code: "INVALID_RECOVERY_CONFIGURATION" });
+  await assert.rejects(fixture.service.intakeChallenge({ pair: pairIdentity() }), { code: "INVALID_RECOVERY_CONFIGURATION" });
+  await assert.rejects(fixture.service.challenge(source.address), { code: "INVALID_RECOVERY_CONFIGURATION" });
+  assert.equal((await fixture.service.intakeEligibility({ pair: pairIdentity() })).hostedAdmission.admissionState, "unavailable");
+  await assert.rejects(fixture.service.helperRelease(await signedHelperRequest(challenge, outsider)), { code: "INVALID_RECOVERY_CONFIGURATION" });
+  assert.equal(fixture.proofCalls, 0);
+  assert.equal(ledger.rows.size, 0);
+  const lateLedger = fakeHelperLedger();
+  lateLedger.policy.limits.expiresAt = now + 3601;
+  const lateFixture = helperFixture({ helperLedger: lateLedger });
+  await assert.rejects(lateFixture.service.readiness(), { code: "INVALID_RECOVERY_CONFIGURATION" });
+  await assert.rejects(lateFixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() }), { code: "INVALID_RECOVERY_CONFIGURATION" });
+  await assert.rejects(lateFixture.service.intakeChallenge({ pair: pairIdentity() }), { code: "INVALID_RECOVERY_CONFIGURATION" });
+  await assert.rejects(lateFixture.service.challenge(source.address), { code: "INVALID_RECOVERY_CONFIGURATION" });
+  assert.equal((await lateFixture.service.configuration()).helper.admissionState, "unavailable");
+  await assert.rejects(lateFixture.service.helperRelease(await signedHelperRequest(challenge, outsider)), { code: "INVALID_RECOVERY_CONFIGURATION" });
+  assert.equal(lateFixture.proofCalls, 0);
+});
+
+test("helper availability follows the durable budget without taking read-only recovery offline", async () => {
+  const fixture = helperFixture();
+  assert.equal((await fixture.service.configuration()).helper.admissionState, "available");
+  for (const [expected, patch] of [
+    ["paused", { enabled: false }],
+    ["busy", { activeOperationId: `0x${"aa".repeat(32)}` }],
+    ["budget-exhausted", { payouts: 9 }],
+  ]) {
+    fixture.ledger.inspect = async () => ({ enabled: true, attempts: 0, payouts: 0,
+      reservedFeeWei: "0", activeOperationId: null, ...patch });
+    const config = await fixture.service.configuration();
+    assert.equal(config.enabled, true);
+    assert.equal(config.helper.enabled, true);
+    assert.equal(config.helper.available, false);
+    assert.equal(config.helper.admissionState, expected);
+  }
+  fixture.ledger.inspect = async () => { throw new Error("private coordinator outage"); };
+  const config = await fixture.service.configuration();
+  assert.equal(config.enabled, true);
+  assert.equal(config.helper.admissionState, "unavailable");
+  assert.equal((await fixture.service.intakeEligibility({ pair: pairIdentity() })).eligible, true);
+  assert.equal(fixture.proofCalls, 0);
+});
+
+test("owner and helper challenges expose fresh hosted admission without changing helper-disabled responses", async () => {
+  const fixture = helperFixture();
+  const available = { available: true, admissionState: "available", operation: null };
+  assert.deepEqual((await fixture.service.intakeEligibility({ pair: pairIdentity() })).hostedAdmission, available);
+  assert.deepEqual((await fixture.service.challenge(source.address)).hostedAdmission, available);
+  assert.deepEqual((await fixture.service.intakeChallenge({ pair: pairIdentity() })).hostedAdmission, available);
+  assert.deepEqual((await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() })).hostedAdmission, available);
+  const legacy = serviceFixture();
+  for (const result of [await legacy.service.intakeEligibility({ pair: pairIdentity() }),
+    await legacy.service.challenge(source.address), await legacy.service.intakeChallenge({ pair: pairIdentity() })]) {
+    assert.equal(Object.hasOwn(result, "hostedAdmission"), false);
+  }
+  assert.equal(fixture.ledger.rows.size, 0);
+  assert.equal(fixture.proofCalls, 0);
+});
+
+test("fresh hosted admission blocks futile owner and helper signatures while preserving qualified discovery", async () => {
+  for (const [state, code, mutate] of [
+    ["paused", "HELPER_LEDGER_PAUSED", ledger => setAdmissionSnapshot(ledger, { ...admissionSnapshot(), enabled: false })],
+    ["busy", "HELPER_LEDGER_BUSY", ledger => setAdmissionSnapshot(ledger, { ...admissionSnapshot(), activeOperationId: `0x${"aa".repeat(32)}` })],
+    ["budget-exhausted", "HELPER_LEDGER_BUDGET_EXHAUSTED", ledger => setAdmissionSnapshot(ledger, { ...admissionSnapshot(), attempts: 12 })],
+    ["budget-exhausted", "HELPER_LEDGER_BUDGET_EXHAUSTED", ledger => setAdmissionSnapshot(ledger, { ...admissionSnapshot(), payouts: 9 })],
+    ["budget-exhausted", "HELPER_LEDGER_BUDGET_EXHAUSTED", ledger => setAdmissionSnapshot(ledger, { ...admissionSnapshot(), reservedFeeWei: "18000000000000000" })],
+    ["unavailable", "RECOVERY_HELPER_UNAVAILABLE", ledger => { ledger.inspect = ledger.admission = async () => { throw new Error("private outage"); }; }],
+    ["unavailable", "RECOVERY_HELPER_UNAVAILABLE", ledger => { ledger.admission = async () => { throw new Error("atomic source read outage"); }; }],
+    ["paused", "HELPER_LEDGER_PAUSED", (_ledger, fixture) => { fixture.setNow(now + 1_800); }],
+  ]) {
+    const ledger = fakeHelperLedger();
+    ledger.policy.limits.expiresAt = now + 1_800;
+    const fixture = helperFixture({ helperLedger: ledger, helperCandidates: [pairIdentity()],
+      walletDiscovery: async () => ({ transactions: [], pages: 1, truncated: false, pairs: [pairIdentity()] }) });
+    // An earlier configuration response cannot authorize a later signature.
+    assert.equal((await fixture.service.configuration()).helper.available, true);
+    ledger.reserve = async () => { assert.fail("advisory reads must not reserve"); };
+    mutate(ledger, fixture);
+    const eligibility = await fixture.service.intakeEligibility({ pair: pairIdentity() });
+    assert.equal(eligibility.eligible, true);
+    assert.equal(eligibility.status, "eligible");
+    assert.deepEqual(eligibility.hostedAdmission, { available: false, admissionState: state, operation: null });
+    const discovery = await fixture.service.discover(source.address);
+    assert.equal(discovery.matches[0].eligible, true);
+    assert.deepEqual(discovery.matches[0].hostedAdmission, eligibility.hostedAdmission);
+    for (const challenge of [() => fixture.service.challenge(source.address),
+      () => fixture.service.intakeChallenge({ pair: pairIdentity() }),
+      () => fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() })]) {
+      await assert.rejects(challenge(), { code });
+    }
+    assert.equal(fixture.proofCalls, 0);
+    assert.equal(fixture.releaseCalls, 0);
+    assert.equal(ledger.rows.size, 0);
+  }
+});
+
+test("a stopped source operation on a different pair blocks fresh signatures but not source eligibility", async () => {
+  const fixture = helperFixture({ walletDiscovery: async () => ({ transactions: [], pages: 1, truncated: false, pairs: [pairIdentity()] }) });
+  const original = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+  const alternatePair = pairIdentity(`0x${"77".repeat(32)}`, `0x${"78".repeat(32)}`);
+  const operation = { ...original, operationId: `0x${"79".repeat(32)}`, pair: alternatePair,
+    state: "stopped", reason: "proof-unavailable", permitToken: "private-test-permit", signature: "private-test-signature" };
+  fixture.ledger.rows.set(operation.operationId, operation);
+  fixture.ledger.reserve = async () => { assert.fail("source-status reads must not reserve"); };
+  const result = await fixture.service.intakeEligibility({ pair: pairIdentity() });
+  assert.equal(result.eligible, true);
+  assert.equal(result.hostedAdmission.admissionState, "source-reserved");
+  assert.equal(result.hostedAdmission.available, false);
+  assert.deepEqual(result.hostedAdmission.operation.pair, alternatePair);
+  assert.equal(result.hostedAdmission.operation.mode, "community-helper-v1");
+  assert.equal(result.hostedAdmission.operation.requester, outsider.address);
+  assert.equal(result.hostedAdmission.operation.sourceWallet, source.address);
+  assert.equal(JSON.stringify(result).includes("private-test"), false);
+  assert.deepEqual((await fixture.service.discover(source.address)).matches[0].hostedAdmission, result.hostedAdmission);
+  for (const challenge of [() => fixture.service.challenge(source.address),
+    () => fixture.service.intakeChallenge({ pair: pairIdentity() }),
+    () => fixture.service.helperChallenge({ requester: secondSource.address, pair: pairIdentity() })]) {
+    await assert.rejects(challenge(), { code: "RECOVERY_PROCESSING" });
+  }
+  assert.equal(fixture.proofCalls, 0);
+  assert.equal(fixture.releaseCalls, 0);
+});
+
+function admissionSnapshot() {
+  return { enabled: true, attempts: 0, payouts: 0, reservedFeeWei: "0", activeOperationId: null };
+}
+
+function setAdmissionSnapshot(ledger, snapshot) {
+  ledger.inspect = async () => ({ ...snapshot });
+  ledger.admission = async ({ sourceWallet }) => ({ ...snapshot, sourceWallet, operation: null });
+}
+
+test("hosted eligibility and all challenge variants use one atomic source-admission RPC without split-read fallback", async () => {
+  const fixture = helperFixture({ helperCandidates: [pairIdentity()],
+    walletDiscovery: async () => ({ transactions: [], pages: 1, truncated: false, pairs: [pairIdentity()] }) });
+  fixture.ledger.inspect = async () => { assert.fail("hosted source admission must not call separate inspect"); };
+  fixture.ledger.readSource = async () => { assert.fail("hosted source admission must not call separate readSource"); };
+  fixture.ledger.reserve = async () => { assert.fail("read-only admission must not reserve"); };
+  const originalAdmission = fixture.ledger.admission;
+  let reads = 0;
+  fixture.ledger.admission = async input => { reads += 1; return originalAdmission(input); };
+  assert.equal((await fixture.service.intakeEligibility({ pair: pairIdentity() })).hostedAdmission.available, true);
+  assert.equal((await fixture.service.discover(source.address)).matches[0].hostedAdmission.available, true);
+  assert.equal((await fixture.service.helperDiscover({})).match.hostedAdmission.available, true);
+  assert.equal((await fixture.service.challenge(source.address)).hostedAdmission.available, true);
+  assert.equal((await fixture.service.intakeChallenge({ pair: pairIdentity() })).hostedAdmission.available, true);
+  assert.equal((await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() })).hostedAdmission.available, true);
+  assert.equal(reads, 6);
+  // Another source can reserve after a good advisory snapshot; the next snapshot
+  // must observe that active atom, not combine earlier totals with a later source read.
+  fixture.ledger.rows.set("competing-operation", { operationId: `0x${"aa".repeat(32)}`,
+    sourceWallet: secondSource.address, state: "admitted" });
+  const later = await fixture.service.intakeEligibility({ pair: pairIdentity() });
+  assert.equal(later.eligible, true);
+  assert.deepEqual(later.hostedAdmission, { available: false, admissionState: "busy", operation: null });
+  for (const challenge of [() => fixture.service.challenge(source.address),
+    () => fixture.service.intakeChallenge({ pair: pairIdentity() }),
+    () => fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() })]) {
+    await assert.rejects(challenge(), { code: "HELPER_LEDGER_BUSY" });
+  }
+  assert.equal(reads, 10);
+  assert.equal(fixture.proofCalls, 0);
+  assert.equal(fixture.releaseCalls, 0);
+});
+
+test("helper signatures reject tampering and old owner signatures before live or proof work", async () => {
+  const fixture = helperFixture();
+  const challenge = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+  const request = await signedHelperRequest(challenge, outsider);
+  const pairsBefore = fixture.pairCalls;
+  for (const bad of [
+    { ...request, requester: secondSource.address },
+    { ...request, sourceWallet: outsider.address },
+    { ...request, operationId: `0x${"99".repeat(32)}` },
+    { ...request, expiresAt: request.expiresAt + 1 },
+    { ...request, pair: pairIdentity(successHash, failedHash) },
+    { ...request, recipient: outsider.address },
+    { ...request, signature: await outsider.signMessage("RetryCredit recovery consent") },
+  ]) await assert.rejects(fixture.service.helperRelease(bad));
+  assert.equal(fixture.pairCalls, pairsBefore);
+  assert.equal(fixture.proofCalls, 0);
+  assert.equal(fixture.ledger.rows.size, 0);
+});
+
+test("even a valid helper signature cannot substitute the independently derived source", async () => {
+  const fixture = helperFixture();
+  const challenge = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+  const { helperOperationId } = await import("../src/helper-ledger-policy.mjs");
+  const changed = { ...challenge, sourceWallet: secondSource.address };
+  changed.operationId = helperOperationId({ chainId: 102031, poolAddress, campaignNumber: 7, relayerAddress: relayer.address }, changed.sourceWallet, changed.pair);
+  changed.message = formatRecoveryHelperMessage({ ...changed, origin: "https://retrycredit.example", ...changed.pair });
+  await assert.rejects(fixture.service.helperRelease(await signedHelperRequest(changed, outsider)), { code: "RECOVERY_PAIR_WALLET_MISMATCH" });
+  assert.equal(fixture.proofCalls, 0);
+  assert.equal(fixture.ledger.rows.size, 0);
+});
+
+test("helper returns durable status while proof runs, and only the source receives the fixed credit", async () => {
+  let unblock;
+  const fixture = helperFixture({ proofBuilderOverride: async ({ resolved }) => {
+    await new Promise(resolve => { unblock = resolve; });
+    return { success: true, data: batchProofFixture(resolved) };
+  } });
+  const challenge = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+  // Both helpers can obtain advisory consent before either reserves the source.
+  const second = await fixture.service.helperChallenge({ requester: secondSource.address, pair: pairIdentity() });
+  const result = await fixture.service.helperRelease(await signedHelperRequest(challenge, outsider));
+  assert.equal(result.state, "admitted");
+  while (!unblock) await nextTurn();
+  assert.equal((await fixture.service.helperOperation(result.operationId)).state, "admitted");
+  await assert.rejects(fixture.service.helperChallenge({ requester: secondSource.address, pair: pairIdentity() }), { code: "RECOVERY_PROCESSING" });
+  const duplicate = await fixture.service.helperRelease(await signedHelperRequest(second, secondSource));
+  assert.equal(duplicate.operationId, result.operationId);
+  assert.equal(fixture.proofCalls, 1);
+  unblock();
+  await fixture.service.helperOperations.get(result.operationId);
+  const settled = await fixture.service.helperOperation(result.operationId);
+  assert.equal(settled.state, "settled");
+  assert.equal(settled.sourceWallet, source.address);
+  assert.equal(settled.helperReceivesCredit, false);
+  assert.equal(fixture.balance(), parseEther("0.01"));
+  assert.equal(fixture.releaseCalls, 1);
+  assert.equal(fixture.ledger.prepares, 1);
+  assert.equal(JSON.stringify(settled).includes("permitToken"), false);
+  assert.equal(JSON.stringify(settled).includes("signature"), false);
+});
+
+test("owner consent semantics remain unchanged but paid execution shares helper admission", async () => {
+  const fixture = helperFixture();
+  const challenge = await fixture.service.intakeChallenge({ pair: pairIdentity() });
+  assert.match(challenge.message, /RetryCredit recovery consent/);
+  assert.doesNotMatch(challenge.message, /community helper/);
+  const result = await fixture.service.intakeRelease(await signedIntakeRequest(challenge, source));
+  assert.equal(result.status, "released");
+  assert.equal([...fixture.ledger.rows.values()][0].mode, "owner");
+  assert.equal(fixture.ledger.prepares, 1);
+});
+
+test("durable coordinator rejection stops both owner and helper before proof work", async () => {
+  for (const owner of [false, true]) {
+    const ledger = fakeHelperLedger({ reserveError: Object.assign(new Error("secret"), { code: "HELPER_LEDGER_BUDGET_EXHAUSTED", status: 429 }) });
+    const fixture = helperFixture({ helperLedger: ledger });
+    if (owner) {
+      const challenge = await fixture.service.intakeChallenge({ pair: pairIdentity() });
+      await assert.rejects(fixture.service.intakeRelease(await signedIntakeRequest(challenge, source)), { code: "HELPER_LEDGER_BUDGET_EXHAUSTED" });
+    } else {
+      const challenge = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+      await assert.rejects(fixture.service.helperRelease(await signedHelperRequest(challenge, outsider)), { code: "HELPER_LEDGER_BUDGET_EXHAUSTED" });
+    }
+    assert.equal(fixture.proofCalls, 0);
+    assert.equal(fixture.releaseCalls, 0);
+  }
+});
+
+test("proof and fee failures consume their admission without sending or retrying", async () => {
+  for (const options of [
+    { proofResult: { success: false } },
+    { ccProviderOverride: { async getFeeData() { return { gasPrice: 1_000_000_000_000n }; } } },
+    { ccProviderOverride: { async getTransactionCount(_address, tag) { return tag === "pending" ? 11 : 10; } } },
+  ]) {
+    const fixture = helperFixture(options);
+    const challenge = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+    const request = await signedHelperRequest(challenge, outsider);
+    const operation = await fixture.service.helperRelease(request);
+    await fixture.service.helperOperations.get(operation.operationId);
+    assert.equal((await fixture.service.helperOperation(operation.operationId)).state, "stopped");
+    await fixture.service.helperRelease(request);
+    assert.equal(fixture.proofCalls, 1);
+    assert.equal(fixture.releaseCalls, 0);
+    assert.equal(fixture.ledger.prepares, 0);
+  }
+});
+
+test("lost preparation acknowledgment and ambiguous broadcast never release the durable lock or resend", async () => {
+  for (const stage of ["prepare", "broadcast"]) {
+    const fixture = helperFixture({
+      helperLedger: fakeHelperLedger({ losePrepareAck: stage === "prepare" }),
+      ccProviderOverride: stage === "broadcast" ? { async broadcastTransaction() { throw new Error("unknown response"); } } : {},
+    });
+    const challenge = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+    const request = await signedHelperRequest(challenge, outsider);
+    const result = await fixture.service.helperRelease(request);
+    await fixture.service.helperOperations.get(result.operationId);
+    const status = await fixture.service.helperOperation(result.operationId);
+    assert.equal(status.state, "broadcast-prepared");
+    assert.match(status.transactionHash, /^0x[0-9a-f]{64}$/);
+    await fixture.service.helperRelease(request);
+    assert.equal(fixture.proofCalls, 1);
+    assert.equal(fixture.releaseCalls, 0);
+    assert.equal(fixture.ledger.prepares, 1);
+  }
+});
+
+test("helper status reconciles a mined receipt after a lost completion response without new work", async () => {
+  const fixture = helperFixture({ helperLedger: fakeHelperLedger({ loseCompleteOnce: true }) });
+  const challenge = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+  const operation = await fixture.service.helperRelease(await signedHelperRequest(challenge, outsider));
+  await fixture.service.helperOperations.get(operation.operationId);
+  assert.equal(fixture.ledger.rows.get(operation.operationId).state, "broadcast-prepared");
+  fixture.service.helperOperations.clear();
+  assert.equal((await fixture.service.helperOperation(operation.operationId)).state, "settled");
+  assert.equal(fixture.proofCalls, 1);
+  assert.equal(fixture.releaseCalls, 1);
+});
+
+test("helper broadcast guard stays authoritative after proof and after durable transaction preparation", async () => {
+  for (const failAt of [1, 2]) {
+    let calls = 0;
+    const fixture = helperFixture({ beforeBroadcast() {
+      if (++calls === failAt) throw new WorkerError("RECOVERY_VERIFICATION_REQUIRED", "Verification unavailable", 503);
+    } });
+    const challenge = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+    const operation = await fixture.service.helperRelease(await signedHelperRequest(challenge, outsider));
+    await fixture.service.helperOperations.get(operation.operationId);
+    const status = await fixture.service.helperOperation(operation.operationId);
+    assert.equal(status.state, failAt === 1 ? "stopped" : "broadcast-prepared");
+    assert.equal(fixture.releaseCalls, 0);
+  }
+});
+
+test("helper restart receipt reconciliation refuses a success without the exact pool release", async () => {
+  const fixture = helperFixture({ ccProviderOverride: { async broadcastTransaction() { throw new Error("ambiguous"); } } });
+  const challenge = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+  const operation = await fixture.service.helperRelease(await signedHelperRequest(challenge, outsider));
+  await fixture.service.helperOperations.get(operation.operationId);
+  const saved = fixture.ledger.rows.get(operation.operationId);
+  fixture.service.ccProvider.getTransactionReceipt = async () => ({ hash: saved.transactionHash, status: 1, blockNumber: 501, logs: [] });
+  const result = await fixture.service.helperOperation(operation.operationId);
+  assert.equal(result.state, "broadcast-prepared");
+  assert.equal(fixture.proofCalls, 1);
+  assert.equal(fixture.releaseCalls, 0);
+});
+
+test("a confirmed reverted helper transaction stays consumed and releases no credit", async () => {
+  const fixture = helperFixture({ ccProviderOverride: { async broadcastTransaction() { throw new Error("ambiguous"); } } });
+  const challenge = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+  const operation = await fixture.service.helperRelease(await signedHelperRequest(challenge, outsider));
+  await fixture.service.helperOperations.get(operation.operationId);
+  const saved = fixture.ledger.rows.get(operation.operationId);
+  fixture.service.ccProvider.getTransactionReceipt = async () => ({ hash: saved.transactionHash, status: 0, blockNumber: 501, logs: [] });
+  assert.equal((await fixture.service.helperOperation(operation.operationId)).state, "reverted");
+  assert.equal(fixture.balance(), 0n);
+  await fixture.service.helperRelease(await signedHelperRequest(challenge, outsider));
+  assert.equal(fixture.proofCalls, 1);
+});
+
+test("bounded helper discovery derives a source without wallet, proof, or spending admission", async () => {
+  const fixture = helperFixture({ helperCandidates: [pairIdentity()] });
+  const result = await fixture.service.helperDiscover({});
+  assert.equal(result.status, "found");
+  assert.equal(result.match.wallet, source.address);
+  assert.equal(result.checkedCandidates, 1);
+  assert.equal(fixture.proofCalls, 0);
+  assert.equal(fixture.ledger.rows.size, 0);
+  await assert.rejects(fixture.service.helperDiscover({ recipient: outsider.address }), { code: "RECOVERY_REQUEST_INVALID" });
+});
+
+test("helper discovery bounds a pass to four candidates and distinguishes partial from exhaustion", async () => {
+  const candidates = Array.from({ length: 6 }, (_, index) => pairIdentity(`0x${String(80 + index).repeat(32)}`, `0x${String(90 + index).repeat(32)}`));
+  const fixture = helperFixture({ helperCandidates: candidates, pairResolverOverride: () => {
+    throw new WorkerError("RECOVERY_PAIR_INVALID", "No match", 422);
+  } });
+  const result = await fixture.service.helperDiscover({});
+  assert.equal(result.status, "none-in-window");
+  assert.equal(result.checkedCandidates, 4);
+  assert.equal(result.moreCandidates, true);
+  assert.equal(fixture.pairCalls, 4);
+  assert.equal(fixture.proofCalls, 0);
+  const empty = helperFixture({ helperCandidates: [] });
+  assert.equal((await empty.service.helperDiscover({})).status, "exhausted");
+});
+
+test("helper discovery skips a source reserved under a different pair", async () => {
+  const fixture = helperFixture({ helperCandidates: [pairIdentity()] });
+  const challenge = await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() });
+  fixture.ledger.rows.set("unrelated-pair-id", { ...challenge, pair: pairIdentity(`0x${"77".repeat(32)}`, `0x${"78".repeat(32)}`), state: "stopped" });
+  const result = await fixture.service.helperDiscover({});
+  assert.equal(result.status, "exhausted");
+  assert.equal(result.match, null);
+  assert.equal(fixture.proofCalls, 0);
+});
+
+function helperFixture(options = {}) {
+  const ledger = options.helperLedger ?? fakeHelperLedger();
+  const fixture = serviceFixture({ helperMaxFeeWei: "2000000000000000", ...options,
+    helperLedger: ledger, configOverride: { contractVersion: "v2", ...options.configOverride } });
+  return { ...fixture, ledger, get proofCalls() { return fixture.proofCalls; },
+    get pairCalls() { return fixture.pairCalls; }, get releaseCalls() { return fixture.releaseCalls; } };
+}
+
+async function signedHelperRequest(challenge, signer) {
+  const { requester, sourceWallet, pair, operationId, issuedAt, expiresAt } = challenge;
+  return { requester, sourceWallet, pair, operationId, issuedAt, expiresAt, signature: await signer.signMessage(challenge.message) };
+}
+
+function fakeHelperLedger({ reserveError, losePrepareAck = false, loseCompleteOnce = false } = {}) {
+  const rows = new Map();
+  let prepares = 0;
+  const snapshot = () => ({ enabled: true, attempts: rows.size, payouts: rows.size,
+    reservedFeeWei: (BigInt(rows.size) * 2000000000000000n).toString(),
+    activeOperationId: [...rows.values()].find(row => ["admitted", "broadcast-prepared"].includes(row.state))?.operationId ?? null });
+  return {
+    policy: {
+      identity: { chainId: 102031, poolAddress, campaignNumber: 7, relayerAddress: relayer.address },
+      limits: { maxAttempts: 12, maxPayouts: 9, maxTotalFeeWei: "18000000000000000",
+        maxFeeWei: "2000000000000000", creditWei: parseEther("0.01").toString(), expiresAt: now + 3600 },
+    },
+    rows, get prepares() { return prepares; },
+    async inspect() { return snapshot(); },
+    async admission({ sourceWallet }) { return { ...snapshot(), sourceWallet,
+      operation: [...rows.values()].find(row => row.sourceWallet.toLowerCase() === sourceWallet.toLowerCase()) ?? null }; },
+    async read({ operationId }) { return { operation: rows.has(operationId) ? { ...rows.get(operationId) } : null }; },
+    async readSource({ sourceWallet }) { return { operation: [...rows.values()].find(row => row.sourceWallet.toLowerCase() === sourceWallet.toLowerCase()) ?? null }; },
+    async reserve(input) {
+      if (reserveError) throw reserveError;
+      if (rows.has(input.operationId)) return { created: false, operation: { ...rows.get(input.operationId) } };
+      if ([...rows.values()].some(row => row.sourceWallet === input.sourceWallet || ["admitted", "broadcast-prepared"].includes(row.state))) {
+        throw Object.assign(new Error("busy"), { code: "HELPER_LEDGER_BUSY", status: 409 });
+      }
+      const operation = { ...input, state: "admitted" };
+      rows.set(input.operationId, operation);
+      return { created: true, permitToken: "private-test-permit", operation: { ...operation } };
+    },
+    async prepareBroadcast({ operationId, transactionHash, nonce }) {
+      prepares += 1;
+      const row = rows.get(operationId);
+      if (row.state !== "admitted") return { broadcastPermit: false };
+      Object.assign(row, { state: "broadcast-prepared", transactionHash, nonce });
+      if (losePrepareAck) throw new Error("lost acknowledgment");
+      return { broadcastPermit: true, operation: { ...row } };
+    },
+    async failBeforeBroadcast({ operationId, reason }) {
+      const row = rows.get(operationId);
+      assert.equal(row.state, "admitted");
+      Object.assign(row, { state: "stopped", reason });
+      return { operation: { ...row } };
+    },
+    async complete(input) {
+      assert.deepEqual(Object.keys(input).sort(), ["blockNumber", "operationId", "receiptStatus", "transactionHash"]);
+      if (loseCompleteOnce) { loseCompleteOnce = false; throw new Error("lost completion"); }
+      const row = rows.get(input.operationId);
+      assert.equal(row.transactionHash, input.transactionHash);
+      Object.assign(row, { state: input.receiptStatus === 1 ? "settled" : "reverted", blockNumber: input.blockNumber });
+      return { operation: { ...row } };
+    },
+  };
+}
+
 function diagnosticSourceFacts() {
   const nft = outsider.address;
   const mintParams = [7n, 2n, 1000n, 2000n, 1n, 100n, 1000n, true];
@@ -1621,6 +2140,10 @@ function diagnosticSourceFacts() {
 
 function serviceFixture({
   beforeBroadcast,
+  helperLedger,
+  helperMaxFeeWei,
+  helperCandidates,
+  ccProviderOverride = {},
   pairOverride = {},
   pairResolverOverride,
   campaignOverride = {},
@@ -1657,6 +2180,8 @@ function serviceFixture({
   const consumedPairs = new Set();
   if (replayConsumed) consumedPairs.add(contractPairId);
   const releases = [];
+  let broadcastHash = null;
+  let latestReceipt = null;
   const campaign = {
     sponsor: relayer.address,
     creditAmount: parseEther("0.01"),
@@ -1683,7 +2208,7 @@ function serviceFixture({
     consumedQueries.add(failureQueryId);
     consumedQueries.add(successQueryId);
     consumedPairs.add(contractPairId);
-    const transactionHash = `0x${"71".repeat(32)}`;
+    const transactionHash = broadcastHash ?? `0x${"71".repeat(32)}`;
     const blockNumber = 500;
     const encoded = interface_.encodeEventLog(interface_.getEvent("CreditReleased"), [
       7n,
@@ -1700,8 +2225,10 @@ function serviceFixture({
     const parsed = interface_.parseLog(log);
     releases.push({ address: poolAddress, transactionHash, blockNumber, args: parsed.args });
     return {
+      hash: transactionHash,
       async wait() {
-        return { status: 1, hash: transactionHash, blockNumber, logs: [log] };
+        latestReceipt = { status: 1, hash: transactionHash, blockNumber, logs: [log] };
+        return latestReceipt;
       },
     };
   };
@@ -1811,11 +2338,31 @@ function serviceFixture({
     },
     async getBalance() { return sourceBalance; },
     async getBlockNumber() { return 700; },
+    async getFeeData() { return { gasPrice: 1_000_000_000n }; },
+    async getTransactionCount() { return 10; },
+    async estimateGas() { return 500_000n; },
+    async broadcastTransaction(raw) {
+      const transaction = Transaction.from(raw);
+      assert.equal(transaction.from, relayer.address);
+      assert.equal(transaction.to, poolAddress);
+      assert.equal(transaction.chainId, 102031n);
+      assert.equal(transaction.value, 0n);
+      assert.equal(transaction.type, 0);
+      assert.equal(transaction.nonce, 10);
+      assert.ok(transaction.gasLimit * transaction.gasPrice <= BigInt(helperMaxFeeWei));
+      broadcastHash = transaction.hash;
+      return releaseCredit();
+    },
+    async getTransactionReceipt(hash) { return latestReceipt?.hash === hash ? latestReceipt : null; },
+    ...ccProviderOverride,
   };
   const resolved = pairSummary(pairOverride);
   const builderResult = proofResult ?? { success: true, data: batchProofFixture(resolved) };
   const service = new RecoveryCampaignService({
     beforeBroadcast,
+    helperLedger,
+    helperMaxFeeWei,
+    helperCandidates,
     poolAddress,
     campaignNumber: 7,
     ccProvider,

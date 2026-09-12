@@ -4,6 +4,7 @@ import {
   FetchRequest,
   Interface,
   JsonRpcProvider,
+  Transaction,
   Wallet,
   ZeroAddress,
   getAddress,
@@ -37,6 +38,8 @@ import {
   RECOVERY_MAXIMUM_CLOCK_SKEW_SECONDS,
   formatRecoveryChallengeMessage,
 } from "./recovery-consent.mjs";
+import { RECOVERY_HELPER_MODE, formatRecoveryHelperMessage } from "./recovery-helper-consent.mjs";
+import { helperOperationId, normalizeLedgerPolicy } from "./helper-ledger-policy.mjs";
 
 export const RECOVERY_RELAYER_ROLE = PUBLIC_CC3_RELAYER_ROLE;
 
@@ -347,6 +350,9 @@ export class RecoveryCampaignService {
     walletDiscovery = discoverHostedWalletSeaDropPairs,
     pairResolver,
     beforeBroadcast = () => {},
+    helperLedger = null,
+    helperMaxFeeWei = null,
+    helperCandidates = [],
     now = () => Math.floor(Date.now() / 1000),
     config = {},
   }) {
@@ -389,6 +395,35 @@ export class RecoveryCampaignService {
     this.pairResolver = pairResolver;
     if (typeof beforeBroadcast !== "function") throw new Error("Invalid recovery broadcast guard");
     this.beforeBroadcast = beforeBroadcast;
+    this.helperLedger = helperLedger;
+    this.helperMaxFeeWei = null;
+    this.helperPolicy = null;
+    if (helperLedger) {
+      if (this.contractVersion !== "v2"
+        || !["reserve", "read", "readSource", "inspect", "admission", "prepareBroadcast", "complete", "failBeforeBroadcast"].every(name => typeof helperLedger[name] === "function")
+        || typeof helperMaxFeeWei !== "string" || !/^[1-9][0-9]{0,77}$/.test(helperMaxFeeWei)
+        || BigInt(helperMaxFeeWei) >= (1n << 256n)
+        || typeof relayerWallet?.signTransaction !== "function") {
+        throw new WorkerError("INVALID_RECOVERY_CONFIGURATION", "Helper recovery requires a durable coordinator, V2 signer, and an explicit fee cap.", 500);
+      }
+      this.helperMaxFeeWei = BigInt(helperMaxFeeWei);
+      try {
+        this.helperPolicy = normalizeLedgerPolicy(helperLedger.policy);
+        const scope = this.helperPolicy.identity;
+        if (scope.chainId !== RECOVERY_DEFAULTS.settlementChainId
+          || getAddress(scope.poolAddress) !== this.poolAddress || scope.campaignNumber !== this.campaignNumber
+          || getAddress(scope.relayerAddress) !== getAddress(this.relayerWallet.address)
+          || this.helperPolicy.limits.maxFeeWei !== helperMaxFeeWei) throw new Error("mismatched helper policy");
+      } catch (error) {
+        throw new WorkerError("INVALID_RECOVERY_CONFIGURATION", "The helper ledger policy must match this exact pool, campaign, relayer, and fee cap.", 500, error);
+      }
+    }
+    this.helperOperations = new Map();
+    if (!Array.isArray(helperCandidates) || helperCandidates.length > 512) throw new WorkerError("INVALID_RECOVERY_CONFIGURATION", "The helper candidate catalog must be bounded.", 500);
+    this.helperCandidates = helperCandidates.map(candidate => normalizeIntakePair({
+      failedTransactionHash: candidate.failedTransactionHash, successfulTransactionHash: candidate.successfulTransactionHash,
+    }));
+    this.helperCandidateCursor = 0;
     this.now = now;
     const mergedConfig = { ...RECOVERY_DEFAULTS, ...config };
     this.expectedRuntimeCodeHash = requireHash(
@@ -602,7 +637,8 @@ export class RecoveryCampaignService {
 
   async readiness() {
     const infrastructure = await this.#authenticateInfrastructure();
-    await this.#readCampaignState();
+    const state = await this.#readCampaignState();
+    if (this.helperLedger) this.#assertHelperCampaignPolicy(state.campaign);
     return infrastructure;
   }
 
@@ -611,13 +647,23 @@ export class RecoveryCampaignService {
       this.#authenticateInfrastructure(),
       this.#campaignState({ fresh: fresh === true }),
     ]);
+    const helperAvailability = this.helperLedger ? await this.#helperAvailability(state.campaign) : null;
     return {
       enabled: true,
       waking: false,
       capabilities: {
         selfServePairIntake: true,
         walletNativeDiscovery: true,
+        ...(this.helperLedger ? { communityHelper: true } : {}),
       },
+      ...(this.helperLedger ? { helper: {
+        enabled: true,
+        mode: RECOVERY_HELPER_MODE,
+        recipientConsent: false,
+        helperReceivesCredit: false,
+        maxTransactionFeeWei: this.helperMaxFeeWei.toString(),
+        ...helperAvailability,
+      } } : {}),
       consent: {
         scope: "hosted-relayer",
         protocolEnforced: false,
@@ -747,8 +793,9 @@ export class RecoveryCampaignService {
     const context = await this.intakePool.run(
       () => this.#eligibilityContext(wallet, discovery),
     );
-    const eligibility = this.#publicEligibility(context);
+    const eligibility = await this.#publicEligibility(context);
     if (!eligibility.eligible) throw eligibilityError(eligibility);
+    this.#assertHostedAdmission(context, eligibility.hostedAdmission);
     const issuedAt = this.now();
     const expiresAt = issuedAt + this.config.challengeLifetimeSeconds;
     const message = recoveryChallengeMessage({
@@ -772,6 +819,7 @@ export class RecoveryCampaignService {
         failedTransactionHash: eligibility.pair.failedTransactionHash,
         successfulTransactionHash: eligibility.pair.successfulTransactionHash,
       },
+      ...(this.helperLedger ? { hostedAdmission: eligibility.hostedAdmission } : {}),
     };
   }
 
@@ -780,9 +828,301 @@ export class RecoveryCampaignService {
     const context = await this.intakePool.run(
       () => this.#openPairEligibilityContext(pairInput),
     );
-    const eligibility = this.#publicEligibility(context);
+    const eligibility = await this.#publicEligibility(context);
     if (!eligibility.eligible) throw eligibilityError(eligibility);
-    return this.#challengeFor({ wallet: eligibility.wallet, discovery: context.discovery });
+    this.#assertHostedAdmission(context, eligibility.hostedAdmission);
+    return {
+      ...this.#challengeFor({ wallet: eligibility.wallet, discovery: context.discovery }),
+      ...(this.helperLedger ? { hostedAdmission: eligibility.hostedAdmission } : {}),
+    };
+  }
+
+  #requireHelper() {
+    if (!this.helperLedger) throw new WorkerError("RECOVERY_HELPER_DISABLED", "Community helper requests are not enabled.", 503);
+  }
+
+  async #helperAvailability(campaign) {
+    try {
+      if (campaign) this.#assertHelperCampaignPolicy(campaign);
+      const snapshot = await this.#ledger("inspect", {});
+      return this.#availabilityFromSnapshot(snapshot);
+    } catch {
+      // Read-only recovery remains useful even if spending coordination is down.
+      // Never imply that a new funded action is currently admitted in that state.
+      return { available: false, admissionState: "unavailable" };
+    }
+  }
+
+  #availabilityFromSnapshot(snapshot) {
+    if (typeof snapshot.enabled !== "boolean" || !Number.isSafeInteger(snapshot.attempts)
+      || !Number.isSafeInteger(snapshot.payouts) || snapshot.attempts < 0 || snapshot.payouts < 0
+      || !/^(0|[1-9][0-9]*)$/.test(snapshot.reservedFeeWei)
+      || !(snapshot.activeOperationId === null || isHexString(snapshot.activeOperationId, 32))) throw new Error("invalid admission snapshot");
+    const limits = this.helperPolicy.limits;
+    const exhausted = snapshot.attempts >= limits.maxAttempts || snapshot.payouts >= limits.maxPayouts
+      || BigInt(snapshot.reservedFeeWei) + this.helperMaxFeeWei > BigInt(limits.maxTotalFeeWei);
+    const admissionState = !snapshot.enabled || this.now() >= limits.expiresAt ? "paused" : exhausted ? "budget-exhausted"
+      : snapshot.activeOperationId ? "busy" : "available";
+    return { available: admissionState === "available", admissionState };
+  }
+
+  async #hostedAdmission(context) {
+    try {
+      this.#assertHelperCampaignPolicy(context.campaign);
+      // No proof, reservation or receipt reconciliation occurs in this advisory read.
+      // Source locks outlive a failed operation, including across different pairs.
+      // One coordinator RPC reads totals and source state in one transaction;
+      // independently serialized inspect/readSource responses can disagree.
+      const snapshot = await this.#ledger("admission", { sourceWallet: context.wallet });
+      if (!snapshot || !Object.hasOwn(snapshot, "operation")
+        || getAddress(snapshot.sourceWallet) !== context.wallet) throw new Error("invalid source admission snapshot");
+      const availability = this.#availabilityFromSnapshot(snapshot);
+      if (snapshot.operation) {
+        const operation = publicHelperOperation(snapshot.operation);
+        if (operation.sourceWallet !== context.wallet) throw new Error("mismatched source admission snapshot");
+        return { available: false, admissionState: "source-reserved", operation };
+      }
+      return { ...availability, operation: null };
+    } catch {
+      return { available: false, admissionState: "unavailable", operation: null };
+    }
+  }
+
+  #assertHostedAdmission(context, admission) {
+    if (!this.helperLedger) return;
+    this.#assertHelperCampaignPolicy(context.campaign);
+    if (admission?.available === true && admission.admissionState === "available" && admission.operation === null) return;
+    const reasons = {
+      paused: ["HELPER_LEDGER_PAUSED", "Hosted recovery is paused or its spending window has ended. No signature is needed now.", 503],
+      busy: ["HELPER_LEDGER_BUSY", "Another hosted recovery is being processed. Wait for its status to resolve before signing.", 409],
+      "budget-exhausted": ["HELPER_LEDGER_BUDGET_EXHAUSTED", "The bounded hosted recovery budget has been allocated. No signature is needed.", 409],
+      "source-reserved": ["RECOVERY_PROCESSING", "This source wallet already has a durable recovery operation. Check its status instead of signing again.", 409],
+      unavailable: ["RECOVERY_HELPER_UNAVAILABLE", "Hosted recovery availability cannot be verified. Source eligibility is unchanged; no signature is needed now.", 503],
+    };
+    const [code, message, status] = reasons[admission?.admissionState] ?? reasons.unavailable;
+    throw new WorkerError(code, message, status);
+  }
+
+  async #ledger(method, input) {
+    try { return await this.helperLedger[method](input); }
+    catch (error) {
+      throw new WorkerError(
+        typeof error?.code === "string" && /^HELPER_[A-Z_]+$/.test(error.code) ? error.code : "RECOVERY_HELPER_UNAVAILABLE",
+        "The durable recovery budget coordinator could not authorize this action. No automatic retry or new payment is started.",
+        Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599 ? error.status : 503,
+        error,
+      );
+    }
+  }
+
+  async helperChallenge(request = {}) {
+    this.#requireHelper();
+    requireStrictObject(request, "A helper challenge requires a JSON object.");
+    rejectDestinationFields(request);
+    requireExactFields(request, ["requester", "pair"], "A helper challenge accepts only requester and pair.");
+    const requester = requireNonzeroAddress(request.requester, "helper requester");
+    const pair = normalizeIntakePair(request.pair);
+    const context = await this.intakePool.run(() => this.#openPairEligibilityContext(pair));
+    requireDistinctHelper(requester, context.wallet);
+    if (!context.eligible) throw eligibilityError(publicEligibility(context));
+    const hostedAdmission = await this.#hostedAdmission(context);
+    this.#assertHostedAdmission(context, hostedAdmission);
+    const sourceWallet = context.wallet;
+    const operationId = this.#helperOperationId(sourceWallet, pair);
+    const issuedAt = this.now();
+    const expiresAt = issuedAt + this.config.challengeLifetimeSeconds;
+    return {
+      mode: RECOVERY_HELPER_MODE, requester, sourceWallet, pair, operationId, issuedAt, expiresAt,
+      poolAddress: this.poolAddress, campaignNumber: this.campaignNumber,
+      hostedAdmission,
+      message: this.#helperMessage({ requester, sourceWallet, pair, operationId, issuedAt, expiresAt }),
+    };
+  }
+
+  async helperDiscover(request = {}) {
+    this.#requireHelper();
+    requireStrictObject(request, "Helper discovery requires an empty JSON object.");
+    requireExactFields(request, [], "Helper discovery accepts no destination or candidate override.");
+    return this.discoveryPool.run(() => this.#helperDiscoverCatalog());
+  }
+
+  async #helperDiscoverCatalog() {
+    const totalCandidates = this.helperCandidates.length;
+    const limit = Math.min(4, totalCandidates);
+    let checkedCandidates = 0;
+    let unavailable = false;
+    for (; checkedCandidates < limit;) {
+      const pair = this.helperCandidates[this.helperCandidateCursor % totalCandidates];
+      this.helperCandidateCursor = (this.helperCandidateCursor + 1) % totalCandidates;
+      checkedCandidates += 1;
+      try {
+        const context = await this.intakePool.run(() => this.#openPairEligibilityContext(pair, { freshState: true }));
+        if (!context.eligible) continue;
+        const match = await this.#publicEligibility(context);
+        if (match.hostedAdmission.admissionState === "source-reserved") continue;
+        if (match.hostedAdmission.admissionState === "unavailable") { unavailable = true; continue; }
+        return { status: "found", checkedCandidates, totalCandidates, moreCandidates: totalCandidates > checkedCandidates,
+          match };
+      } catch (error) {
+        if (!(error instanceof WorkerError) || error.status >= 500 || error.status === 429) unavailable = true;
+      }
+    }
+    return { status: unavailable ? "unavailable" : totalCandidates <= limit ? "exhausted" : "none-in-window",
+      checkedCandidates, totalCandidates, moreCandidates: totalCandidates > limit, match: null };
+  }
+
+  #helperOperationId(sourceWallet, pair) {
+    return helperOperationId({ chainId: this.config.settlementChainId, poolAddress: this.poolAddress,
+      campaignNumber: this.campaignNumber, relayerAddress: this.relayerWallet.address }, sourceWallet, {
+        failedTransactionHash: pair.failedTransactionHash, successfulTransactionHash: pair.successfulTransactionHash,
+      });
+  }
+
+  #helperMessage({ requester, sourceWallet, pair, operationId, issuedAt, expiresAt }) {
+    return formatRecoveryHelperMessage({ origin: this.publicOrigin, poolAddress: this.poolAddress,
+      campaignNumber: this.campaignNumber, settlementChainId: this.config.settlementChainId,
+      requester, sourceWallet, ...pair, operationId, issuedAt, expiresAt });
+  }
+
+  #verifyHelperRequest(request) {
+    requireStrictObject(request, "A helper release requires a JSON object.");
+    rejectDestinationFields(request);
+    requireExactFields(request, ["requester", "sourceWallet", "pair", "operationId", "issuedAt", "expiresAt", "signature"],
+      "Helper release accepts only the exact versioned request and signature fields.");
+    const requester = requireNonzeroAddress(request.requester, "helper requester");
+    const sourceWallet = requireNonzeroAddress(request.sourceWallet, "derived source wallet");
+    const pair = normalizeIntakePair(request.pair);
+    const operationId = this.#helperOperationId(sourceWallet, pair);
+    const issuedAt = requireTimestamp(request.issuedAt, "issuedAt");
+    const expiresAt = requireTimestamp(request.expiresAt, "expiresAt");
+    if (request.operationId !== operationId || issuedAt > this.now() + this.config.maximumClockSkewSeconds
+      || expiresAt !== issuedAt + this.config.challengeLifetimeSeconds || expiresAt < this.now()) {
+      throw new WorkerError("RECOVERY_CHALLENGE_INVALID", "This exact helper request is invalid or expired.", 401);
+    }
+    const normalized = { requester, sourceWallet, pair, operationId, issuedAt, expiresAt };
+    try {
+      if (!isHexString(request.signature, 65)
+        || getAddress(verifyMessage(this.#helperMessage(normalized), request.signature)) !== requester) {
+        throw new Error("wrong helper signer");
+      }
+    } catch (error) {
+      throw new WorkerError("RECOVERY_SIGNATURE_INVALID", "The helper signature does not authorize this exact request.", 401, error);
+    }
+    return normalized;
+  }
+
+  async helperRelease(request = {}) {
+    this.#requireHelper();
+    // No source RPC, proof, or ledger reservation before signature authentication.
+    const auth = this.#verifyHelperRequest(request);
+    requireDistinctHelper(auth.requester, auth.sourceWallet);
+    const context = await this.intakePool.run(() => this.#openPairEligibilityContext(auth.pair, { freshState: true }));
+    if (context.wallet !== auth.sourceWallet) {
+      throw new WorkerError("RECOVERY_PAIR_WALLET_MISMATCH", "The helper request's source wallet is not independently established by this pair.", 422);
+    }
+    requireDistinctHelper(auth.requester, context.wallet);
+    const existing = await this.#ledger("read", { operationId: auth.operationId });
+    if (existing?.operation) return publicHelperOperation(existing.operation);
+    if (!context.eligible) throw eligibilityError(publicEligibility(context));
+    this.#verifyHelperRequest(request);
+    const reservation = await this.#reserveRelease(context, { requester: auth.requester, mode: RECOVERY_HELPER_MODE });
+    if (reservation.created) {
+      // This promise belongs to the service, not the HTTP connection. A process
+      // restart retains its durable reservation and never starts it again.
+      let started = false;
+      const task = Promise.resolve().then(() => this.#enqueueRelease(() => {
+        started = true;
+        return this.#runReservedRelease(context, reservation);
+      })).catch(async () => {
+        if (!started) await this.#ledger("failBeforeBroadcast", { operationId: auth.operationId,
+          permitToken: reservation.permitToken, reason: "prebroadcast-failed" }).catch(() => undefined);
+      }).finally(() => this.helperOperations.delete(auth.operationId));
+      this.helperOperations.set(auth.operationId, task);
+    }
+    return publicHelperOperation(reservation.operation);
+  }
+
+  async helperOperation(operationIdValue) {
+    this.#requireHelper();
+    const operationId = requireHash(operationIdValue, "helper operation");
+    let result = await this.#ledger("read", { operationId });
+    if (!result?.operation) throw new WorkerError("RECOVERY_HELPER_NOT_FOUND", "This recovery operation was not found.", 404);
+    const operation = result.operation;
+    // Reconciliation is GET-only on-chain and never signs, proves, broadcasts,
+    // retries, or releases a reservation. It also works after a process restart.
+    if (operation.state === "broadcast-prepared" && operation.transactionHash) {
+      try {
+        const receipt = await this.ccProvider.getTransactionReceipt(operation.transactionHash);
+        if (receipt && receipt.hash?.toLowerCase() === operation.transactionHash.toLowerCase()) {
+          if (Number(receipt.status) === 1) {
+            const context = await this.intakePool.run(() => this.#openPairEligibilityContext(operation.pair, { freshState: true }));
+            if (context.wallet !== getAddress(operation.sourceWallet) || context.status !== "claimed"
+              || context.release?.transactionHash?.toLowerCase() !== operation.transactionHash.toLowerCase()) {
+              throw new Error("release is not independently finalized for this source pair");
+            }
+            const release = parseReleaseReceipt(receipt, this.poolAddress);
+            validateReleaseFields({ release, campaignNumber: this.campaignNumber, wallet: context.wallet,
+              creditAmount: context.campaign.creditAmount, actionId: context.pair.actionId, relayer: this.relayerWallet.address,
+              failureQueryId: context.release.failureQueryId, successQueryId: context.release.successQueryId,
+              pairId: context.release.pairId });
+          } else if (Number(receipt.status) !== 0) throw new Error("unknown receipt status");
+          await this.#ledger("complete", { operationId, transactionHash: operation.transactionHash,
+            receiptStatus: Number(receipt.status), blockNumber: Number(receipt.blockNumber) });
+          result = await this.#ledger("read", { operationId });
+        }
+      } catch { /* Ambiguity remains durable and fail-closed; polling grants no spending. */ }
+    }
+    return publicHelperOperation(result.operation);
+  }
+
+  async #reserveRelease(context, { requester, mode }) {
+    this.#assertHelperCampaignPolicy(context.campaign);
+    return this.#ledger("reserve", {
+      operationId: this.#helperOperationId(context.wallet, context.discovery), requester, mode,
+      sourceWallet: context.wallet,
+      pair: { failedTransactionHash: context.discovery.failedTransactionHash,
+        successfulTransactionHash: context.discovery.successfulTransactionHash },
+      maxFeeWei: this.helperMaxFeeWei.toString(),
+    });
+  }
+
+  #assertHelperCampaignPolicy(campaign) {
+    if (campaign.creditAmount.toString() !== this.helperPolicy.limits.creditWei
+      || this.helperPolicy.limits.expiresAt > Number(campaign.deadline)) {
+      throw new WorkerError("INVALID_RECOVERY_CONFIGURATION", "The durable pilot budget must match the funded credit and end no later than its campaign.", 503);
+    }
+  }
+
+  async #releaseWithAdmission(context, auth) {
+    if (!this.helperLedger) return this.#releaseEligible(context);
+    const reservation = await this.#reserveRelease(context, auth);
+    if (!reservation.created) throw new WorkerError("RECOVERY_PROCESSING", "This source wallet already has a durable recovery operation; check its status before requesting again.", 409);
+    return this.#runReservedRelease(context, reservation);
+  }
+
+  async #runReservedRelease(context, reservation) {
+    const execution = { operationId: reservation.operation.operationId, permitToken: reservation.permitToken,
+      transactionHash: null };
+    try {
+      const result = await this.#releaseEligible(context, execution);
+      if (execution.transactionHash) {
+        if (result.release?.transactionHash?.toLowerCase() !== execution.transactionHash.toLowerCase()) {
+          throw new WorkerError("RECOVERY_RELEASE_UNVERIFIED", "The source recovered in another transaction; this reserved transaction remains unresolved.", 503);
+        }
+        await this.#ledger("complete", { operationId: execution.operationId, transactionHash: execution.transactionHash,
+          receiptStatus: 1, blockNumber: result.release.blockNumber });
+      } else {
+        await this.#ledger("failBeforeBroadcast", { operationId: execution.operationId,
+          permitToken: execution.permitToken, reason: "eligibility-changed" });
+      }
+      return result;
+    } catch (error) {
+      if (!execution.transactionHash) {
+        await this.#ledger("failBeforeBroadcast", { operationId: execution.operationId,
+          permitToken: execution.permitToken, reason: helperStopReason(error) }).catch(() => undefined);
+      }
+      throw error;
+    }
   }
 
   async release(request = {}) {
@@ -834,7 +1174,7 @@ export class RecoveryCampaignService {
       if (!context.eligible) throw eligibilityError(publicEligibility(context));
       return this.#enqueueRelease(() => {
         this.#verifyConsent({ wallet, message, issuedAt, expiresAt, signature, discovery, requireMessage: true });
-        return this.#releaseEligible(context);
+        return this.#releaseWithAdmission(context, { requester: wallet, mode: "owner" });
       });
     });
   }
@@ -888,7 +1228,7 @@ export class RecoveryCampaignService {
       if (!context.eligible) throw eligibilityError(publicEligibility(context));
       return this.#enqueueRelease(() => {
         this.#verifyConsent({ wallet, issuedAt, expiresAt, signature, discovery: context.discovery });
-        return this.#releaseEligible(context);
+        return this.#releaseWithAdmission(context, { requester: wallet, mode: "owner" });
       });
     });
   }
@@ -943,8 +1283,11 @@ export class RecoveryCampaignService {
     return flight;
   }
 
-  #publicEligibility(context) {
+  async #publicEligibility(context) {
     const eligibility = publicEligibility(context);
+    if (this.helperLedger) {
+      return { ...eligibility, hostedAdmission: await this.#hostedAdmission(context) };
+    }
     if (
       eligibility.status === "eligible"
       && this.releaseFlights.has(this.#releaseFlightKey(context.wallet, context.discovery))
@@ -1683,7 +2026,7 @@ export class RecoveryCampaignService {
     }
   }
 
-  async #releaseEligible(context) {
+  async #releaseEligible(context, execution = null) {
     const current = await this.#eligibilityContext(
       context.wallet,
       context.discovery,
@@ -1804,16 +2147,19 @@ export class RecoveryCampaignService {
     // Keep this outside the ambiguous-broadcast recovery catch: nothing was sent.
     this.beforeBroadcast();
     try {
-      const transaction = await this.pool.releaseCredit(
-        this.campaignNumber,
-        proof.contractProof,
-        { gasLimit: this.config.releaseGasLimit },
-      );
+      const transaction = execution
+        ? await this.#broadcastReserved(proof, execution)
+        : await this.pool.releaseCredit(
+          this.campaignNumber,
+          proof.contractProof,
+          { gasLimit: this.config.releaseGasLimit },
+        );
       receipt = await transaction.wait();
       if (!receipt || Number(receipt.status) !== 1) throw new Error("release transaction failed");
       this.campaignStateGeneration += 1;
       this.campaignStateCache = null;
     } catch (error) {
+      if (execution && !execution.transactionHash && error instanceof WorkerError) throw error;
       const raced = await this.#eligibilityContext(
         context.wallet,
         context.discovery,
@@ -1883,6 +2229,85 @@ export class RecoveryCampaignService {
     }
     return publicRelease({ ...context, release }, "released");
   }
+
+  async #broadcastReserved(proof, execution) {
+    const [network, feeData, latestNonce, pendingNonce] = await Promise.all([
+      this.ccProvider.getNetwork(), this.ccProvider.getFeeData(),
+      this.ccProvider.getTransactionCount(this.relayerWallet.address, "latest"),
+      this.ccProvider.getTransactionCount(this.relayerWallet.address, "pending"),
+    ]);
+    if (Number(network.chainId) !== this.config.settlementChainId || latestNonce !== pendingNonce
+      || !Number.isSafeInteger(pendingNonce) || pendingNonce < 0) {
+      throw new WorkerError("RECOVERY_HELPER_NONCE_BUSY", "The relayer has an unresolved transaction; this recovery was not sent.", 503);
+    }
+    const gasPrice = feeData.gasPrice;
+    if (typeof gasPrice !== "bigint" || gasPrice <= 0n) {
+      throw new WorkerError("RECOVERY_HELPER_FEE_CAP", "A safe explicit transaction fee is unavailable.", 503);
+    }
+    const data = new Interface(selectRecoveryCampaignAbi(this.contractVersion)).encodeFunctionData("releaseCredit", [
+      this.campaignNumber, proof.contractProof,
+    ]);
+    const estimate = await this.ccProvider.estimateGas({ from: this.relayerWallet.address, to: this.poolAddress,
+      data, value: 0n, gasPrice, nonce: pendingNonce });
+    const gasLimit = (BigInt(estimate) * 120n + 99n) / 100n + 25_000n;
+    if (gasLimit > BigInt(this.config.releaseGasLimit) || gasLimit * gasPrice > this.helperMaxFeeWei) {
+      throw new WorkerError("RECOVERY_HELPER_FEE_CAP", "This transaction exceeds the fixed sponsor fee cap; it was not sent.", 503);
+    }
+    const rawTransaction = await this.relayerWallet.signTransaction({
+      type: 0, chainId: this.config.settlementChainId, to: this.poolAddress,
+      data, value: 0n, gasLimit, gasPrice, nonce: pendingNonce,
+    });
+    const signed = Transaction.from(rawTransaction);
+    if (signed.type !== 0 || signed.chainId !== BigInt(this.config.settlementChainId)
+      || signed.from !== getAddress(this.relayerWallet.address) || signed.to !== this.poolAddress
+      || signed.data !== data || signed.value !== 0n || signed.nonce !== pendingNonce
+      || signed.gasLimit !== gasLimit || signed.gasPrice !== gasPrice) {
+      throw new WorkerError("RECOVERY_RELEASE_UNVERIFIED", "The signed transaction differs from the exact budgeted recovery.", 503);
+    }
+    // Set before awaiting persistence: a lost coordinator acknowledgment must
+    // never be treated as permission to clear or retry this operation.
+    execution.transactionHash = keccak256(rawTransaction);
+    const prepared = await this.#ledger("prepareBroadcast", { ...execution, nonce: pendingNonce,
+      maxFeeWei: this.helperMaxFeeWei.toString() });
+    if (prepared.broadcastPermit !== true) throw new WorkerError("RECOVERY_PROCESSING", "This operation has no fresh one-shot broadcast permit.", 409);
+    this.beforeBroadcast();
+    const transaction = await this.ccProvider.broadcastTransaction(rawTransaction);
+    if (transaction.hash?.toLowerCase() !== execution.transactionHash.toLowerCase()) {
+      throw new WorkerError("RECOVERY_RELEASE_UNVERIFIED", "The broadcast response did not match the reserved transaction.", 503);
+    }
+    return transaction;
+  }
+}
+
+function helperStopReason(error) {
+  if (error?.code === "RECOVERY_ATTESTATION_PENDING") return "proof-unavailable";
+  if (error?.code === "RECOVERY_PROOF_INVALID") return "proof-invalid";
+  if (error?.code === "RECOVERY_SIMULATION_REJECTED") return "simulation-rejected";
+  if (error?.code === "RECOVERY_HELPER_FEE_CAP") return "fee-cap";
+  return "prebroadcast-failed";
+}
+
+function requireDistinctHelper(requester, sourceWallet) {
+  if (requester === sourceWallet) {
+    throw new WorkerError("RECOVERY_HELPER_USE_OWNER_FLOW", "This wallet is the credit recipient. Use the owner recovery path instead of a helper request.", 409);
+  }
+}
+
+function publicHelperOperation(operation) {
+  return {
+    operationId: operation.operationId,
+    state: operation.state,
+    mode: operation.mode,
+    requester: getAddress(operation.requester),
+    sourceWallet: getAddress(operation.sourceWallet),
+    pair: { failedTransactionHash: operation.pair.failedTransactionHash,
+      successfulTransactionHash: operation.pair.successfulTransactionHash },
+    transactionHash: operation.transactionHash ?? null,
+    blockNumber: operation.blockNumber ?? null,
+    reason: operation.reason ?? null,
+    recipientConsent: operation.mode === "owner",
+    helperReceivesCredit: false,
+  };
 }
 
 export function recoveryChallengeMessage({
