@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { formatEther, getAddress, hexlify, toUtf8Bytes } from "ethers";
 import {
@@ -68,6 +68,8 @@ import { buildRecoveryCampaignManifest, RECOVERY_ADAPTERS } from "./recovery-cam
 import { requestRecoveryAccounts } from "./recovery-wallet-connection.mjs";
 import { createRecoveryPairLink, normalizeRecoveryInspectionAddress, readRecoveryPairLink } from "./recovery-pair-handoff.mjs";
 import { recoveryIncidentExport, validateRecoveryIncidentReport } from "./recovery-incident-report.mjs";
+import { HelperRecoveryDesk } from "./HelperRecoveryDesk.jsx";
+import { helperEnabled, readHelperResume } from "./recovery-helper-state.mjs";
 import "./styles.css";
 
 const ETHEREUM_EXPLORER = "https://etherscan.io";
@@ -124,6 +126,9 @@ function App() {
   const resumeReconciliation = useRef("");
   const submittedRecoveryStartedAt = useRef(null);
   const previousDeskFlow = useRef("empty");
+  const recoveryModeRef = useRef("owner");
+  const helperLockRef = useRef(false);
+  const helperResumeChecked = useRef(false);
   if (!pairOperations.current) pairOperations.current = createPairOperationGuard();
   if (!walletOperations.current) walletOperations.current = createWalletOperationGuard();
   const [account, setAccount] = useState("");
@@ -141,7 +146,15 @@ function App() {
   const [authorizationPending, setAuthorizationPending] = useState(false);
   const [discoveryResult, setDiscoveryResult] = useState(null);
   const [pairDiagnostics, setPairDiagnostics] = useState(null);
+  const [recoveryMode, setRecoveryMode] = useState("owner");
+  const [helperLocked, setHelperLocked] = useState(false);
+  const [helperEvidence, setHelperEvidence] = useState({ eligibility: null, flow: "empty", releaseResult: null });
   const [, setCampaignClock] = useState(() => Date.now());
+  recoveryModeRef.current = recoveryMode;
+  const updateHelperLock = useCallback((locked) => {
+    helperLockRef.current = locked;
+    setHelperLocked(locked);
+  }, []);
 
   const route = normalizeRoute(path);
   const busy = isBusyFlow(flow) || authorizationPending;
@@ -265,6 +278,7 @@ function App() {
   useEffect(() => {
     const liveConfig = config;
     if (!online || configState !== "ready" || !liveConfig?.enabled) return undefined;
+    if (recoveryModeRef.current === "helper" || readHelperResume(liveConfig)) return undefined;
     const candidate = loadRecoveryResumeCandidate({
       poolAddress: liveConfig.poolAddress,
       campaignNumber: liveConfig.campaignNumber,
@@ -365,7 +379,18 @@ function App() {
     config?.lineage?.releasesUnlocked,
     configState,
     online,
+    recoveryMode,
   ]);
+
+  useEffect(() => {
+    if (helperResumeChecked.current || !config?.poolAddress) return;
+    helperResumeChecked.current = true;
+    if (readHelperResume(config)) {
+      updateHelperLock(true);
+      recoveryModeRef.current = "helper";
+      setRecoveryMode("helper");
+    }
+  }, [config?.poolAddress, config?.campaignNumber, updateHelperLock]);
 
   useEffect(() => {
     if (!window.ethereum) return undefined;
@@ -455,6 +480,9 @@ function App() {
     const applySharedPair = () => {
       const next = readRecoveryPairLink(window.location.hash);
       if (!next) return;
+      // The isolated helper desk owns helper links and preserves a submitted
+      // operation even while its public status is being reconciled.
+      if (recoveryModeRef.current === "helper" || helperLockRef.current) return;
       const liveConfig = configRef.current;
       if (!isRecoveryConfigReadable(liveConfig)) {
         setError("Campaign checks are not ready. The current pair and any saved recovery have not changed. Wait for the campaign to load, then reopen the shared link.");
@@ -551,6 +579,7 @@ function App() {
     const didChange = guard.setAccount(next);
     setAccount(next);
     if (!didChange) return false;
+    if (recoveryModeRef.current === "helper") return true;
 
     setError("");
     if (externalChange && flowRef.current === "discovering" && discoveryMode.current === "connected") {
@@ -619,6 +648,8 @@ function App() {
   async function discoverWallet({ publicAddress } = {}) {
     if (
       !online
+      || recoveryModeRef.current !== "owner"
+      || helperLockRef.current
       || authorizationInFlight.current
       || isBusyFlow(flowRef.current)
       || needsReleaseStatusCheck(flowRef.current)
@@ -709,6 +740,7 @@ function App() {
   }
 
   function changePairField(field, value) {
+    if (helperLockRef.current) return;
     discoveryGeneration.current += 1;
     clearSubmittedRecovery();
     const next = { ...pairDraftRef.current, [field]: value };
@@ -725,6 +757,7 @@ function App() {
   }
 
   function loadRecoveredExample() {
+    if (helperLockRef.current) return;
     const featured = configRef.current?.featuredCase;
     if (!featured) return;
     clearSubmittedRecovery();
@@ -745,6 +778,7 @@ function App() {
 
   async function checkPair(event) {
     event?.preventDefault?.();
+    if (recoveryModeRef.current !== "owner" || helperLockRef.current) return;
     if (!online || authorizationInFlight.current || isBusyFlow(flowRef.current)) return;
     const validation = validateRecoveryPairDraft(pairDraftRef.current);
     setPairErrors(validation.errors);
@@ -834,6 +868,9 @@ function App() {
 
   async function authorizeAndRelease() {
     if (
+      recoveryModeRef.current !== "owner"
+      || helperLockRef.current
+      ||
       authorizationInFlight.current
       || isBusyFlow(flowRef.current)
       || ["release-processing", "release-uncertain", "continuation-waiting", "campaign-closed", "campaign-full"].includes(flowRef.current)
@@ -1149,6 +1186,37 @@ function App() {
       && (!walletOperation || walletOperations.current.isCurrent(walletOperation));
   }
 
+  function chooseRecoveryMode(next) {
+    if (next === recoveryModeRef.current || helperLockRef.current || authorizationInFlight.current
+      || isBusyFlow(flowRef.current) || needsReleaseStatusCheck(flowRef.current)) return;
+    if (next === "helper" && !helperEnabled(configRef.current)) return;
+    recoveryModeRef.current = next;
+    setRecoveryMode(next);
+    if (next === "owner" && eligibilityRef.current?.eligible) {
+      updateFlow(recoveryEligibleInspectionFlow({ config: configRef.current,
+        connectedAccount: walletOperations.current.currentAccount(), sourceWallet: eligibilityRef.current.wallet }));
+    }
+    requestAnimationFrame(() => document.getElementById("eligibility-heading")?.focus({ preventScroll: true }));
+  }
+
+  function carryHelperPairToOwner(pair) {
+    if (helperLockRef.current || authorizationInFlight.current || recoveryModeRef.current !== "helper") return;
+    const validation = validateRecoveryPairDraft(pair);
+    if (!validation.valid) return;
+    chooseRecoveryMode("owner");
+    if (recoveryModeRef.current !== "owner") return;
+    clearSubmittedRecovery();
+    pairDraftRef.current = validation.pair;
+    pairOperations.current.invalidate();
+    setPairDraft(validation.pair);
+    setPairErrors({});
+    updateEligibility(null);
+    setReleaseResult(null);
+    setDiscoveryResult(null);
+    setError("This pair is prefilled from the helper check. Check it again in the owner flow before signing.");
+    updateFlow("editing");
+  }
+
   const terminal = ["released", "already-claimed"].includes(flow);
   const preserveSubmittedFlow = ["proof-queued", "proof-building", "release-relaying", "release-processing", "release-uncertain"].includes(flow);
   const campaignAvailability = recoveryCampaignAvailability(config);
@@ -1196,7 +1264,9 @@ function App() {
   }), [account, busy, config, configState, effectiveFlow, eligibility, error, featuredEligibility, featuredState, online, pairDraft, pairErrors, visibleRelease, discoveryResult, pairDiagnostics]);
 
   const walletActionEnabled = Boolean(
-    online
+    recoveryMode === "owner"
+    && !helperLocked
+    && online
     && configState === "ready"
     && !busy
     && !needsReleaseStatusCheck(flow)
@@ -1215,6 +1285,7 @@ function App() {
       online={online}
       route={route}
       walletActionEnabled={walletActionEnabled}
+      helperMode={recoveryMode === "helper"}
       onConnect={eligibility?.eligible && config?.enabled === true ? walletControl : discoverConnectedWallet}
     />
     <main id="main-content" tabIndex="-1">
@@ -1226,6 +1297,14 @@ function App() {
         onInspectAddress={discoverPublicWallet}
         onLoadExample={loadRecoveredExample}
         onPairChange={changePairField}
+        recoveryMode={recoveryMode}
+        onModeChange={chooseRecoveryMode}
+        modeLocked={helperLocked || busy || needsReleaseStatusCheck(flow)}
+        helperEvidence={helperEvidence}
+        onHelperEvidence={setHelperEvidence}
+        onHelperLock={updateHelperLock}
+        onHelperConnect={() => connectWallet({ discovery: true })}
+        onHelperOwnerPair={carryHelperPairToOwner}
       />}
       {route === "/cases" && <CasesPage {...context} />}
       {route === "/protocol" && <ProtocolPage config={config} />}
@@ -1237,7 +1316,7 @@ function App() {
   </div>;
 }
 
-function AppHeader({ account, config, configState, online, route, onConnect, walletActionEnabled }) {
+function AppHeader({ account, config, configState, online, route, onConnect, walletActionEnabled, helperMode }) {
   const campaignAvailability = recoveryCampaignAvailability(config);
   const continuationWaiting = isContinuationWaiting(config);
   const service = !online
@@ -1269,12 +1348,12 @@ function AppHeader({ account, config, configState, online, route, onConnect, wal
         onClick={onConnect}
         disabled={!walletActionEnabled}
         aria-describedby={!account && !walletActionEnabled ? "wallet-gate-note" : undefined}
-        title={!account && !walletActionEnabled ? "Wallet discovery is unavailable while the recovery service is loading." : undefined}
+        title={helperMode ? "Connect your helper wallet in the recovery panel after choosing a source pair." : !account && !walletActionEnabled ? "Wallet discovery is unavailable while the recovery service is loading." : undefined}
       >
         <Wallet aria-hidden="true" />
-        <span>{account ? short(account) : walletActionEnabled ? "Find my retry" : "Wallet unavailable"}</span>
+        <span>{account ? short(account) : helperMode ? "Connect below" : walletActionEnabled ? "Find my retry" : "Wallet unavailable"}</span>
       </button>
-      {!account && !walletActionEnabled && <span id="wallet-gate-note" className="visually-hidden">Wallet discovery becomes available when the recovery service is ready.</span>}
+      {!account && !walletActionEnabled && <span id="wallet-gate-note" className="visually-hidden">{helperMode ? "Connect your own wallet in the helper recovery panel after selecting a source pair." : "Wallet discovery becomes available when the recovery service is ready."}</span>}
     </div>
     <nav aria-label="Primary">
       {ROUTES.map(({ path, label, icon: Icon }) => <a
@@ -1292,15 +1371,27 @@ function AppHeader({ account, config, configState, online, route, onConnect, wal
 }
 
 function RecoveryPage(props) {
-  const { config, configState, eligibility, flow, releaseResult } = props;
+  const { config, configState, recoveryMode, onModeChange, modeLocked, helperEvidence } = props;
+  const { eligibility, flow, releaseResult } = recoveryMode === "helper" ? helperEvidence : props;
   const readOnly = config?.readOnly === true;
   const compactReadOnlyResult = readOnly && eligibility?.eligible === true;
   return <div className="route-page recovery-page">
+    {(helperEnabled(config) || recoveryMode === "helper") && <div className="recovery-role-choice" role="group" aria-label="Choose your recovery role" aria-describedby={modeLocked ? "recovery-role-lock" : undefined}>
+      <button type="button" aria-pressed={recoveryMode === "owner"} onClick={() => onModeChange("owner")} disabled={modeLocked}>Recover my retry</button>
+      <button type="button" aria-pressed={recoveryMode === "helper"} onClick={() => onModeChange("helper")} disabled={modeLocked || !helperEnabled(config)}>Help another wallet</button>
+      {modeLocked && <p id="recovery-role-lock">Finish the active recovery check before changing roles.</p>}
+    </div>}
     <div className="campaign-layout">
-      <EligibilityDesk {...props} />
+      {recoveryMode === "helper"
+        ? <HelperRecoveryDesk config={config} configState={configState} account={props.account} online={props.online}
+          apiOrigin={API_ORIGIN} onConnect={props.onHelperConnect} onLockChange={props.onHelperLock}
+          onOwnerPair={props.onHelperOwnerPair}
+          onEvidenceChange={props.onHelperEvidence} TransactionField={TransactionField} />
+        : <EligibilityDesk {...props} />}
       <CampaignFile config={config} configState={configState} />
     </div>
-    <EvidenceBand config={config} eligibility={eligibility} flow={flow} releaseResult={releaseResult} />
+    <EvidenceBand config={config} eligibility={eligibility} flow={flow} releaseResult={releaseResult}
+      helperMode={recoveryMode === "helper"} helperOperation={recoveryMode === "helper" ? helperEvidence.helperOperation : null} />
     <section className={`plain-boundary${compactReadOnlyResult ? " compact-read-only-result" : ""}`} aria-labelledby="boundary-heading">
       <h2 id="boundary-heading">The source pair fixes the only destination.</h2>
       <p>{readOnly
@@ -1614,7 +1705,7 @@ function WalletAddressInspection({ onInspect, disabled }) {
         value={address} disabled={disabled} maxLength={64} autoComplete="off" autoCapitalize="none" spellCheck="false"
         onChange={(event) => { setAddress(event.target.value); setAddressError(""); }}
         aria-invalid={Boolean(addressError)} aria-describedby={`inspection-help${addressError ? " inspection-error" : ""}`} />
-      <p id="inspection-help">Read-only search of public history. This address is not a payout instruction. Only the source owner can authorize our hosted relay.</p>
+      <p id="inspection-help">Read-only search of public history. This address is not a payout instruction. In this owner flow, the source owner authorizes the hosted relay.</p>
       {addressError && <p id="inspection-error" className="field-error" role="alert">{addressError}</p>}
       <button type="submit" className="example-action" disabled={disabled}>Check public address <Search aria-hidden="true" /></button>
     </form>
@@ -1753,7 +1844,7 @@ function ReleaseReceipt({ result }) {
   </div>;
 }
 
-function EvidenceBand({ config, eligibility, flow, releaseResult }) {
+function EvidenceBand({ config, eligibility, flow, releaseResult, helperMode = false, helperOperation = null }) {
   const evidence = selectRecoveryEvidence({
     config,
     eligibility,
@@ -1767,6 +1858,7 @@ function EvidenceBand({ config, eligibility, flow, releaseResult }) {
   const continuationWaiting = isContinuationWaiting(config);
   const readOnly = config?.readOnly === true;
   const releaseAvailable = eligibility?.eligible === true
+    && !helperOperation
     && config?.enabled === true
     && !readOnly
     && recoveryRecordMatchesConfig(eligibility, config)
@@ -1825,6 +1917,10 @@ function EvidenceBand({ config, eligibility, flow, releaseResult }) {
           ? "Fixed credit released"
           : priorRecovery
             ? "Earlier recovery blocks another credit"
+          : helperOperation?.state === "settled"
+            ? "Credit released; rechecking receipt details"
+            : ["reverted", "stopped"].includes(helperOperation?.state)
+              ? "This operation did not release credit"
             : releaseProcessing
             ? "Release status needs confirmation"
             : continuationWaiting
@@ -1843,8 +1939,12 @@ function EvidenceBand({ config, eligibility, flow, releaseResult }) {
             ? "Replay consumed"
             : priorRecovery
               ? "Prior use stays excluded after settlement opens"
+            : helperOperation?.state === "settled"
+              ? "Durable settlement confirmed; full receipt facts are being rechecked"
+              : ["reverted", "stopped"].includes(helperOperation?.state)
+                ? "This operation will not restart automatically"
               : releaseProcessing
-              ? "Check exact pair before any new signature"
+              ? helperMode ? "Check the durable operation; no repeat signature" : "Check exact pair before any new signature"
               : continuationWaiting
                 ? "Predecessor must fill or pass its deadline"
                 : readOnly && eligibility?.eligible
@@ -1973,6 +2073,11 @@ function ProtocolPage({ config }) {
           <h2>Native batch, derived payout</h2>
           <p>Attestcoin verifies both Ethereum receipts as one native batch on Creditcoin using source chain key 3. The recovery contract derives the only beneficiary from the proven source wallet; neither the browser nor the relayer supplies a destination.</p>
         </section>
+        {helperEnabled(config) && <section>
+          <h2>Owner recovery and community help</h2>
+          <p>The owner flow asks the source wallet to authorize the hosted relayer. Community help is an explicitly separate request: a helper signs with their own wallet, receives no credit, and cannot select the recipient. A helper request is not the source owner&apos;s consent.</p>
+          <p>Both paths use the same native proof, immutable source-derived payout and replay checks. Durable sponsor limits bound proof work and gas before execution. An uncertain transaction stays attached to one operation; status checks cannot sign or broadcast it again.</p>
+        </section>}
         <section>
           <h2>Fixed pool and replay boundary</h2>
           <p>{lineageV2

@@ -17,6 +17,9 @@ import { createRecoveryV2DeploymentSupervisor } from "./recovery-v2-deployment-s
 import { createRecoveryV2LiveObserver } from "./recovery-v2-live-observer.mjs";
 import { createRecoverySourceProvider } from "./recovery-source-provider.mjs";
 import { createRecoveryStartupLifecycle } from "./recovery-startup-lifecycle.mjs";
+import { assertRecoveryHelperIsolation, createRecoveryHelperOptions } from "./recovery-helper-config.mjs";
+
+assertRecoveryHelperIsolation(process.env);
 
 const POOL_ADDRESS = process.env.RULEDROP_POOL_ADDRESS ?? "0x6f8dE7e1599A0c8D38eB25996cB841a4920ed999";
 const CREDITCOIN_RPC = process.env.CREDITCOIN_RPC ?? "https://rpc.cc3-testnet.creditcoin.network";
@@ -112,6 +115,7 @@ if (recoveryBootstrap.enabled) {
           : {}),
         publicOrigin: PUBLIC_ORIGIN,
         ...(sourceProvider ? { ethereumProviders: [sourceProvider] } : {}),
+        ...createRecoveryHelperOptions(process.env, recoveryBootstrap),
         config: { contractVersion: RECOVERY_CONTRACT_VERSION },
         beforeBroadcast: () => {
           if (RECOVERY_CONTRACT_VERSION === "v2") requireVerifiedV2(recoveryV2Deployment);
@@ -208,9 +212,12 @@ export function createAppHandler({
   recovery = recoveryLifecycle,
   allowedOrigin = ALLOWED_ORIGIN,
   legacyWritesEnabled = LEGACY_WRITES_ENABLED,
+  helperModeConfigured = process.env.RETRYCREDIT_HELPER_ENABLED === "true",
   deploymentRevision = DEPLOYMENT_REVISION,
   recoveryV2 = recoveryV2Deployment,
 } = {}) {
+  const isolatedHelperMode = helperModeConfigured || Boolean(recovery.service?.helperLedger);
+  const effectiveLegacyWrites = legacyWritesEnabled && !isolatedHelperMode;
   return async (request, response) => {
   const requestId = crypto.randomUUID();
   let pairInspectionRequest = false;
@@ -282,6 +289,38 @@ export function createAppHandler({
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/recovery/helper/discover") {
+      requireRecoveryService(recovery);
+      const body = await readJson(request);
+      sendJson(response, 200, await recovery.service.helperDiscover(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/recovery/helper/challenge") {
+      requireRecoveryService(recovery);
+      const body = await readJson(request);
+      sendJson(response, 200, await recovery.service.helperChallenge(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/recovery/helper/release") {
+      requireRecoveryService(recovery);
+      const body = await readJson(request);
+      sendJson(response, 202, await recovery.service.helperRelease(body));
+      return;
+    }
+
+    const helperOperationRoute = /^\/api\/recovery\/helper\/operations\/(0x[0-9a-fA-F]{64})$/.exec(url.pathname);
+    if (request.method === "GET" && helperOperationRoute) {
+      requireRecoveryService(recovery);
+      sendJson(response, 200, await recovery.service.helperOperation(helperOperationRoute[1]));
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/recovery/helper/")) {
+      throw new WorkerError("NOT_FOUND", "This community helper endpoint was not found.", 404);
+    }
+
     if (request.method === "POST" && url.pathname === "/api/recovery/intake/challenge") {
       requireRecoveryService(recovery);
       const body = await readJson(request);
@@ -319,8 +358,8 @@ export function createAppHandler({
 
     if (request.method === "GET" && url.pathname === "/api/retry-credit/config") {
       sendJson(response, 200, {
-        enabled: Boolean(legacyRetryCreditService) && legacyWritesEnabled,
-        writesEnabled: Boolean(legacyRetryCreditService) && legacyWritesEnabled,
+        enabled: Boolean(legacyRetryCreditService) && effectiveLegacyWrites,
+        writesEnabled: Boolean(legacyRetryCreditService) && effectiveLegacyWrites,
         source: { name: "Ethereum Sepolia", chainId: 11155111 },
         settlement: { name: "Creditcoin Testnet", chainId: 102031 },
         creditAmount: PUBLIC_DEMO_DEFAULTS.creditAmount.toString(),
@@ -340,7 +379,7 @@ export function createAppHandler({
 
     if (request.method === "POST" && url.pathname === "/api/retry-credit/prepare") {
       requireRetryCreditService(legacyRetryCreditService);
-      requireLegacyWrites(legacyWritesEnabled);
+      requireLegacyWrites(effectiveLegacyWrites);
       const body = await readJson(request);
       sendJson(response, 200, await legacyRetryCreditService.prepare(body));
       return;
@@ -356,7 +395,7 @@ export function createAppHandler({
     const retryExecuteMatch = url.pathname.match(/^\/api\/retry-credit\/(\d+)\/execute$/);
     if (request.method === "POST" && retryExecuteMatch) {
       requireRetryCreditService(legacyRetryCreditService);
-      requireLegacyWrites(legacyWritesEnabled);
+      requireLegacyWrites(effectiveLegacyWrites);
       sendJson(response, 200, await legacyRetryCreditService.execute(retryExecuteMatch[1]));
       return;
     }
@@ -364,7 +403,7 @@ export function createAppHandler({
     const retryReleaseMatch = url.pathname.match(/^\/api\/retry-credit\/(\d+)\/release$/);
     if (request.method === "POST" && retryReleaseMatch) {
       requireRetryCreditService(legacyRetryCreditService);
-      requireLegacyWrites(legacyWritesEnabled);
+      requireLegacyWrites(effectiveLegacyWrites);
       const body = await readJson(request);
       sendJson(response, 200, await legacyRetryCreditService.release({
         serviceCreditNumber: retryReleaseMatch[1],
@@ -388,6 +427,7 @@ export function createAppHandler({
 
     const claimMatch = url.pathname.match(/^\/api\/campaigns\/(\d+)\/prepare-claim$/);
     if (request.method === "POST" && claimMatch) {
+      if (isolatedHelperMode) throw new WorkerError("LEGACY_PROOF_DISABLED", "Archived proof preparation is disabled on the budgeted recovery runtime.", 503);
       const body = await readJson(request);
       const prepared = await campaignWorker.prepareClaim({ campaignId: claimMatch[1], ...body });
       sendJson(response, 200, prepared);

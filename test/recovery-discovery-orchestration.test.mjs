@@ -118,6 +118,21 @@ test("public-address inspection rejects a result for a different derived source 
   assert.equal(harness.context.walletOperations.current.currentAccount(), "");
 });
 
+test("owner discovery and link adoption cannot replace a selected or active helper recovery", async () => {
+  for (const state of [{ mode: "helper", locked: false }, { mode: "owner", locked: true }]) {
+    const harness = createHarness();
+    harness.context.recoveryModeRef.current = state.mode;
+    harness.context.helperLockRef.current = state.locked;
+    harness.context.pairDraftRef.current = PAIR;
+    await harness.discover();
+    harness.applySharedPair();
+    assert.equal(harness.calls.connect, 0);
+    assert.equal(harness.calls.backend, 0);
+    assert.equal(harness.calls.resumeClear, 0);
+    assert.deepEqual(harness.context.pairDraftRef.current, PAIR);
+  }
+});
+
 test("shared-pair changes preserve saved recovery before configuration is readable", async t => {
   for (const config of [null, { enabled: false }]) await t.test(config ? "unavailable configuration" : "initial configuration pending", () => {
     const harness = createHarness();
@@ -213,6 +228,8 @@ function createHarness({ account = "", walletResponse = WALLET, discoveryRespons
     window: { location: { hash: `#failed=0x${"c".repeat(64)}&successful=0x${"d".repeat(64)}` } },
     online: true,
     authorizationInFlight: { current: false },
+    recoveryModeRef: { current: "owner" },
+    helperLockRef: { current: false },
     flowRef: { current: "empty" },
     discoveryGeneration: { current: 0 },
     discoveryMode: { current: null },
