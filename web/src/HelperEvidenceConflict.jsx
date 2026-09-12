@@ -9,7 +9,7 @@ export function HelperEvidenceConflict({ operation }) {
     <AlertCircle aria-hidden="true" />
     <div>
       <strong>Recovery evidence does not match</strong>
-      <p>The submitted source pair remains attached below. Conflicting public records do not confirm a credit. Check this operation&apos;s status without signing again.</p>
+      <p>{operation?.publicIdentityConfirmed === false ? "This pair is restored from the local request record; its public identity has not been confirmed. " : "The submitted source pair remains attached below. "}Conflicting public records do not confirm a credit. Check this operation&apos;s status without signing again.</p>
       {pair?.failedTransactionHash && <a className="secondary-action" href={`https://etherscan.io/tx/${pair.failedTransactionHash}`} target="_blank" rel="noreferrer">Inspect submitted failed transaction</a>}
       {pair?.successfulTransactionHash && <a className="secondary-action" href={`https://etherscan.io/tx/${pair.successfulTransactionHash}`} target="_blank" rel="noreferrer">Inspect submitted retry transaction</a>}
       {!pair && <p>The operation identity could not be validated. No unverified source or release details are shown.</p>}

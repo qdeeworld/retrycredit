@@ -328,7 +328,7 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
       if (!active.current || submitted.current?.operationId !== expected.operationId) return;
       if (error?.receiptConflict || error?.code === "RECOVERY_RESPONSE_MISMATCH" || error?.status === 422) {
         setEligibility(null);
-        setOperationState({ ...(operationRef.current ?? {}), receiptCheck: "conflict" });
+        setOperationState({ ...(operationRef.current ?? { ...expected, publicIdentityConfirmed: false }), receiptCheck: "conflict" });
         setPhase("uncertain");
         onLockChange(true);
         setNotice("Public operation and receipt evidence conflict. Success is not confirmed. Keep this operation for status checks; do not sign another request.");
@@ -379,7 +379,7 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
   }
 
   const source = operation?.sourceWallet ?? submitted.current?.sourceWallet ?? eligibility?.wallet;
-  const sourceConfirmed = Boolean(operation || eligibility);
+  const sourceConfirmed = Boolean((operation && operation.publicIdentityConfirmed !== false) || eligibility);
   const connectedSource = !submitted.current && walletsMatch(account, source);
   const receipt = operation?.transactionHash;
   const creditConfig = submittedConfig.current ?? config;

@@ -27,7 +27,7 @@ const requester = `0x${"2".repeat(40)}`;
 const hash = `0x${"a".repeat(64)}`;
 const saved = { sourceWallet: source, requester, operationId: `0x${"c".repeat(64)}`,
   pair: { failedTransactionHash: hash, successfulTransactionHash: `0x${"b".repeat(64)}` }, createdAt: Date.now() };
-const settled = { ...saved, state: "settled", transactionHash: hash, mode: "community-helper", blockNumber: 12 };
+const settled = { ...saved, state: "settled", transactionHash: hash, mode: "community-helper-v1", blockNumber: 12 };
 const receipt = { wallet: source, status: "claimed", eligible: false, pair: saved.pair, release: { transactionHash: hash } };
 const config = { poolAddress: source, campaignNumber: 1, campaign: { creditAmount: "100000000000000000" } };
 let container, root;
@@ -111,6 +111,21 @@ test("outage after confirmation preserves prior evidence; later conflict retract
 test("operation identity conflict also retracts an earlier success", async () => {
   await mount(); mocks.read.mockResolvedValueOnce({ invalidIdentity: true }); await refresh();
   expect(heading()).toBe("Recovery evidence does not match"); expectStatusOnly();
+});
+
+test.each(["mismatch", "422"])("first restored status rejection stays explicitly unconfirmed: %s", async (kind) => {
+  if (kind === "mismatch") mocks.read.mockResolvedValueOnce({ invalidIdentity: true });
+  else mocks.read.mockRejectedValueOnce(Object.assign(new Error("invalid operation"), { status: 422 }));
+  await mount();
+  expect(heading()).toBe("Recovery evidence does not match");
+  expect(container.textContent).toContain("Recorded source · awaiting public confirmation");
+  expect(container.textContent).not.toContain("Only credit recipient");
+  expect(container.textContent).toContain("public identity has not been confirmed");
+  expect(container.querySelector(`a[href="https://etherscan.io/tx/${saved.pair.failedTransactionHash}"]`)).not.toBeNull();
+  expect(container.querySelector(`a[href="https://etherscan.io/tx/${saved.pair.successfulTransactionHash}"]`)).not.toBeNull();
+  expectStatusOnly();
+  await refresh(); expect(heading()).toBe("Credit reached the source wallet");
+  expect(container.textContent).toContain("Only credit recipient");
 });
 
 test("a structured invalid-pair response is a conflict, not a transport outage", async () => {
