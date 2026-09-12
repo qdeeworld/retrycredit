@@ -6,12 +6,22 @@ import {
   RECOVERY_AUTHORIZATION_EXPIRED_MESSAGE,
   releaseRecoveryPairWhenReady,
   requestRecoveryIntakeChallenge,
+  parseJsonResponse,
 } from "../web/src/api.mjs";
 
 const WALLET = "0xbad35FA6e368e90fC4faf63507F2D0A2Fdf94BAF";
 const PAIR = Object.freeze({
   failedTransactionHash: `0x${"1".repeat(64)}`,
   successfulTransactionHash: `0x${"2".repeat(64)}`,
+});
+
+test("client preserves optional diagnostics only for semantic pair rejection", async () => {
+  for (const [status, code, carriesReport] of [[422, "RECOVERY_PAIR_INVALID", true], [422, "RECOVERY_CHALLENGE_INVALID", false], [503, "RECOVERY_PAIR_INVALID", false]]) {
+    await assert.rejects(parseJsonResponse(new Response(JSON.stringify({ error: { code, message: "Rejected", diagnostics: { candidate: true } } }), { status })), (error) => {
+      assert.equal(Boolean(error.diagnostics), carriesReport);
+      return true;
+    });
+  }
 });
 
 test("open eligibility and challenge send only the ordered pair to their intake routes", async () => {

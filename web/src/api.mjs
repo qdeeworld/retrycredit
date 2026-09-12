@@ -466,6 +466,10 @@ export async function parseJsonResponse(response) {
     error.status = response.status;
     error.code = data?.error?.code;
     error.requestId = data?.error?.requestId;
+    if (response.status === 422 && error.code === "RECOVERY_PAIR_INVALID") {
+      // The view validates schema, exact pair and authenticated campaign before use.
+      error.diagnostics = data?.error?.diagnostics;
+    }
     throw error;
   }
 

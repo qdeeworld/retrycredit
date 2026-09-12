@@ -7,6 +7,7 @@ import { proofProvider } from "@gluwa/usc-sdk";
 import { RuleDropWorker, WorkerError, createEthereumProviders } from "./proof-worker.mjs";
 import { selectPoolAbi } from "./pool-abi.mjs";
 import { PUBLIC_DEMO_DEFAULTS, UniswapRetryCreditDemoService } from "./uniswap-demo-service.mjs";
+import { serializeRecoveryPairDiagnostics } from "./recovery-pair-diagnostics.mjs";
 import {
   RECOVERY_DEFAULTS,
   RECOVERY_DISCOVERY_INDEX,
@@ -212,6 +213,7 @@ export function createAppHandler({
 } = {}) {
   return async (request, response) => {
   const requestId = crypto.randomUUID();
+  let pairInspectionRequest = false;
   try {
     setHeaders(response, requestId, allowedOrigin);
     if (request.method === "OPTIONS") {
@@ -266,6 +268,7 @@ export function createAppHandler({
     }
 
     if (request.method === "POST" && url.pathname === "/api/recovery/intake/eligibility") {
+      pairInspectionRequest = true;
       requireRecoveryService(recovery);
       const body = await readJson(request);
       sendJson(response, 200, await recovery.service.intakeEligibility(body));
@@ -402,7 +405,13 @@ export function createAppHandler({
       ? error
       : new WorkerError("INTERNAL_ERROR", "The worker could not process this request", 500, error);
     if (handled.status === 429) response.setHeader("retry-after", "5");
-    sendJson(response, handled.status, { error: { code: handled.code, message: handled.message, requestId } });
+    const diagnostics = pairInspectionRequest && handled.status === 422 && handled.code === "RECOVERY_PAIR_INVALID"
+      ? serializeRecoveryPairDiagnostics(handled.diagnostics)
+      : null;
+    sendJson(response, handled.status, { error: {
+      code: handled.code, message: handled.message, requestId,
+      ...(diagnostics ? { diagnostics } : {}),
+    } });
   }
   };
 }

@@ -19,6 +19,35 @@ const ENV = Object.freeze({
   }),
 });
 
+test("Cloudflare serializes advisory diagnostics only for rejected exact-pair inspection", async () => {
+  const checks = ["source-network", "transaction-type", "action-family", "same-wallet", "receipt-status", "nonce-order", "block-gap", "campaign-window", "paid-mint", "mint-identity", "mint-outcome", "campaign-fee-recipient", "campaign-quantity"];
+  const diagnostics = {
+    schema: "retrycredit.pair-diagnostics/1", authority: "advisory-source-check", attestationVerified: false,
+    checkedAt: "2026-09-12T08:00:00.000Z", sourceChainId: 1,
+    pair: { failedTransactionHash: `0x${"1".repeat(64)}`, successfulTransactionHash: `0x${"2".repeat(64)}` },
+    campaign: { poolAddress: `0x${"3".repeat(40)}`, campaignNumber: 1, termsHash: `0x${"4".repeat(64)}`, startBlock: 1, endBlock: 100, maxBlockGap: 5, maxQuantity: 2, creditAmount: "100", deadline: 2000000000 },
+    checks: checks.map((id) => ({ id, status: id === "campaign-window" ? "fail" : "pass", message: "PRIVATE_PROVIDER_TEXT" })),
+    facts: { failed: { blockNumber: 101, nonce: 1, status: 0 }, successful: { blockNumber: 102, nonce: 2, status: 1 } },
+    signature: "PRIVATE_SIGNATURE", cause: "PRIVATE_CAUSE",
+  };
+  for (const [operation, status, code, expected] of [
+    ["intakeEligibility", 422, "RECOVERY_PAIR_INVALID", true],
+    ["intakeChallenge", 422, "RECOVERY_PAIR_INVALID", false],
+    ["intakeEligibility", 503, "RECOVERY_SOURCE_UNAVAILABLE", false],
+  ]) {
+    const reject = async () => { const error = new CloudflareApiError(code, "Source check failed", status); error.diagnostics = diagnostics; throw error; };
+    const runtime = createCoordinatorRuntime({ env: ENV,
+      serviceFactory: async () => ({ readiness: async () => undefined, intakeEligibility: reject, intakeChallenge: reject }),
+      freshReadControl: { admit: async () => undefined, issueReceipt: async () => undefined },
+    });
+    const result = await runtime.execute({ operation, body: {}, requestId: "test-diagnostic" });
+    assert.equal(result.status, status);
+    assert.equal(Boolean(result.body.error.diagnostics), expected);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_/);
+    if (expected) assert.equal(result.body.error.diagnostics.attestationVerified, false);
+  }
+});
+
 test("Cloudflare handler preserves exact CORS, revision, and read-only health", async () => {
   const coordinator = {
     async health() { return { state: "ready" }; },

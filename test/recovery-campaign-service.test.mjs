@@ -27,7 +27,7 @@ import {
   recoveryCampaignAbiV2,
   selectRecoveryCampaignAbi,
 } from "../src/pool-abi.mjs";
-import { MINT_SIGNED_SELECTOR, SEA_DROP_MAINNET } from "../src/seadrop-recovery.mjs";
+import { MINT_SIGNED_SELECTOR, SEA_DROP_MAINNET, SEA_DROP_INTERFACE } from "../src/seadrop-recovery.mjs";
 import { WorkerError } from "../src/proof-worker.mjs";
 import { isRetryableRecoveryStartupError } from "../src/recovery-startup-lifecycle.mjs";
 
@@ -877,6 +877,156 @@ test("discovery cannot report an empty match when a candidate has unavailable re
   await assert.rejects(fixture.service.discover(source.address), { code: "RECOVERY_SOURCE_UNAVAILABLE", status: 503 });
 });
 
+test("outside-window diagnostics preserve authoritative rejection and the original cached check time", async () => {
+  const facts = diagnosticSourceFacts();
+  let sourceReads = 0;
+  const fixture = serviceFixture({
+    useEthereumResolver: true,
+    ruleReaderOverride: ({ rule }) => ({ ...rule, endBlock: 101n }),
+    ethereumProviders: [{
+      async getNetwork() { return { chainId: 1n }; },
+      async getTransaction(hash) { sourceReads++; return hash === failedHash ? facts.failedTransaction : facts.successfulTransaction; },
+      async getTransactionReceipt(hash) { sourceReads++; return hash === failedHash ? facts.failedReceipt : facts.successfulReceipt; },
+    }],
+  });
+  let first;
+  await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), error => {
+    assert.equal(error.code, "RECOVERY_PAIR_INVALID");
+    assert.equal(error.status, 422);
+    first = error.diagnostics;
+    assert(first);
+    assert.deepEqual(first.pair, pairIdentity());
+    assert.equal(first.campaign.poolAddress, poolAddress);
+    assert.equal(first.campaign.campaignNumber, 7);
+    assert.equal(first.campaign.termsHash, id("campaign-terms"));
+    assert.equal(first.checks.find(check => check.id === "campaign-window").status, "fail");
+    assert.equal(first.checks.find(check => check.id === "mint-outcome").status, "pass");
+    return true;
+  });
+  fixture.setNow(now + 1);
+  await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), error => {
+    assert.deepEqual(error.diagnostics, first);
+    return error.code === "RECOVERY_PAIR_INVALID" && error.status === 422;
+  });
+  assert.equal(sourceReads, 4);
+  assert.equal(fixture.proofCalls, 0);
+  assert.equal(fixture.staticCalls, 0);
+  assert.equal(fixture.releaseCalls, 0);
+});
+
+test("an unavailable receipt has no diagnostics and a recovered provider is reread", async () => {
+  const facts = diagnosticSourceFacts();
+  facts.failedTransaction.type = 0;
+  let available = false;
+  const fixture = serviceFixture({
+    useEthereumResolver: true,
+    ethereumProviders: [{
+      async getNetwork() { return { chainId: 1n }; },
+      async getTransaction(hash) { return hash === failedHash ? facts.failedTransaction : facts.successfulTransaction; },
+      async getTransactionReceipt(hash) { return available ? (hash === failedHash ? facts.failedReceipt : facts.successfulReceipt) : null; },
+    }],
+  });
+  await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), error => {
+    assert.equal(error.diagnostics, undefined);
+    return error.code === "RECOVERY_SOURCE_UNAVAILABLE" && error.status === 503;
+  });
+  available = true;
+  await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), error => {
+    assert.equal(error.diagnostics.checks.find(check => check.id === "transaction-type").status, "fail");
+    return error.code === "RECOVERY_PAIR_INVALID" && error.status === 422;
+  });
+});
+
+test("successful authoritative fallback discards the earlier provider's mismatch diagnostics", async () => {
+  const facts = diagnosticSourceFacts();
+  const stale = { ...facts, failedTransaction: { ...facts.failedTransaction, type: 0 } };
+  const fixture = serviceFixture({
+    useEthereumResolver: true,
+    ethereumProviders: [stale, facts].map(value => ({
+      async getNetwork() { return { chainId: 1n }; },
+      async getTransaction(hash) { return hash === failedHash ? value.failedTransaction : value.successfulTransaction; },
+      async getTransactionReceipt(hash) { return hash === failedHash ? value.failedReceipt : value.successfulReceipt; },
+    })),
+  });
+  const result = await fixture.service.intakeEligibility({ pair: pairIdentity() });
+  assert.equal(result.eligible, true);
+  assert.equal(result.diagnostics, undefined);
+  assert.equal(fixture.proofCalls, 0);
+});
+
+test("a clock failure during diagnostic formatting preserves the authoritative semantic 422", async () => {
+  const facts = diagnosticSourceFacts();
+  facts.failedTransaction.type = 0;
+  let clockFault = false;
+  const fixture = serviceFixture({
+    useEthereumResolver: true,
+    ethereumProviders: [{
+      async getNetwork() { return { chainId: 1n }; },
+      async getTransaction(hash) { return hash === failedHash ? facts.failedTransaction : facts.successfulTransaction; },
+      async getTransactionReceipt(hash) {
+        clockFault = true;
+        return hash === failedHash ? facts.failedReceipt : facts.successfulReceipt;
+      },
+    }],
+  });
+  fixture.service.now = () => {
+    if (clockFault) { clockFault = false; throw new Error("SECRET_CLOCK_FAILURE"); }
+    return now;
+  };
+  await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), error => {
+    assert.equal(error.diagnostics, undefined);
+    assert.doesNotMatch(error.message, /SECRET/);
+    return error.code === "RECOVERY_PAIR_INVALID" && error.status === 422;
+  });
+});
+
+test("incoherent complete provider data keeps its existing error without inventing diagnostic facts", async () => {
+  const facts = diagnosticSourceFacts();
+  facts.failedReceipt.hash = successHash;
+  const fixture = serviceFixture({
+    useEthereumResolver: true,
+    ethereumProviders: [{
+      async getNetwork() { return { chainId: 1n }; },
+      async getTransaction(hash) { return hash === failedHash ? facts.failedTransaction : facts.successfulTransaction; },
+      async getTransactionReceipt(hash) { return hash === failedHash ? facts.failedReceipt : facts.successfulReceipt; },
+    }],
+  });
+  await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), error => {
+    assert.equal(error.diagnostics, undefined);
+    return error.code === "RECOVERY_PAIR_INVALID" && error.status === 422;
+  });
+});
+
+test("missing or malformed calldata retains the existing 422 without live or cached diagnostics", async (t) => {
+  for (const transactionName of ["failedTransaction", "successfulTransaction"]) {
+    for (const [label, data] of [["missing", undefined], ["null", null], ["malformed", "0xzz"]]) {
+      await t.test(`${transactionName} ${label}`, async () => {
+        const facts = diagnosticSourceFacts();
+        facts[transactionName].data = data;
+        let sourceReads = 0;
+        const fixture = serviceFixture({
+          useEthereumResolver: true,
+          ethereumProviders: [{
+            async getNetwork() { return { chainId: 1n }; },
+            async getTransaction(hash) { sourceReads++; return hash === failedHash ? facts.failedTransaction : facts.successfulTransaction; },
+            async getTransactionReceipt(hash) { sourceReads++; return hash === failedHash ? facts.failedReceipt : facts.successfulReceipt; },
+          }],
+        });
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await assert.rejects(fixture.service.intakeEligibility({ pair: pairIdentity() }), error => {
+            assert.equal(error.diagnostics, undefined);
+            return error.code === "RECOVERY_PAIR_INVALID" && error.status === 422;
+          });
+        }
+        assert.equal(sourceReads, 4);
+        assert.equal(fixture.proofCalls, 0);
+        assert.equal(fixture.staticCalls, 0);
+        assert.equal(fixture.releaseCalls, 0);
+      });
+    }
+  }
+});
+
 test("open-pair release queue rejects overflow before a second proof starts", async () => {
   const proofGate = deferred();
   const secondPair = pairIdentity(`0x${"a9".repeat(32)}`, `0x${"b9".repeat(32)}`);
@@ -1452,6 +1602,22 @@ test("batch normalization rejects unexpected hashes and keeps the exact two-entr
     (error) => error instanceof WorkerError && error.code === "RECOVERY_PROOF_INVALID",
   );
 });
+
+function diagnosticSourceFacts() {
+  const nft = outsider.address;
+  const mintParams = [7n, 2n, 1000n, 2000n, 1n, 100n, 1000n, true];
+  const calldata = salt => SEA_DROP_INTERFACE.encodeFunctionData("mintSigned", [
+    nft, feeRecipient, ZeroAddress, 2n, mintParams, salt, `0x${"11".repeat(65)}`,
+  ]);
+  const common = { chainId: 1n, type: 2, from: source.address, to: SEA_DROP_MAINNET, value: 14n };
+  const failedTransaction = { ...common, hash: failedHash, blockNumber: 100, nonce: 15, data: calldata(1n) };
+  const successfulTransaction = { ...common, hash: successHash, blockNumber: 102, nonce: 16, data: calldata(2n) };
+  const transfer = new Interface(["event Transfer(address indexed from,address indexed to,uint256 indexed tokenId)"]);
+  const logs = [1n, 2n].map(tokenId => ({ address: nft, ...transfer.encodeEventLog("Transfer", [ZeroAddress, source.address, tokenId]) }));
+  logs.push({ address: SEA_DROP_MAINNET, ...SEA_DROP_INTERFACE.encodeEventLog("SeaDropMint", [nft, source.address, feeRecipient, source.address, 2n, 7n, 1000n, 1n]) });
+  const receipt = (tx, status, receiptLogs) => ({ hash: tx.hash, from: tx.from, to: tx.to, blockNumber: tx.blockNumber, status, logs: receiptLogs });
+  return { failedTransaction, successfulTransaction, failedReceipt: receipt(failedTransaction, 0, []), successfulReceipt: receipt(successfulTransaction, 1, logs) };
+}
 
 function serviceFixture({
   beforeBroadcast,

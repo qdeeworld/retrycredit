@@ -191,6 +191,10 @@ Request:
 
 The body accepts only this pair object, and the pair accepts only the two distinct 32-byte hashes. No wallet or destination is accepted as authority. The service re-reads both Ethereum transactions and receipts under bounded source-work limits, validates the exact immutable campaign predicate, and derives the claimant from the live source sender. The response includes that derived `wallet`, the full validated pair, campaign amount, status, lineage status, and any exact current-campaign release. V2 distinguishes `claimed-predecessor` and `claimed-sponsor` from a current-campaign receipt. Status `continuation-waiting` keeps the analyzed pair visible but forbids authorization until the immutable predecessor boundary unlocks. Status `processing` means a valid signed release for this exact wallet/pair is already inside hosted preflight, proof, or relay work; clients must check again instead of requesting another signature.
 
+#### Advisory incident reports
+
+On a semantic `422` / `RECOVERY_PAIR_INVALID`, exact-pair inspection may additionally return `error.diagnostics`. Schema `retrycredit.pair-diagnostics/1` contains `authority: "advisory-source-check"`, `attestationVerified: false`, original `checkedAt`, exact pair, authenticated campaign terms, selected source receipt facts and thirteen fixed-text checks with `pass`, `fail` or `not-checked` status. This optional report is display/export only. It does not change eligibility, native proof or payout authority. Clients must bind it to the requested pair and current pool, campaign, terms hash, amount, deadline and source rule before showing it. Negative cache hits retain the original check time. Partial/inconsistent source facts, provider failures, challenge and release errors do not expose reports. The stable error code/status/message/requestId contract is unchanged.
+
 ### `POST /api/recovery/intake/challenge`
 
 Request:

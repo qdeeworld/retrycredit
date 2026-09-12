@@ -66,6 +66,8 @@ import {
 } from "./recovery-resume-state.mjs";
 import { buildRecoveryCampaignManifest, RECOVERY_ADAPTERS } from "./recovery-campaign-manifest.mjs";
 import { requestRecoveryAccounts } from "./recovery-wallet-connection.mjs";
+import { createRecoveryPairLink, normalizeRecoveryInspectionAddress, readRecoveryPairLink } from "./recovery-pair-handoff.mjs";
+import { recoveryIncidentExport, validateRecoveryIncidentReport } from "./recovery-incident-report.mjs";
 import "./styles.css";
 
 const ETHEREUM_EXPLORER = "https://etherscan.io";
@@ -107,12 +109,15 @@ const ROUTES = Object.freeze([
 
 function App() {
   const path = usePathname();
+  const initialSharedPair = useRef(readRecoveryPairLink(window.location.hash));
   const previousRoute = useRef(null);
   const configRef = useRef(null);
   const configFlight = useRef(null);
   const eligibilityRef = useRef(null);
-  const flowRef = useRef("empty");
-  const pairDraftRef = useRef(EMPTY_PAIR_DRAFT);
+  const flowRef = useRef(initialSharedPair.current ? "editing" : "empty");
+  const pairDraftRef = useRef(initialSharedPair.current ?? EMPTY_PAIR_DRAFT);
+  const discoveryGeneration = useRef(0);
+  const discoveryMode = useRef(null);
   const pairOperations = useRef(null);
   const walletOperations = useRef(null);
   const authorizationInFlight = useRef(false);
@@ -124,8 +129,8 @@ function App() {
   const [account, setAccount] = useState("");
   const [config, setConfig] = useState(null);
   const [configState, setConfigState] = useState("loading");
-  const [flow, setFlow] = useState("empty");
-  const [pairDraft, setPairDraft] = useState(EMPTY_PAIR_DRAFT);
+  const [flow, setFlow] = useState(initialSharedPair.current ? "editing" : "empty");
+  const [pairDraft, setPairDraft] = useState(initialSharedPair.current ?? EMPTY_PAIR_DRAFT);
   const [pairErrors, setPairErrors] = useState({});
   const [eligibility, setEligibility] = useState(null);
   const [featuredEligibility, setFeaturedEligibility] = useState(null);
@@ -135,6 +140,7 @@ function App() {
   const [online, setOnline] = useState(() => navigator.onLine);
   const [authorizationPending, setAuthorizationPending] = useState(false);
   const [discoveryResult, setDiscoveryResult] = useState(null);
+  const [pairDiagnostics, setPairDiagnostics] = useState(null);
   const [, setCampaignClock] = useState(() => Date.now());
 
   const route = normalizeRoute(path);
@@ -151,6 +157,7 @@ function App() {
   }
 
   function updateEligibility(next) {
+    if (!next) setPairDiagnostics(null);
     eligibilityRef.current = next;
     setEligibility(next);
   }
@@ -445,6 +452,41 @@ function App() {
   }, [route]);
 
   useEffect(() => {
+    const applySharedPair = () => {
+      const next = readRecoveryPairLink(window.location.hash);
+      if (!next) return;
+      const liveConfig = configRef.current;
+      if (!isRecoveryConfigReadable(liveConfig)) {
+        setError("Campaign checks are not ready. The current pair and any saved recovery have not changed. Wait for the campaign to load, then reopen the shared link.");
+        return;
+      }
+      // Config can become readable before the resume effect has restored its flow.
+      const savedRecovery = loadRecoveryResumeCandidate({
+        poolAddress: liveConfig.poolAddress,
+        campaignNumber: liveConfig.campaignNumber,
+      });
+      if (authorizationInFlight.current || isBusyFlow(flowRef.current) || needsReleaseStatusCheck(flowRef.current)
+        || isBusyFlow(savedRecovery?.status) || needsReleaseStatusCheck(savedRecovery?.status)) {
+        setError("A recovery action is still active. Its pair has not changed. Finish checking its status, or open the shared pair in a new tab for inspection.");
+        return;
+      }
+      discoveryGeneration.current += 1;
+      clearSubmittedRecovery();
+      pairDraftRef.current = next;
+      pairOperations.current.invalidate();
+      setPairDraft(next);
+      setPairErrors({});
+      updateEligibility(null);
+      setReleaseResult(null);
+      setDiscoveryResult(null);
+      setError("");
+      updateFlow("editing");
+    };
+    window.addEventListener("hashchange", applySharedPair);
+    return () => window.removeEventListener("hashchange", applySharedPair);
+  }, []);
+
+  useEffect(() => {
     const previous = previousDeskFlow.current;
     previousDeskFlow.current = flow;
     if (previous !== "checking" || flow === "checking") return;
@@ -493,6 +535,7 @@ function App() {
     if (!campaignChanged) return;
 
     clearSubmittedRecovery();
+    discoveryGeneration.current += 1;
     const connected = walletOperations.current.currentAccount();
     walletOperations.current.begin(connected);
     pairOperations.current.invalidate();
@@ -510,7 +553,7 @@ function App() {
     if (!didChange) return false;
 
     setError("");
-    if (externalChange && flowRef.current === "discovering") {
+    if (externalChange && flowRef.current === "discovering" && discoveryMode.current === "connected") {
       setDiscoveryResult(null);
       setError("The connected account changed before wallet discovery finished. Search the newly selected wallet when ready.");
       updateFlow("empty");
@@ -564,6 +607,16 @@ function App() {
   }
 
   async function discoverConnectedWallet() {
+    return discoverWallet();
+  }
+
+  async function discoverPublicWallet(address) {
+    const wallet = normalizeRecoveryInspectionAddress(address);
+    if (!wallet) return;
+    return discoverWallet({ publicAddress: wallet });
+  }
+
+  async function discoverWallet({ publicAddress } = {}) {
     if (
       !online
       || authorizationInFlight.current
@@ -571,24 +624,30 @@ function App() {
       || needsReleaseStatusCheck(flowRef.current)
     ) return;
     let walletOperation;
+    const generation = ++discoveryGeneration.current;
+    const isCurrent = () => generation === discoveryGeneration.current
+      && (!walletOperation || walletOperations.current.isCurrent(walletOperation));
+    discoveryMode.current = publicAddress ? "address" : "connected";
     let searchStarted = false;
-    updateFlow("discovery-connecting");
+    updateFlow(publicAddress ? "discovering" : "discovery-connecting");
     setError("");
     setDiscoveryResult(null);
     updateEligibility(null);
     setReleaseResult(null);
     pairOperations.current.invalidate();
     try {
-      const wallet = await connectWallet({ discovery: true });
+      const wallet = publicAddress ?? await connectWallet({ discovery: true });
+      if (!isCurrent()) return;
       if (!wallet) throw new Error("The wallet did not return an Ethereum address.");
-      walletOperation = walletOperations.current.begin(wallet);
+      if (!publicAddress) walletOperation = walletOperations.current.begin(wallet);
       updateFlow("discovering");
       const liveConfig = configState === "ready" ? config : await refreshConfig();
-      if (!walletOperations.current.isCurrent(walletOperation)) return;
+      if (!isCurrent()) return;
       if (!isRecoveryConfigReadable(liveConfig)) throw new TemporaryUnavailableError();
       searchStarted = true;
       const response = await discoverRecoveryWallet({ apiOrigin: API_ORIGIN, wallet });
-      if (!walletOperations.current.isCurrent(walletOperation)) return;
+      if (!isCurrent()) return;
+      if (!recoveryCampaignsMatch(liveConfig, configRef.current)) return;
       if (
         response?.authority !== "advisory-discovery-only"
         || !walletsMatch(response?.wallet, wallet)
@@ -628,12 +687,16 @@ function App() {
       } else if (validated.status === "full") {
         updateFlow("campaign-full");
       } else if (validated.eligible) {
-        updateFlow(walletsMatch(walletOperations.current.currentAccount(), validated.wallet) ? "qualifying" : "wrong-wallet");
+        updateFlow(recoveryEligibleInspectionFlow({
+          config: liveConfig,
+          connectedAccount: walletOperations.current.currentAccount(),
+          sourceWallet: validated.wallet,
+        }));
       } else {
         updateFlow("semantic-mismatch");
       }
     } catch (nextError) {
-      if (walletOperation && !walletOperations.current.isCurrent(walletOperation)) return;
+      if (!isCurrent()) return;
       if (nextError?.code === 4001 || nextError?.code === "ACTION_REJECTED") {
         setError("The wallet request was closed. No history was searched and nothing was submitted.");
         updateFlow("empty");
@@ -646,6 +709,7 @@ function App() {
   }
 
   function changePairField(field, value) {
+    discoveryGeneration.current += 1;
     clearSubmittedRecovery();
     const next = { ...pairDraftRef.current, [field]: value };
     const hadDerivedState = Boolean(eligibilityRef.current || releaseResult || busy);
@@ -759,7 +823,10 @@ function App() {
         return;
       }
       setError(cleanError(nextError));
-      if (isRecoveryPairInvalid(nextError)) updateFlow("semantic-mismatch");
+      if (isRecoveryPairInvalid(nextError)) {
+        setPairDiagnostics(validateRecoveryIncidentReport(nextError.diagnostics, pair, configRef.current));
+        updateFlow("semantic-mismatch");
+      }
       else if (isRecoveryRateLimited(nextError)) updateFlow("rate-limited");
       else updateFlow(nextError instanceof TemporaryUnavailableError ? "service-unavailable" : "retryable-error");
     }
@@ -1125,7 +1192,8 @@ function App() {
     pairErrors,
     releaseResult: visibleRelease,
     discoveryResult,
-  }), [account, busy, config, configState, effectiveFlow, eligibility, error, featuredEligibility, featuredState, online, pairDraft, pairErrors, visibleRelease, discoveryResult]);
+    pairDiagnostics,
+  }), [account, busy, config, configState, effectiveFlow, eligibility, error, featuredEligibility, featuredState, online, pairDraft, pairErrors, visibleRelease, discoveryResult, pairDiagnostics]);
 
   const walletActionEnabled = Boolean(
     online
@@ -1155,6 +1223,7 @@ function App() {
         onAuthorize={authorizeAndRelease}
         onCheckPair={checkPair}
         onDiscover={discoverConnectedWallet}
+        onInspectAddress={discoverPublicWallet}
         onLoadExample={loadRecoveredExample}
         onPairChange={changePairField}
       />}
@@ -1307,7 +1376,7 @@ function CampaignTerms({ config }) {
       <ChevronRight aria-hidden="true" />
     </summary>
     <dl>
-      <ProtocolField label="Funded reserve" value={campaign?.fundedAmount ? formatCredit(campaign.fundedAmount) : null} />
+      <ProtocolField label="Initial funding" value={campaign?.fundedAmount ? formatCredit(campaign.fundedAmount) : null} />
       <ProtocolField label="Campaign sponsor" value={campaign?.sponsor} />
       <ProtocolField label="Recovery pool" value={config?.poolAddress} />
       <ProtocolField label="Fee recipient" value={config?.rule?.feeRecipient} />
@@ -1332,12 +1401,14 @@ function EligibilityDesk({
   onAuthorize,
   onCheckPair,
   onDiscover,
+  onInspectAddress,
   onLoadExample,
   onPairChange,
   pairDraft,
   pairErrors,
   releaseResult,
   discoveryResult,
+  pairDiagnostics,
 }) {
   const copy = deskCopy(flow, eligibility, releaseResult, config);
   const isTerminal = flow === "released" || flow === "already-claimed";
@@ -1392,6 +1463,10 @@ function EligibilityDesk({
         {["discovery-connecting", "discovering"].includes(flow) ? <LoaderCircle className="spin" aria-hidden="true" /> : <Wallet aria-hidden="true" />}
       </button>
       <p>Connection reveals only the selected public address. RetryCredit searches a bounded history, then independently rechecks any match before it can qualify.</p>
+      <WalletAddressInspection
+        onInspect={onInspectAddress}
+        disabled={busy || !online || configState !== "ready" || !config?.capabilities?.walletNativeDiscovery || needsStatusCheck}
+      />
     </div>}
 
     {discoveryResult && <DiscoveryReceipt result={discoveryResult} />}
@@ -1457,6 +1532,10 @@ function EligibilityDesk({
       </details>
     </form>
 
+    <PairHandoff key={`${pairDraft.failedTransactionHash}:${pairDraft.successfulTransactionHash}`} pair={pairDraft} disabled={pairLocked} />
+
+    {pairDiagnostics && <IncidentReport report={pairDiagnostics} />}
+
     {eligibility?.wallet && <div className="wallet-readout">
       <span>Source wallet derived from live pair</span>
       <code>{eligibility.wallet}</code>
@@ -1498,6 +1577,7 @@ function EligibilityDesk({
 function DiscoveryReceipt({ result }) {
   const attribution = selectDiscoveryAttribution(result?.attribution);
   return <div className="discovery-receipt">
+    <small className="inspected-wallet">Inspected address: <code>{result.wallet}</code></small>
     <small>{result.historyRowsInspected} transactions checked{result.historyTruncated ? " · older history not included" : " · complete bounded history"}</small>
     {attribution && <a
       className="discovery-attribution"
@@ -1509,6 +1589,93 @@ function DiscoveryReceipt({ result }) {
       <ExternalLink aria-hidden="true" />
     </a>}
   </div>;
+}
+
+function WalletAddressInspection({ onInspect, disabled }) {
+  const [address, setAddress] = useState("");
+  const [addressError, setAddressError] = useState("");
+  function submit(event) {
+    event.preventDefault();
+    if (disabled) return;
+    const wallet = normalizeRecoveryInspectionAddress(address);
+    if (!wallet) {
+      setAddressError("Enter a complete Ethereum address (0x followed by 40 hexadecimal characters). No ENS names or links.");
+      document.getElementById("inspection-address")?.focus();
+      return;
+    }
+    setAddressError("");
+    void onInspect(wallet);
+  }
+  return <details className="transaction-help address-inspection">
+    <summary><span>Check a public address without connecting</span><ChevronRight aria-hidden="true" /></summary>
+    <form onSubmit={submit} noValidate>
+      <label htmlFor="inspection-address">Ethereum wallet address</label>
+      <input id="inspection-address" name="inspection-address" type="text" required
+        value={address} disabled={disabled} maxLength={64} autoComplete="off" autoCapitalize="none" spellCheck="false"
+        onChange={(event) => { setAddress(event.target.value); setAddressError(""); }}
+        aria-invalid={Boolean(addressError)} aria-describedby={`inspection-help${addressError ? " inspection-error" : ""}`} />
+      <p id="inspection-help">Read-only search of public history. This address is not a payout instruction. Only the source owner can authorize our hosted relay.</p>
+      {addressError && <p id="inspection-error" className="field-error" role="alert">{addressError}</p>}
+      <button type="submit" className="example-action" disabled={disabled}>Check public address <Search aria-hidden="true" /></button>
+    </form>
+  </details>;
+}
+
+function PairHandoff({ pair, disabled }) {
+  const link = createRecoveryPairLink(pair, window.location.origin);
+  const [copyState, setCopyState] = useState("");
+  if (!link) return null;
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopyState("Link copied. The recipient must check the pair again.");
+    } catch {
+      setCopyState("Copy the link from the field below. Your browser did not allow clipboard access.");
+    }
+  }
+  return <details className="transaction-help pair-handoff">
+    <summary><span>Share this exact pair</span><ChevronRight aria-hidden="true" /></summary>
+    <p>This link contains only two public transaction hashes. It does not carry a verdict, signature or payout destination. The recipient checks current eligibility and connects their own source wallet.</p>
+    <label htmlFor="pair-handoff-link">Public pair link</label>
+    <input id="pair-handoff-link" type="text" value={link} readOnly autoComplete="off" spellCheck="false" />
+    <button className="example-action" type="button" onClick={copyLink} disabled={disabled}>Copy pair link <ChevronRight aria-hidden="true" /></button>
+    {copyState && <p role="status">{copyState}</p>}
+  </details>;
+}
+
+function IncidentReport({ report }) {
+  const failedChecks = report.checks.filter((check) => check.status === "fail");
+  const [downloadState, setDownloadState] = useState("");
+  function download() {
+    const content = recoveryIncidentExport(report);
+    if (!content) return;
+    const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `retrycredit-incident-${report.pair.failedTransactionHash.slice(2, 12)}.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 5_000);
+    setDownloadState("Incident summary prepared for download. It contains public source facts, not a proof or authorization.");
+  }
+  return <section className="incident-report" aria-labelledby="incident-report-heading">
+    <h2 id="incident-report-heading">Why this pair does not qualify</h2>
+    <p>{report.summary}</p>
+    <ul className="incident-failures">
+      {failedChecks.map((check) => <li key={check.id}><strong>{check.label}</strong><span>{check.message}</span></li>)}
+    </ul>
+    <p className="incident-meta">Checked {new Date(report.checkedAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })} · Ethereum Mainnet</p>
+    <details className="transaction-help">
+      <summary><span>All {report.checks.length} source checks</span><ChevronRight aria-hidden="true" /></summary>
+      <ol className="incident-checks">
+        {report.checks.map((check) => <li key={check.id}>
+          <span className={`check-status check-${check.status}`}>{check.status === "pass" ? "Pass" : check.status === "fail" ? "Does not match" : "Not checked"}</span>
+          <strong>{check.label}</strong><p>{check.message}</p>
+        </li>)}
+      </ol>
+    </details>
+    <button className="example-action" type="button" onClick={download}>Download incident summary <FileCheck2 aria-hidden="true" /></button>
+    {downloadState && <p role="status">{downloadState}</p>}
+  </section>;
 }
 
 function LineageAssurance({ config, eligibility }) {

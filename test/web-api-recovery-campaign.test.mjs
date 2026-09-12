@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 
 import { WorkerError } from "../src/proof-worker.mjs";
+import { serializeRecoveryPairDiagnostics } from "../src/recovery-pair-diagnostics.mjs";
 import {
   RECOVERY_RELEASE_DEFAULTS,
   createAppHandler,
@@ -607,6 +608,52 @@ test("intake resource saturation returns explicit 429 state without internal det
   });
 });
 
+test("only pair-inspection semantic errors expose sanitized advisory diagnostics", async () => {
+  const diagnostic = diagnosticReportFixture();
+  const fail = async () => {
+    const error = new WorkerError("RECOVERY_PAIR_INVALID", "Both exact Ethereum transactions and receipts must form the funded retry rule.", 422, new Error("SECRET_PROVIDER_CAUSE"));
+    error.diagnostics = {
+      ...diagnostic,
+      rawTransaction: "SECRET_RAW_TRANSACTION",
+      checks: diagnostic.checks.map(check => ({ ...check, message: "SECRET_PROVIDER_MESSAGE" })),
+    };
+    throw error;
+  };
+  await withServer({ state: "ready", service: { intakeEligibility: fail, intakeChallenge: fail, intakeRelease: fail } }, async base => {
+    const response = await post(base, "/api/recovery/intake/eligibility", { pair });
+    assert.equal(response.status, 422);
+    const body = await response.json();
+    assert.equal(body.error.code, "RECOVERY_PAIR_INVALID");
+    assert.deepEqual(body.error.diagnostics, serializeRecoveryPairDiagnostics(diagnostic));
+    assert.doesNotMatch(JSON.stringify(body), /SECRET|rawTransaction|cause/);
+    for (const path of ["/api/recovery/intake/challenge", "/api/recovery/intake/release"]) {
+      const rejected = await post(base, path, { pair });
+      assert.equal(rejected.status, 422);
+      assert.equal((await rejected.json()).error.diagnostics, undefined);
+    }
+  });
+});
+
+test("malformed diagnostics and unavailable providers retain the existing error response", async () => {
+  for (const [code, status, diagnostic] of [
+    ["RECOVERY_PAIR_INVALID", 422, { ...diagnosticReportFixture(), attestationVerified: true }],
+    ["RECOVERY_SOURCE_UNAVAILABLE", 503, diagnosticReportFixture()],
+  ]) {
+    await withServer({ state: "ready", service: { async intakeEligibility() {
+      const error = new WorkerError(code, "Safe public error", status);
+      error.diagnostics = diagnostic;
+      throw error;
+    } } }, async base => {
+      const response = await post(base, "/api/recovery/intake/eligibility", { pair });
+      const body = await response.json();
+      assert.equal(response.status, status);
+      assert.equal(body.error.code, code);
+      assert.equal(body.error.diagnostics, undefined);
+      assert.deepEqual(Object.keys(body.error).sort(), ["code", "message", "requestId"]);
+    });
+  }
+});
+
 test("the 16 KB JSON boundary counts bytes before intake dispatch", async () => {
   let calls = 0;
   const service = {
@@ -690,6 +737,21 @@ test("V1 deployment proof cannot authorize a V2 service", async () => {
   await withServer({ state: "ready", service: { contractVersion: "v2", release() { assert.fail("dispatched"); } } },
     async base => assert.equal((await post(base, "/api/recovery/release", {})).status, 503), { recoveryV2 });
 });
+
+function diagnosticReportFixture() {
+  return {
+    schema: "retrycredit.pair-diagnostics/1",
+    authority: "advisory-source-check",
+    attestationVerified: false,
+    sourceChainId: 1,
+    checkedAt: "2026-09-12T08:00:00.000Z",
+    pair,
+    campaign: { poolAddress: wallet, campaignNumber: 1, termsHash: `0x${"33".repeat(32)}`, startBlock: 90, endBlock: 101, maxBlockGap: 5, maxQuantity: 2, creditAmount: "100000000000000000", deadline: 2000000000 },
+    facts: { failed: { blockNumber: 100, nonce: 1, status: 0 }, successful: { blockNumber: 102, nonce: 2, status: 1 } },
+    checks: ["source-network", "transaction-type", "action-family", "same-wallet", "receipt-status", "nonce-order", "block-gap", "campaign-window", "paid-mint", "mint-identity", "mint-outcome", "campaign-fee-recipient", "campaign-quantity"]
+      .map(id => ({ id, status: id === "campaign-window" ? "fail" : "pass" })),
+  };
+}
 
 async function withServer(recovery, callback, handlerOptions = {}) {
   const campaignWorker = {
