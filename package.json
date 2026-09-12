@@ -4,7 +4,8 @@
   "description": "Attestcoin-verified fixed recovery credits for paid Ethereum failure-to-completion pairs",
   "main": "index.js",
   "scripts": {
-    "test": "forge test && npm run verify:recovery-v2-artifact && node --test && npm run test:cloudflare && npm run test:helper-ledger",
+    "test": "forge test && npm run verify:recovery-v2-artifact && node --test && npm run test:ui && npm run test:cloudflare && npm run test:helper-ledger",
+    "test:ui": "vitest run --config vitest.ui.config.mjs",
     "test:cloudflare": "vitest run --config vitest.config.mjs",
     "test:helper-ledger": "vitest run --config vitest.helper.config.mjs",
     "build": "forge build && vite build && node scripts/verify-web-build-origin.mjs same-origin",
@@ -42,6 +43,7 @@
     "@cloudflare/vitest-plugin": "1.1.8",
     "@cloudflare/workers-types": "5.20260911.1",
     "@vitejs/plugin-react": "^6.0.5",
+    "jsdom": "^30.0.1",
     "playwright-core": "^1.62.1",
     "vite": "^8.2.1",
     "vitest": "4.1.11",

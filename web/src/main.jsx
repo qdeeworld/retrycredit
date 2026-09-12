@@ -2021,8 +2021,10 @@ function EvidenceBand({ config, eligibility, flow, releaseResult, helperMode = f
           ? "Fixed credit released"
           : priorRecovery
             ? "Earlier recovery blocks another credit"
+          : helperOperation?.receiptCheck === "conflict"
+            ? "Recovery evidence does not match"
           : helperOperation?.state === "settled"
-            ? "Credit released; rechecking receipt details"
+            ? "Settlement reported; receipt not confirmed"
             : ["reverted", "stopped"].includes(helperOperation?.state)
               ? "This operation did not release credit"
             : releaseProcessing
@@ -2044,8 +2046,10 @@ function EvidenceBand({ config, eligibility, flow, releaseResult, helperMode = f
             ? "Replay consumed"
             : priorRecovery
               ? "Prior use stays excluded after settlement opens"
+            : helperOperation?.receiptCheck === "conflict"
+              ? "Conflicting public records; status checks only"
             : helperOperation?.state === "settled"
-              ? "Durable settlement confirmed; full receipt facts are being rechecked"
+              ? "Backend report only; checking the exact receipt"
               : ["reverted", "stopped"].includes(helperOperation?.state)
                 ? "This operation will not restart automatically"
               : releaseProcessing

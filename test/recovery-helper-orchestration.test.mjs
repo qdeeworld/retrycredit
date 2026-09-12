@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { getAddress, hexlify, toUtf8Bytes } from "ethers";
+import { helperOutcomeResolved, helperSettlementConfirmed } from "../web/src/helper-settlement-view.mjs";
 import { canContinueHelperAuthorization, helperErrorCopy, helperOperationIsTerminal, helperRequestDefinitelyRefused, RECOVERY_HELPER_MODE } from "../web/src/recovery-helper-state.mjs";
 import { recoveryCampaignsMatch, recoveryHostedAdmissionMessage, recoveryHostedAdmissionState, validateRecoveryPairDraft, walletsMatch } from "../web/src/recovery-ui-state.mjs";
 
@@ -234,7 +235,7 @@ function createHarness({ signature = "signed-helper-request", signatureError, ch
     } } },
     getAddress, hexlify, toUtf8Bytes, walletsMatch, recoveryCampaignsMatch, canContinueHelperAuthorization,
     recoveryHostedAdmissionState, recoveryHostedAdmissionMessage,
-    helperOperationIsTerminal, helperRequestDefinitelyRefused, helperErrorCopy, RECOVERY_HELPER_MODE,
+    helperOperationIsTerminal, helperOutcomeResolved, helperSettlementConfirmed, helperRequestDefinitelyRefused, helperErrorCopy, RECOVERY_HELPER_MODE,
   };
   for (const name of ["setOperationState", "beginAction", "finishAction", "current", "acceptOperation"]) {
     context[name] = runInNewContext(`(${componentFunction(name)})`, context);
