@@ -68,6 +68,10 @@ export function createHelperLedgerClient({ url, token, identity, limits, fetchIm
     read: (input) => call("read", input),
     readSource: (input) => call("read-source", input),
     inspect: () => call("inspect"),
+    admission: async (input) => {
+      requireRecord(input, ["sourceWallet"]);
+      return call("admission", { sourceWallet: ledgerAddress(input.sourceWallet) });
+    },
     prepareBroadcast: (input) => call("prepare-broadcast", input),
     complete: (input) => call("complete", input),
     failBeforeBroadcast: (input) => call("fail-before-broadcast", input),
@@ -78,7 +82,7 @@ export function createHelperLedgerClient({ url, token, identity, limits, fetchIm
 function validateOperation(operation, policy) {
   requireRecord(operation, ["operationId", "mode", "requester", "sourceWallet", "pair", "state", "maxFeeWei", "creditWei",
     "transactionHash", "nonce", "receiptStatus", "blockNumber", "reason", "createdAt", "updatedAt"]);
-  normalizeLedgerReservation(policy.identity, {
+  const canonical = normalizeLedgerReservation(policy.identity, {
     operationId: operation.operationId, mode: operation.mode, requester: operation.requester,
     sourceWallet: operation.sourceWallet, pair: operation.pair, maxFeeWei: operation.maxFeeWei,
   });
@@ -94,18 +98,36 @@ function validateOperation(operation, policy) {
   if (operation.state === "stopped") {
     if (![...HELPER_LEDGER_STOP_REASONS, "operator-abandoned"].includes(operation.reason)) throw Error();
   } else if (operation.reason !== null) throw Error();
+  return canonical;
 }
 
 function validateResult(method, result, input, policy) {
-  if (method === "inspect") {
-    requireRecord(result, ["identity", "limits", "enabled", "attempts", "payouts", "reservedFeeWei", "activeOperationId"]);
+  if (["inspect", "admission"].includes(method)) {
+    requireRecord(result, ["identity", "limits", "enabled", "attempts", "payouts", "reservedFeeWei", "activeOperationId",
+      ...(method === "admission" ? ["sourceWallet", "operation"] : [])]);
     if (JSON.stringify(normalizeLedgerPolicy({ identity: result.identity, limits: result.limits })) !== JSON.stringify(policy)
       || typeof result.enabled !== "boolean") throw Error();
     const attempts = ledgerInteger(result.attempts, { zero: true, max: policy.limits.maxAttempts });
     if (ledgerInteger(result.payouts, { zero: true, max: policy.limits.maxPayouts }) !== attempts
       || result.reservedFeeWei !== (BigInt(attempts) * BigInt(policy.limits.maxFeeWei)).toString()
       || BigInt(result.reservedFeeWei) > BigInt(policy.limits.maxTotalFeeWei)) throw Error();
-    if (result.activeOperationId !== null) ledgerHash(result.activeOperationId);
+    if (result.activeOperationId !== null
+      && (result.activeOperationId !== ledgerHash(result.activeOperationId) || attempts === 0)) throw Error();
+    if (method === "admission") {
+      if (result.sourceWallet !== ledgerAddress(input.sourceWallet)) throw Error();
+      if (result.operation !== null) {
+        const operation = result.operation;
+        const canonical = validateOperation(operation, policy);
+        if (attempts === 0 || operation.sourceWallet !== result.sourceWallet
+          || operation.operationId !== canonical.operationId || operation.requester !== canonical.requester
+          || operation.pair.failedTransactionHash !== canonical.pair.failedTransactionHash
+          || operation.pair.successfulTransactionHash !== canonical.pair.successfulTransactionHash
+          || (operation.transactionHash !== null && operation.transactionHash !== ledgerHash(operation.transactionHash))) throw Error();
+        const active = ["admitted", "broadcast-prepared"].includes(operation.state);
+        if (active !== (result.activeOperationId === operation.operationId)
+          || (!active && result.activeOperationId !== null && attempts < 2)) throw Error();
+      }
+    }
     return;
   }
   requireRecord(result, method === "reserve" ? ["created", "permitToken", "operation"]

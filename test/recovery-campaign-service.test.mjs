@@ -1611,6 +1611,9 @@ test("helper mode is disabled unless the explicit durable budget and V2 signer a
   for (const options of [{}, { helperMaxFeeWei: "0" }, { helperMaxFeeWei: "2000000000000000", configOverride: { contractVersion: "v1" } }]) {
     assert.throws(() => serviceFixture({ helperLedger: fakeHelperLedger(), ...options }), { code: "INVALID_RECOVERY_CONFIGURATION" });
   }
+  const splitReadsOnly = fakeHelperLedger();
+  delete splitReadsOnly.admission;
+  assert.throws(() => helperFixture({ helperLedger: splitReadsOnly }), { code: "INVALID_RECOVERY_CONFIGURATION" });
 });
 
 test("helper consent separates requester from source and binds an identity shared across helpers", async () => {
@@ -1733,13 +1736,13 @@ test("owner and helper challenges expose fresh hosted admission without changing
 
 test("fresh hosted admission blocks futile owner and helper signatures while preserving qualified discovery", async () => {
   for (const [state, code, mutate] of [
-    ["paused", "HELPER_LEDGER_PAUSED", ledger => { ledger.inspect = async () => ({ ...admissionSnapshot(), enabled: false }); }],
-    ["busy", "HELPER_LEDGER_BUSY", ledger => { ledger.inspect = async () => ({ ...admissionSnapshot(), activeOperationId: `0x${"aa".repeat(32)}` }); }],
-    ["budget-exhausted", "HELPER_LEDGER_BUDGET_EXHAUSTED", ledger => { ledger.inspect = async () => ({ ...admissionSnapshot(), attempts: 12 }); }],
-    ["budget-exhausted", "HELPER_LEDGER_BUDGET_EXHAUSTED", ledger => { ledger.inspect = async () => ({ ...admissionSnapshot(), payouts: 9 }); }],
-    ["budget-exhausted", "HELPER_LEDGER_BUDGET_EXHAUSTED", ledger => { ledger.inspect = async () => ({ ...admissionSnapshot(), reservedFeeWei: "18000000000000000" }); }],
-    ["unavailable", "RECOVERY_HELPER_UNAVAILABLE", ledger => { ledger.inspect = async () => { throw new Error("private outage"); }; }],
-    ["unavailable", "RECOVERY_HELPER_UNAVAILABLE", ledger => { ledger.readSource = async () => { throw new Error("source read outage"); }; }],
+    ["paused", "HELPER_LEDGER_PAUSED", ledger => setAdmissionSnapshot(ledger, { ...admissionSnapshot(), enabled: false })],
+    ["busy", "HELPER_LEDGER_BUSY", ledger => setAdmissionSnapshot(ledger, { ...admissionSnapshot(), activeOperationId: `0x${"aa".repeat(32)}` })],
+    ["budget-exhausted", "HELPER_LEDGER_BUDGET_EXHAUSTED", ledger => setAdmissionSnapshot(ledger, { ...admissionSnapshot(), attempts: 12 })],
+    ["budget-exhausted", "HELPER_LEDGER_BUDGET_EXHAUSTED", ledger => setAdmissionSnapshot(ledger, { ...admissionSnapshot(), payouts: 9 })],
+    ["budget-exhausted", "HELPER_LEDGER_BUDGET_EXHAUSTED", ledger => setAdmissionSnapshot(ledger, { ...admissionSnapshot(), reservedFeeWei: "18000000000000000" })],
+    ["unavailable", "RECOVERY_HELPER_UNAVAILABLE", ledger => { ledger.inspect = ledger.admission = async () => { throw new Error("private outage"); }; }],
+    ["unavailable", "RECOVERY_HELPER_UNAVAILABLE", ledger => { ledger.admission = async () => { throw new Error("atomic source read outage"); }; }],
     ["paused", "HELPER_LEDGER_PAUSED", (_ledger, fixture) => { fixture.setNow(now + 1_800); }],
   ]) {
     const ledger = fakeHelperLedger();
@@ -1798,6 +1801,44 @@ test("a stopped source operation on a different pair blocks fresh signatures but
 function admissionSnapshot() {
   return { enabled: true, attempts: 0, payouts: 0, reservedFeeWei: "0", activeOperationId: null };
 }
+
+function setAdmissionSnapshot(ledger, snapshot) {
+  ledger.inspect = async () => ({ ...snapshot });
+  ledger.admission = async ({ sourceWallet }) => ({ ...snapshot, sourceWallet, operation: null });
+}
+
+test("hosted eligibility and all challenge variants use one atomic source-admission RPC without split-read fallback", async () => {
+  const fixture = helperFixture({ helperCandidates: [pairIdentity()],
+    walletDiscovery: async () => ({ transactions: [], pages: 1, truncated: false, pairs: [pairIdentity()] }) });
+  fixture.ledger.inspect = async () => { assert.fail("hosted source admission must not call separate inspect"); };
+  fixture.ledger.readSource = async () => { assert.fail("hosted source admission must not call separate readSource"); };
+  fixture.ledger.reserve = async () => { assert.fail("read-only admission must not reserve"); };
+  const originalAdmission = fixture.ledger.admission;
+  let reads = 0;
+  fixture.ledger.admission = async input => { reads += 1; return originalAdmission(input); };
+  assert.equal((await fixture.service.intakeEligibility({ pair: pairIdentity() })).hostedAdmission.available, true);
+  assert.equal((await fixture.service.discover(source.address)).matches[0].hostedAdmission.available, true);
+  assert.equal((await fixture.service.helperDiscover({})).match.hostedAdmission.available, true);
+  assert.equal((await fixture.service.challenge(source.address)).hostedAdmission.available, true);
+  assert.equal((await fixture.service.intakeChallenge({ pair: pairIdentity() })).hostedAdmission.available, true);
+  assert.equal((await fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() })).hostedAdmission.available, true);
+  assert.equal(reads, 6);
+  // Another source can reserve after a good advisory snapshot; the next snapshot
+  // must observe that active atom, not combine earlier totals with a later source read.
+  fixture.ledger.rows.set("competing-operation", { operationId: `0x${"aa".repeat(32)}`,
+    sourceWallet: secondSource.address, state: "admitted" });
+  const later = await fixture.service.intakeEligibility({ pair: pairIdentity() });
+  assert.equal(later.eligible, true);
+  assert.deepEqual(later.hostedAdmission, { available: false, admissionState: "busy", operation: null });
+  for (const challenge of [() => fixture.service.challenge(source.address),
+    () => fixture.service.intakeChallenge({ pair: pairIdentity() }),
+    () => fixture.service.helperChallenge({ requester: outsider.address, pair: pairIdentity() })]) {
+    await assert.rejects(challenge(), { code: "HELPER_LEDGER_BUSY" });
+  }
+  assert.equal(reads, 10);
+  assert.equal(fixture.proofCalls, 0);
+  assert.equal(fixture.releaseCalls, 0);
+});
 
 test("helper signatures reject tampering and old owner signatures before live or proof work", async () => {
   const fixture = helperFixture();
@@ -2031,6 +2072,9 @@ async function signedHelperRequest(challenge, signer) {
 function fakeHelperLedger({ reserveError, losePrepareAck = false, loseCompleteOnce = false } = {}) {
   const rows = new Map();
   let prepares = 0;
+  const snapshot = () => ({ enabled: true, attempts: rows.size, payouts: rows.size,
+    reservedFeeWei: (BigInt(rows.size) * 2000000000000000n).toString(),
+    activeOperationId: [...rows.values()].find(row => ["admitted", "broadcast-prepared"].includes(row.state))?.operationId ?? null });
   return {
     policy: {
       identity: { chainId: 102031, poolAddress, campaignNumber: 7, relayerAddress: relayer.address },
@@ -2038,9 +2082,9 @@ function fakeHelperLedger({ reserveError, losePrepareAck = false, loseCompleteOn
         maxFeeWei: "2000000000000000", creditWei: parseEther("0.01").toString(), expiresAt: now + 3600 },
     },
     rows, get prepares() { return prepares; },
-    async inspect() { return { enabled: true, attempts: rows.size, payouts: rows.size,
-      reservedFeeWei: (BigInt(rows.size) * 2000000000000000n).toString(),
-      activeOperationId: [...rows.values()].find(row => ["admitted", "broadcast-prepared"].includes(row.state))?.operationId ?? null }; },
+    async inspect() { return snapshot(); },
+    async admission({ sourceWallet }) { return { ...snapshot(), sourceWallet,
+      operation: [...rows.values()].find(row => row.sourceWallet.toLowerCase() === sourceWallet.toLowerCase()) ?? null }; },
     async read({ operationId }) { return { operation: rows.has(operationId) ? { ...rows.get(operationId) } : null }; },
     async readSource({ sourceWallet }) { return { operation: [...rows.values()].find(row => row.sourceWallet.toLowerCase() === sourceWallet.toLowerCase()) ?? null }; },
     async reserve(input) {

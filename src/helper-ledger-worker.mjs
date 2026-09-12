@@ -8,7 +8,7 @@ import {
 const ACTIVE = new Set(["admitted", "broadcast-prepared"]);
 const METHODS = new Map([
   ["/v1/reserve", "reserve"], ["/v1/read", "read"], ["/v1/inspect", "inspect"],
-  ["/v1/read-source", "readSource"],
+  ["/v1/read-source", "readSource"], ["/v1/admission", "admission"],
   ["/v1/prepare-broadcast", "prepareBroadcast"], ["/v1/complete", "complete"],
   ["/v1/fail-before-broadcast", "failBeforeBroadcast"],
   ["/v1/abandon-before-broadcast", "abandonBeforeBroadcast"],
@@ -206,13 +206,30 @@ export class HelperSpendingLedger extends DurableObject {
     requireRecord(request.input, []);
     return this.ctx.storage.transactionSync(() => {
       const { metadata } = this.checkedState(policy);
-      return {
-        identity: policy.identity, limits: policy.limits,
-        enabled: this.env.HELPER_LEDGER_ENABLED === "true" && Math.floor(Date.now() / 1000) < policy.limits.expiresAt,
-        attempts: metadata?.attempts ?? 0, payouts: metadata?.payouts ?? 0,
-        reservedFeeWei: metadata?.reserved_fee_wei ?? "0",
-        activeOperationId: metadata?.active_operation ?? null,
-      };
+      return this.admissionTotals(policy, metadata);
+    });
+  }
+
+  admissionTotals(policy, metadata) {
+    return {
+      identity: policy.identity, limits: policy.limits,
+      enabled: this.env.HELPER_LEDGER_ENABLED === "true" && Math.floor(Date.now() / 1000) < policy.limits.expiresAt,
+      attempts: metadata?.attempts ?? 0, payouts: metadata?.payouts ?? 0,
+      reservedFeeWei: metadata?.reserved_fee_wei ?? "0",
+      activeOperationId: metadata?.active_operation ?? null,
+    };
+  }
+
+  admission(request) {
+    const policy = this.checkRequest(request);
+    requireRecord(request.input, ["sourceWallet"]);
+    const sourceWallet = ledgerAddress(request.input.sourceWallet);
+    // Availability and the queried source lock must describe the same instant.
+    // This reads only: no permit, allocation, policy initialization or future guarantee.
+    return this.ctx.storage.transactionSync(() => {
+      const { metadata, rows } = this.checkedState(policy);
+      return { ...this.admissionTotals(policy, metadata), sourceWallet,
+        operation: publicOperation(rows.find((row) => row.source_wallet === sourceWallet)) };
     });
   }
 

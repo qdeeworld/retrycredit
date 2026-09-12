@@ -400,7 +400,7 @@ export class RecoveryCampaignService {
     this.helperPolicy = null;
     if (helperLedger) {
       if (this.contractVersion !== "v2"
-        || !["reserve", "read", "readSource", "inspect", "prepareBroadcast", "complete", "failBeforeBroadcast"].every(name => typeof helperLedger[name] === "function")
+        || !["reserve", "read", "readSource", "inspect", "admission", "prepareBroadcast", "complete", "failBeforeBroadcast"].every(name => typeof helperLedger[name] === "function")
         || typeof helperMaxFeeWei !== "string" || !/^[1-9][0-9]{0,77}$/.test(helperMaxFeeWei)
         || BigInt(helperMaxFeeWei) >= (1n << 256n)
         || typeof relayerWallet?.signTransaction !== "function") {
@@ -845,16 +845,7 @@ export class RecoveryCampaignService {
     try {
       if (campaign) this.#assertHelperCampaignPolicy(campaign);
       const snapshot = await this.#ledger("inspect", {});
-      if (typeof snapshot.enabled !== "boolean" || !Number.isSafeInteger(snapshot.attempts)
-        || !Number.isSafeInteger(snapshot.payouts) || snapshot.attempts < 0 || snapshot.payouts < 0
-        || !/^(0|[1-9][0-9]*)$/.test(snapshot.reservedFeeWei)
-        || !(snapshot.activeOperationId === null || isHexString(snapshot.activeOperationId, 32))) throw new Error("invalid admission snapshot");
-      const limits = this.helperPolicy.limits;
-      const exhausted = snapshot.attempts >= limits.maxAttempts || snapshot.payouts >= limits.maxPayouts
-        || BigInt(snapshot.reservedFeeWei) + this.helperMaxFeeWei > BigInt(limits.maxTotalFeeWei);
-      const admissionState = !snapshot.enabled || this.now() >= limits.expiresAt ? "paused" : exhausted ? "budget-exhausted"
-        : snapshot.activeOperationId ? "busy" : "available";
-      return { available: admissionState === "available", admissionState };
+      return this.#availabilityFromSnapshot(snapshot);
     } catch {
       // Read-only recovery remains useful even if spending coordination is down.
       // Never imply that a new funded action is currently admitted in that state.
@@ -862,18 +853,32 @@ export class RecoveryCampaignService {
     }
   }
 
+  #availabilityFromSnapshot(snapshot) {
+    if (typeof snapshot.enabled !== "boolean" || !Number.isSafeInteger(snapshot.attempts)
+      || !Number.isSafeInteger(snapshot.payouts) || snapshot.attempts < 0 || snapshot.payouts < 0
+      || !/^(0|[1-9][0-9]*)$/.test(snapshot.reservedFeeWei)
+      || !(snapshot.activeOperationId === null || isHexString(snapshot.activeOperationId, 32))) throw new Error("invalid admission snapshot");
+    const limits = this.helperPolicy.limits;
+    const exhausted = snapshot.attempts >= limits.maxAttempts || snapshot.payouts >= limits.maxPayouts
+      || BigInt(snapshot.reservedFeeWei) + this.helperMaxFeeWei > BigInt(limits.maxTotalFeeWei);
+    const admissionState = !snapshot.enabled || this.now() >= limits.expiresAt ? "paused" : exhausted ? "budget-exhausted"
+      : snapshot.activeOperationId ? "busy" : "available";
+    return { available: admissionState === "available", admissionState };
+  }
+
   async #hostedAdmission(context) {
     try {
       this.#assertHelperCampaignPolicy(context.campaign);
       // No proof, reservation or receipt reconciliation occurs in this advisory read.
       // Source locks outlive a failed operation, including across different pairs.
-      const [availability, existing] = await Promise.all([
-        this.#helperAvailability(context.campaign),
-        this.#ledger("readSource", { sourceWallet: context.wallet }),
-      ]);
-      if (!existing || !Object.hasOwn(existing, "operation")) throw new Error("invalid source admission snapshot");
-      if (existing.operation) {
-        const operation = publicHelperOperation(existing.operation);
+      // One coordinator RPC reads totals and source state in one transaction;
+      // independently serialized inspect/readSource responses can disagree.
+      const snapshot = await this.#ledger("admission", { sourceWallet: context.wallet });
+      if (!snapshot || !Object.hasOwn(snapshot, "operation")
+        || getAddress(snapshot.sourceWallet) !== context.wallet) throw new Error("invalid source admission snapshot");
+      const availability = this.#availabilityFromSnapshot(snapshot);
+      if (snapshot.operation) {
+        const operation = publicHelperOperation(snapshot.operation);
         if (operation.sourceWallet !== context.wallet) throw new Error("mismatched source admission snapshot");
         return { available: false, admissionState: "source-reserved", operation };
       }

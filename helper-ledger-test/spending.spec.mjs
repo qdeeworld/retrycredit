@@ -39,6 +39,64 @@ const stopped = (admission) => ({ operationId: admission.operation.operationId,
   permitToken: admission.permitToken, reason: "proof-unavailable" });
 
 describe("restart-safe helper spending in real workerd SQLite Durable Objects", () => {
+  it("reads atomic admission without initializing policy or consuming an attempt", async () => {
+    const stub = stubFor("read-only-atomic-admission");
+    const input = { sourceWallet: reservation().sourceWallet };
+    for (let i = 0; i < 4; i += 1) {
+      expect(await stub.admission(request(input))).toMatchObject({ ...POLICY, enabled: true,
+        ...input, attempts: 0, payouts: 0, reservedFeeWei: "0", activeOperationId: null, operation: null });
+    }
+    await runInDurableObject(stub.raw, (_instance, state) => {
+      expect(state.storage.sql.exec("SELECT COUNT(*) AS count FROM helper_policy").one().count).toBe(0);
+      expect(state.storage.sql.exec("SELECT COUNT(*) AS count FROM helper_operations").one().count).toBe(0);
+    });
+    await expect(stub.admission(request({ ...input, operationId: reservation().operationId }))).rejects.toThrow("HELPER_LEDGER_INPUT_INVALID");
+    await expect(stub.admission(request({ sourceWallet: "not-an-address" }))).rejects.toThrow("HELPER_LEDGER_INPUT_INVALID");
+  });
+
+  it("returns coherent totals and source state before, during and after a competing reservation", async () => {
+    const stub = stubFor("atomic-admission-reservation-race");
+    const target = reservation(1), competitor = reservation(2, "owner");
+    expect(await stub.admission(request({ sourceWallet: target.sourceWallet }))).toMatchObject({
+      attempts: 0, activeOperationId: null, operation: null });
+    const concurrent = Array.from({ length: 48 }, (_, index) => {
+      const sourceWallet = index % 2 ? competitor.sourceWallet : target.sourceWallet;
+      return () => stub.admission(request({ sourceWallet }));
+    });
+    const readsBefore = concurrent.slice(0, 24).map(read => read());
+    const reserve = stub.reserve(request(competitor));
+    const readsAfter = concurrent.slice(24).map(read => read());
+    const snapshots = await Promise.all([...readsBefore, ...readsAfter]);
+    const allocated = await reserve;
+    for (const snapshot of snapshots) {
+      expect([0, 1]).toContain(snapshot.attempts);
+      expect(snapshot.payouts).toBe(snapshot.attempts);
+      expect(snapshot.reservedFeeWei).toBe((BigInt(snapshot.attempts) * BigInt(POLICY.limits.maxFeeWei)).toString());
+      if (snapshot.attempts === 0) {
+        expect(snapshot.activeOperationId).toBeNull();
+        expect(snapshot.operation).toBeNull();
+      } else {
+        expect(snapshot.activeOperationId).toBe(competitor.operationId);
+        if (snapshot.sourceWallet === competitor.sourceWallet) {
+          expect(snapshot.operation).toMatchObject({ operationId: competitor.operationId, state: "admitted" });
+        } else expect(snapshot.operation).toBeNull();
+      }
+      expect(JSON.stringify(snapshot)).not.toContain("permit");
+    }
+    expect(await stub.admission(request({ sourceWallet: target.sourceWallet }))).toMatchObject({
+      attempts: 1, activeOperationId: competitor.operationId, operation: null });
+    expect(await stub.admission(request({ sourceWallet: competitor.sourceWallet }))).toMatchObject({
+      attempts: 1, activeOperationId: competitor.operationId, operation: { operationId: competitor.operationId, state: "admitted" } });
+    await stub.failBeforeBroadcast(request(stopped(allocated)));
+    expect(await stub.admission(request({ sourceWallet: target.sourceWallet }))).toMatchObject({
+      attempts: 1, activeOperationId: null, operation: null });
+    await stub.reserve(request(target));
+    await evictDurableObject(stub.raw);
+    expect(await stubFor("atomic-admission-reservation-race").admission(request({ sourceWallet: competitor.sourceWallet }))).toMatchObject({
+      attempts: 2, activeOperationId: target.operationId,
+      operation: { operationId: competitor.operationId, state: "stopped" } });
+  });
+
   it("converges 100 helpers on one source/pair without sharing the private permit", async () => {
     const stubs = Array.from({ length: 100 }, () => stubFor("same-operation"));
     const results = await Promise.all(stubs.map((stub, index) => stub.reserve(request({
@@ -205,6 +263,8 @@ describe("restart-safe helper spending in real workerd SQLite Durable Objects", 
     await runInDurableObject(stub.raw, (instance) => { instance.env.HELPER_LEDGER_ENABLED = "false"; });
     try {
       expect(await stub.inspect(request())).toMatchObject({ enabled: false });
+      expect(await stub.admission(request({ sourceWallet: reservation().sourceWallet }))).toMatchObject({ enabled: false,
+        attempts: 1, operation: { state: "broadcast-prepared" }, activeOperationId: admission.operation.operationId });
       await expect(stub.reserve(request(reservation(2)))).rejects.toThrow("HELPER_LEDGER_DISABLED");
       await expect(stub.prepareBroadcast(request(input))).rejects.toThrow("HELPER_LEDGER_DISABLED");
       expect(await stub.complete(request({ operationId: input.operationId, transactionHash: input.transactionHash,
@@ -254,6 +314,7 @@ describe("restart-safe helper spending in real workerd SQLite Durable Objects", 
       await runInDurableObject(stub.raw, (_instance, state) => { state.storage.sql.exec(mutation); });
       await evictDurableObject(stub.raw);
       await expect(stubFor(`corrupt-${mutation}`).inspect(request())).rejects.toThrow("HELPER_LEDGER_STATE_INVALID");
+      await expect(stubFor(`corrupt-${mutation}`).admission(request({ sourceWallet: reservation().sourceWallet }))).rejects.toThrow("HELPER_LEDGER_STATE_INVALID");
     }
   });
 
@@ -288,6 +349,10 @@ describe("restart-safe helper spending in real workerd SQLite Durable Objects", 
       fetchImpl: (url, init) => worker.fetch(new Request(url, init), env) });
     const admission = await client.reserve(reservation());
     expect(admission.created).toBe(true);
+    const snapshot = await client.admission({ sourceWallet: reservation().sourceWallet });
+    expect(snapshot).toMatchObject({ attempts: 1, payouts: 1, activeOperationId: admission.operation.operationId,
+      sourceWallet: reservation().sourceWallet, operation: { operationId: admission.operation.operationId, state: "admitted" } });
+    expect(JSON.stringify(snapshot)).not.toContain("permit");
     const copy = await client.reserve(reservation());
     expect(copy.created).toBe(false);
     expect(copy.permitToken).toBeUndefined();
