@@ -31,6 +31,7 @@ import {
 } from "./seadrop-recovery.mjs";
 import { PUBLIC_CC3_RELAYER_ROLE, deriveRoleKey } from "./role-key.mjs";
 import { discoverHostedWalletSeaDropPairs } from "./seadrop-wallet-discovery.mjs";
+import { buildRecoveryPairDiagnostics, serializeRecoveryPairDiagnostics } from "./recovery-pair-diagnostics.mjs";
 import {
   RECOVERY_CHALLENGE_LIFETIME_SECONDS,
   RECOVERY_MAXIMUM_CLOCK_SKEW_SECONDS,
@@ -1259,7 +1260,7 @@ export class RecoveryCampaignService {
   async #eligibilityContext(wallet, discovery, { state, freshState = false } = {}) {
     const { campaign, rule, releasesUnlocked } = state
       ?? await this.#campaignState({ fresh: freshState });
-    const pair = await this.#resolvePair(discovery, rule, { expectedWallet: wallet });
+    const pair = await this.#resolvePair(discovery, rule, { expectedWallet: wallet, campaign });
     const lineage = await this.#walletLineage(wallet, { campaign });
     const blocked = lineageBlockedContext({
       campaignNumber: this.campaignNumber,
@@ -1286,7 +1287,7 @@ export class RecoveryCampaignService {
   async #openPairEligibilityContext(pairInput, { state, freshState = false, sourcePool } = {}) {
     const { campaign, rule, releasesUnlocked } = state
       ?? await this.#campaignState({ fresh: freshState });
-    const pair = await this.#resolvePair(pairInput, rule, { workPool: sourcePool });
+    const pair = await this.#resolvePair(pairInput, rule, { workPool: sourcePool, campaign });
     const wallet = requireNonzeroAddress(pair.claimant, "pair source wallet");
     const discovery = Object.freeze({ wallet, ...pairInput });
     const lineage = await this.#walletLineage(wallet, { campaign });
@@ -1463,7 +1464,7 @@ export class RecoveryCampaignService {
     }
   }
 
-  async #resolvePair(pairInput, rule, { expectedWallet = null, workPool = this.sourceLookupPool } = {}) {
+  async #resolvePair(pairInput, rule, { expectedWallet = null, workPool = this.sourceLookupPool, campaign } = {}) {
     const identity = Object.freeze({
       failedTransactionHash: requireHash(pairInput.failedTransactionHash, "failed transaction hash"),
       successfulTransactionHash: requireHash(pairInput.successfulTransactionHash, "successful transaction hash"),
@@ -1485,6 +1486,14 @@ export class RecoveryCampaignService {
                   rule,
                   ethereumProviders: this.ethereumProviders,
                   maximumProviderAttempts: this.config.sourceProviderAttempts,
+                  diagnosticCampaign: {
+                    poolAddress: this.poolAddress,
+                    campaignNumber: this.campaignNumber,
+                    termsHash: campaign?.termsHash,
+                    creditAmount: campaign?.creditAmount?.toString(),
+                    deadline: Number(campaign?.deadline),
+                  },
+                  now: () => this.now() * 1_000,
                 });
             validateResolvedPair(resolved, identity, rule);
             this.#writeSourcePairCache(cacheKey, { value: resolved }, this.config.sourcePairCacheTtlSeconds);
@@ -1501,7 +1510,10 @@ export class RecoveryCampaignService {
             if (handled.code === "RECOVERY_PAIR_INVALID") {
               this.#writeSourcePairCache(
                 cacheKey,
-                { error: { code: handled.code, message: handled.message, status: handled.status } },
+                { error: {
+                  code: handled.code, message: handled.message, status: handled.status,
+                  diagnostics: serializeRecoveryPairDiagnostics(handled.diagnostics),
+                } },
                 this.config.sourcePairNegativeCacheTtlSeconds,
               );
             }
@@ -1548,7 +1560,10 @@ export class RecoveryCampaignService {
     this.sourcePairCache.delete(key);
     this.sourcePairCache.set(key, cached);
     if (cached.error) {
-      throw new WorkerError(cached.error.code, cached.error.message, cached.error.status);
+      const error = new WorkerError(cached.error.code, cached.error.message, cached.error.status);
+      const diagnostics = serializeRecoveryPairDiagnostics(cached.error.diagnostics);
+      if (diagnostics) error.diagnostics = diagnostics;
+      throw error;
     }
     return cached.value;
   }
@@ -2097,6 +2112,8 @@ async function resolvePairFromEthereum({
   rule,
   ethereumProviders,
   maximumProviderAttempts = RECOVERY_DEFAULTS.sourceProviderAttempts,
+  diagnosticCampaign,
+  now = Date.now,
 }) {
   if (!Array.isArray(ethereumProviders) || ethereumProviders.length === 0) {
     throw new WorkerError(
@@ -2108,6 +2125,7 @@ async function resolvePairFromEthereum({
   let responsiveProvider = false;
   let incompleteProvider = false;
   let semanticFailure = null;
+  let diagnostics = null;
   for (const provider of ethereumProviders.slice(0, maximumProviderAttempts)) {
     try {
       if (provider.getNetwork) {
@@ -2159,6 +2177,13 @@ async function resolvePairFromEthereum({
         return resolved;
       } catch (error) {
         semanticFailure = error;
+        diagnostics = buildRecoveryPairDiagnostics({
+          facts,
+          pair: discovery,
+          rule,
+          campaign: diagnosticCampaign,
+          now,
+        });
         // A complete but stale or inconsistent RPC response is not authoritative;
         // try another configured provider before returning a cached semantic miss.
       }
@@ -2167,12 +2192,14 @@ async function resolvePairFromEthereum({
     }
   }
   if (semanticFailure || (responsiveProvider && !incompleteProvider)) {
-    throw new WorkerError(
+    const error = new WorkerError(
       "RECOVERY_PAIR_INVALID",
       "Both exact Ethereum transactions and receipts must form the funded retry rule.",
       422,
       semanticFailure,
     );
+    if (diagnostics) error.diagnostics = diagnostics;
+    throw error;
   }
   throw new WorkerError(
     "RECOVERY_SOURCE_UNAVAILABLE",

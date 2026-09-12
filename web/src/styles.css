@@ -102,6 +102,28 @@ a:hover { text-decoration-thickness:2px; }
 .wallet-discovery { display:grid; gap:8px; margin-block-start:24px; }
 .wallet-discovery .primary-action { margin:0; }
 .wallet-discovery p { margin:0; color:var(--muted); font-size:11px; line-height:1.5; }
+.address-inspection form { padding-block:8px 12px; }
+.address-inspection label,.pair-handoff label { display:block; font-size:12px; font-weight:700; }
+.address-inspection input,.pair-handoff input { width:100%; min-width:0; min-height:48px; margin-block:8px; padding:10px; border:1px solid var(--ink); border-radius:0; color:var(--ink); background:var(--sheet); font:500 16px/1.4 "IBM Plex Mono",monospace; }
+.address-inspection input[aria-invalid="true"] { border:2px solid var(--red); }
+.address-inspection input:disabled { cursor:not-allowed; background:var(--sheet-2); }
+.pair-handoff p { margin:8px 0; color:var(--muted); font-size:12px; line-height:1.5; text-wrap:pretty; }
+.pair-handoff { padding-block-end:10px; }
+.inspected-wallet { width:100%; padding-block-start:8px; overflow-wrap:anywhere; }
+.incident-report { min-width:0; margin-block-start:18px; padding:16px; border:1px solid var(--rule); background:var(--sheet); }
+.incident-report h2 { margin:0 0 8px; font-size:20px; line-height:1.15; text-wrap:balance; }
+.incident-report p { margin:8px 0; color:var(--muted); font-size:12px; line-height:1.5; text-wrap:pretty; }
+.incident-report .example-action { width:100%; }
+.incident-failures { display:grid; gap:12px; padding:0; list-style:none; }
+.incident-failures li { display:grid; gap:4px; padding-inline-start:10px; border-inline-start:3px solid var(--red); font-size:12px; line-height:1.5; }
+.incident-failures span { color:var(--muted); }
+.incident-checks { padding:0; margin:0; list-style:none; }
+.incident-checks li { padding-block:12px; border-block-start:1px solid var(--rule-soft); }
+.incident-checks strong { display:block; margin-block-start:5px; font-size:12px; }
+.check-status { font:600 10px/1.4 "IBM Plex Mono",monospace; }
+.check-pass { color:var(--green); }
+.check-fail { color:#9f2b12; }
+.check-not-checked { color:var(--muted); }
 .read-only-note { display:grid; grid-template-columns:18px minmax(0,1fr); gap:9px; margin-block-start:18px; padding:11px; border-block:1px solid var(--blue); background:var(--sheet); }
 .read-only-note > svg { width:17px; color:var(--blue); }
 .read-only-note strong { font-size:12px; }

@@ -53,6 +53,8 @@ At CC3 block `5374212`, the source-derived beneficiary balance increased from `0
 
 ## Finalized V2 continuation
 
+Current state verified September 12, 2026: the public product selects V2; the predecessor deadline has passed and releases are unlocked. Operator release [`0xf4e7…aa9d1`](https://creditcoin-testnet.blockscout.com/tx/0xf4e7855c9a6ae73a3c29fd8aaa9a315a79c876f46bd3da0b9b3c53ff934aa9d1) succeeded at block `5473778`, paying exactly `0.1 tCTC` to `0x0bbc095CFC73b121B196eE63478D64D1EBBdD4AA`. Claim count changed `0 → 1`; nine slots remained; both accounted balances changed `1 → 0.9 tCTC`; initial `fundedAmount` stayed `1 tCTC`. All eight campaign/sponsor replay markers were set, all four predecessor markers for this pair stayed false, and a replay call returned `Replay()` (`0xb5a78004`). Actual gas fee was `0.0005476185 tCTC`. This is an operator-run engineering settlement, not owner consent, independent product completion or adoption. The app reconstructs the same receipt from public state.
+
 Transaction [`0xef81…149b`](https://creditcoin-testnet.blockscout.com/tx/0xef8136a0424254ba502f3499f6324e8a02c12bc7ac341d64c00c9a505085149b) created `RetryCreditRecoveryCampaignV2` at [`0x3Eee…82B8`](https://creditcoin-testnet.blockscout.com/address/0x3Eee179eDD6Fe6e40D7d23f0110ea639f2DA82B8) in CC3 block `5381782` with nonce `55` and exactly `1 tCTC`.
 
 The initial V2 campaign has these immutable terms:

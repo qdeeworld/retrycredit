@@ -1,3 +1,5 @@
+import { serializeRecoveryPairDiagnostics } from "./recovery-pair-report.mjs";
+
 const MAX_BODY_BYTES = 16_384;
 export const FRESH_READ_MINIMUM_INTERVAL_MS = 5_000;
 
@@ -287,9 +289,16 @@ export function createCoordinatorRuntime({ serviceFactory, freshReadControl, env
       if (handled.status >= 500) {
         logSafeFailure(`recovery_${safeOperationName(input?.operation)}_failed`, error);
       }
+      const diagnostics = input?.operation === "intakeEligibility"
+        && handled.status === 422 && handled.code === "RECOVERY_PAIR_INVALID"
+        ? serializeRecoveryPairDiagnostics(error?.diagnostics)
+        : null;
       return {
         status: handled.status,
-        body: { error: { code: handled.code, message: handled.message, requestId: input?.requestId ?? null } },
+        body: { error: {
+          code: handled.code, message: handled.message, requestId: input?.requestId ?? null,
+          ...(diagnostics ? { diagnostics } : {}),
+        } },
         ...(handled.status === 429 || handled.status === 425
           ? { retryAfter: handled.retryAfter ?? "5" }
           : {}),

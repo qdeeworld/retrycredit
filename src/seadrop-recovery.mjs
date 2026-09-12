@@ -277,6 +277,128 @@ export function validateSeaDropRecoveryPair({
   }
 }
 
+// Advisory checks reuse the semantic validator's normalization and helpers.
+// This report never participates in eligibility, proof construction, or payout.
+// Incomplete or unbound provider facts cannot produce a rejection report.
+export function inspectSeaDropRecoveryPair({
+  failedTransaction,
+  failedReceipt,
+  successfulTransaction,
+  successfulReceipt,
+  pair,
+  rule,
+}) {
+  try {
+    const failedTx = normalizeTransaction(failedTransaction, "failed transaction");
+    const successfulTx = normalizeTransaction(successfulTransaction, "successful transaction");
+    const failedRc = normalizeReceipt(failedReceipt, "failed receipt");
+    const successfulRc = normalizeReceipt(successfulReceipt, "successful receipt");
+    validateTransactionReceiptBinding(failedTx, failedRc, "failed");
+    validateTransactionReceiptBinding(successfulTx, successfulRc, "successful");
+    equal(failedTx.hash, normalizeHash(pair.failedTransactionHash, "requested failure"), "requested failure");
+    equal(successfulTx.hash, normalizeHash(pair.successfulTransactionHash, "requested success"), "requested success");
+    // Missing or malformed RPC bytes are incomplete facts, not evidence that the
+    // source called an unsupported action. Explicit empty bytes remain checkable.
+    if (!ethers.isHexString(failedTx.data, true) || !ethers.isHexString(successfulTx.data, true)) return null;
+    for (const [transaction, receipt] of [[failedTransaction, failedReceipt], [successfulTransaction, successfulReceipt]]) {
+      if (transaction.blockHash != null || receipt.blockHash != null) {
+        equal(normalizeHash(transaction.blockHash, "transaction block hash"), normalizeHash(receipt.blockHash, "receipt block hash"), "source block hash");
+      }
+    }
+    const checks = [];
+    const check = (id, run, enabled = true) => {
+      let status = "not-checked";
+      if (enabled) {
+        try { run(); status = "pass"; } catch { status = "fail"; }
+      }
+      checks.push({ id, status });
+      return status === "pass";
+    };
+    check("source-network", () => {
+      equal(failedTx.chainId, ETHEREUM_MAINNET_CHAIN_ID, "source chain");
+      equal(successfulTx.chainId, ETHEREUM_MAINNET_CHAIN_ID, "source chain");
+    });
+    check("transaction-type", () => {
+      equal(failedTx.type, 2, "transaction type");
+      equal(successfulTx.type, 2, "transaction type");
+    });
+    let failedMint, successfulMint;
+    const canonicalMint = check("action-family", () => {
+      equal(failedTx.to, SEA_DROP_MAINNET, "canonical target");
+      equal(successfulTx.to, SEA_DROP_MAINNET, "canonical target");
+      failedMint = decodeCanonicalSeaDropMintSigned(failedTx.data);
+      successfulMint = decodeCanonicalSeaDropMintSigned(successfulTx.data);
+    });
+    const sameWallet = check("same-wallet", () => equal(successfulTx.from, failedTx.from, "source wallet"));
+    const receiptStatus = check("receipt-status", () => {
+      equal(failedRc.status, 0, "failed status");
+      equal(successfulRc.status, 1, "successful status");
+      equal(failedRc.logs.length, 0, "failed logs");
+    });
+    check("nonce-order", () => equal(successfulTx.nonce, failedTx.nonce + 1, "consecutive nonce"), sameWallet);
+    check("block-gap", () => {
+      const gap = successfulTx.blockNumber - failedTx.blockNumber;
+      if (gap <= 0 || gap > Number(rule.maxBlockGap)) fail("INVALID_PAIR", "block gap");
+    });
+    check("campaign-window", () => {
+      if ([failedTx, successfulTx].some(transaction => transaction.blockNumber < Number(rule.startBlock)
+        || transaction.blockNumber > Number(rule.endBlock))) {
+        fail("INVALID_PAIR", "source window");
+      }
+    });
+    let profile;
+    const paidMint = check("paid-mint", () => {
+      profile = normalizeSeaDropRecoveryProfile({
+        sourceChainId: ETHEREUM_MAINNET_CHAIN_ID,
+        seaDrop: SEA_DROP_MAINNET,
+        nftContract: failedMint.nftContract,
+        feeRecipient: failedMint.feeRecipient,
+        minterIfNotPayer: failedMint.minterIfNotPayer,
+        quantity: failedMint.quantity,
+        valueWei: failedTx.value,
+        mintParams: failedMint.mintParams,
+        maxBlockGap: Number(rule.maxBlockGap),
+        requirePaid: true,
+        calldataSuffix: failedMint.calldataSuffix,
+      });
+    }, canonicalMint);
+    const mintIdentity = check("mint-identity", () => {
+      validateMintAgainstProfile(failedMint, failedTx.value, profile, "failed");
+      validateMintAgainstProfile(successfulMint, successfulTx.value, profile, "successful");
+      validateStableMintPair(failedMint, successfulMint, failedTx.value, successfulTx.value);
+    }, paidMint);
+    check("mint-outcome", () => validateSuccessLogs({
+      receipt: successfulRc,
+      seaDrop: SEA_DROP_MAINNET,
+      nftContract: profile.nftContract,
+      minter: failedTx.from,
+      payer: failedTx.from,
+      feeRecipient: profile.feeRecipient,
+      quantity: profile.quantity,
+      mintParams: profile.mintParams,
+    }), mintIdentity && sameWallet && receiptStatus);
+    check("campaign-fee-recipient", () => {
+      const recipient = normalizeAddress(rule.feeRecipient, "campaign fee recipient");
+      equal(failedMint.feeRecipient, recipient, "campaign fee recipient");
+      equal(successfulMint.feeRecipient, recipient, "campaign fee recipient");
+    }, canonicalMint);
+    check("campaign-quantity", () => {
+      if (failedMint.quantity > BigInt(rule.maxQuantity) || successfulMint.quantity > BigInt(rule.maxQuantity)) {
+        fail("INVALID_PAIR", "campaign quantity");
+      }
+    }, canonicalMint);
+    return freezeDeep({
+      checks,
+      facts: {
+        failed: { blockNumber: failedTx.blockNumber, nonce: failedTx.nonce, status: failedRc.status },
+        successful: { blockNumber: successfulTx.blockNumber, nonce: successfulTx.nonce, status: successfulRc.status },
+      },
+    });
+  } catch {
+    return null;
+  }
+}
+
 function validateMintAgainstProfile(mint, value, profile, label) {
   equal(mint.nftContract, profile.nftContract, `${label} nftContract profile`);
   equal(mint.feeRecipient, profile.feeRecipient, `${label} feeRecipient profile`);
