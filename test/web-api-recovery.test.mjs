@@ -27,6 +27,64 @@ const FRESH_PAIR = Object.freeze({
 const FRESH_SIGNATURE = "0x" + "33".repeat(65);
 const FRESH_RECEIPT = "v1." + "A".repeat(43);
 
+test("default config wake retains a late attempt after a slow cold-start failure", async () => {
+  let elapsed = 0;
+  const starts = [];
+  const waits = [];
+  const result = await wakeRecoveryConfig({
+    now: () => elapsed,
+    sleep: async (ms) => { waits.push(ms); elapsed += ms; },
+    fetchImpl: async (url) => {
+      assert.equal(url, "/api/recovery/config");
+      starts.push(elapsed);
+      // The observed idle-start request took 13.494 seconds, outlasting
+      // both early retry offsets. Service readiness is deliberately later.
+      if (starts.length === 1) elapsed += 13_494;
+      return elapsed >= 30_000
+        ? new Response(JSON.stringify({ enabled: true, campaignNumber: 1 }), { status: 200 })
+        : new Response(JSON.stringify({ error: { code: "RECOVERY_UNAVAILABLE", message: "Waking" } }), { status: 503 });
+    },
+  });
+  assert.equal(result.enabled, true);
+  assert.deepEqual(starts, [0, 13_494, 30_000]);
+  assert.deepEqual(waits, [16_506]);
+});
+
+test("default config wake still stops after three unavailable responses", async () => {
+  let elapsed = 0;
+  const starts = [];
+  await assert.rejects(wakeRecoveryConfig({
+    now: () => elapsed,
+    sleep: async (ms) => { elapsed += ms; },
+    fetchImpl: async () => {
+      starts.push(elapsed);
+      return new Response(JSON.stringify({ error: { code: "RECOVERY_UNAVAILABLE", message: "Unavailable" } }), { status: 503 });
+    },
+  }), TemporaryUnavailableError);
+  assert.deepEqual(starts, [0, 3_000, 30_000]);
+});
+
+test("signed-fresh and legacy config retain their short default retry schedules", async () => {
+  for (const kind of ["signed-fresh", "legacy"]) {
+    let elapsed = 0;
+    const starts = [];
+    const options = {
+      now: () => elapsed,
+      sleep: async (ms) => { elapsed += ms; },
+      fetchImpl: async (url, request) => {
+        starts.push(elapsed);
+        assert.equal(url, kind === "signed-fresh" ? "/api/recovery/config?fresh=1" : "/api/retry-credit/config");
+        assert.equal(request.headers?.authorization, kind === "signed-fresh" ? "RetryCreditFresh credential" : undefined);
+        return new Response(JSON.stringify({ error: { code: "RECOVERY_UNAVAILABLE", message: "Unavailable" } }), { status: 503 });
+      },
+    };
+    await assert.rejects(kind === "signed-fresh"
+      ? wakeRecoveryConfig({ ...options, fresh: true, freshAuthorization: "RetryCreditFresh credential" })
+      : wakeConfig(options), TemporaryUnavailableError);
+    assert.deepEqual(starts, [0, 3_000, 8_000]);
+  }
+});
+
 test("a timed JSON request bounds both the fetch and response body", async () => {
   const startedAt = Date.now();
 
