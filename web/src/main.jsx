@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { HelperEvidenceConflict } from "./HelperEvidenceConflict.jsx";
 import { createRoot } from "react-dom/client";
 import { formatEther, getAddress, hexlify, toUtf8Bytes } from "ethers";
 import {
@@ -1975,7 +1976,7 @@ function EvidenceBand({ config, eligibility, flow, releaseResult, helperMode = f
       <h2 id="evidence-heading">One wallet. One ordered source pair. One fixed release.</h2>
       <p>Human result first; receipts stay attached to the result they establish.</p>
     </header>
-    {!pair ? <div className="evidence-empty">
+    {helperMode && helperOperation?.receiptCheck === "conflict" ? <HelperEvidenceConflict operation={helperOperation} /> : !pair ? <div className="evidence-empty">
       <Radio aria-hidden="true" />
       <div>
         <strong>No analyzed source pair is attached to this recovery yet.</strong>
@@ -2021,8 +2022,10 @@ function EvidenceBand({ config, eligibility, flow, releaseResult, helperMode = f
           ? "Fixed credit released"
           : priorRecovery
             ? "Earlier recovery blocks another credit"
+          : helperOperation?.receiptCheck === "conflict"
+            ? "Recovery evidence does not match"
           : helperOperation?.state === "settled"
-            ? "Credit released; rechecking receipt details"
+            ? "Settlement reported; receipt not confirmed"
             : ["reverted", "stopped"].includes(helperOperation?.state)
               ? "This operation did not release credit"
             : releaseProcessing
@@ -2044,8 +2047,10 @@ function EvidenceBand({ config, eligibility, flow, releaseResult, helperMode = f
             ? "Replay consumed"
             : priorRecovery
               ? "Prior use stays excluded after settlement opens"
+            : helperOperation?.receiptCheck === "conflict"
+              ? "Conflicting public records; status checks only"
             : helperOperation?.state === "settled"
-              ? "Durable settlement confirmed; full receipt facts are being rechecked"
+              ? "Backend report only; checking the exact receipt"
               : ["reverted", "stopped"].includes(helperOperation?.state)
                 ? "This operation will not restart automatically"
               : releaseProcessing

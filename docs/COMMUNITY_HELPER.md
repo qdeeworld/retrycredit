@@ -93,4 +93,14 @@ For an `admitted` operation whose worker stopped before transaction preparation,
 
 Once a transaction hash is durably prepared, abandonment is refused. Reconcile only the saved transaction's exact receipt. `settled` means the backend validated its successful recovery result; `reverted` means the exact transaction released no credit. A missing, inconsistent or unverified receipt remains uncertain. Never infer successful settlement from a nonce change alone or create a replacement transaction to clear the status.
 
+### Prepared transaction with no receipt: operator decision
+
+1. Preserve the exact operation ID, transaction hash, nonce, source pair, campaign, coordinator namespace and policy. Do not copy private signing material into an incident report.
+2. Check the operation and exact transaction/receipt through the configured chain RPC. A missing transaction and an advanced account nonce are observations, not proof of failure or permission to release the active slot.
+3. If the exact receipt exists, use the existing status reconciliation path; it must validate the expected beneficiary, amount and recovery event. Do not send another recovery request.
+4. If no receipt exists, keep the operation unresolved. When containment is necessary, pause new coordinator admissions while preserving status reads and all reservations. Pausing cannot cancel a signed transaction.
+5. If the process stopped after durable preparation but before broadcasting and its signed bytes are unavailable, this implementation has **no safe automatic recovery path**. Hosted intake may remain blocked. Do not clear the lock, reset budgets, abandon a prepared operation, replace the nonce, or create another writer/namespace. Durable same-transaction recovery requires a separately reviewed implementation.
+
+The UI independently rechecks a reported settlement against the source-pair receipt. Until that check succeeds it labels settlement as reported, not confirmed. Explicit identity/receipt conflicts remove the success presentation and keep status-only actions. A later unavailable refresh preserves an earlier successful confirmation; it does not imply reversal of the transfer.
+
 Validation commands for this component are `node --test test/recovery-campaign-service.test.mjs test/helper-ledger-client.test.mjs` and `npx vitest run --config vitest.helper.config.mjs`. These exercise local/real-workerd behavior, not a live public helper completion.

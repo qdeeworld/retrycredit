@@ -3,9 +3,10 @@ import { formatEther, getAddress, hexlify, toUtf8Bytes } from "ethers";
 import { AlertCircle, ArrowRight, Check, ChevronRight, ExternalLink, LoaderCircle, LockKeyhole, Search, Wallet } from "lucide-react";
 import { checkRecoveryPairEligibility } from "./api.mjs";
 import { discoverHelperRecovery, readHelperOperation, requestHelperChallenge, submitHelperRecovery } from "./recovery-helper-api.mjs";
-import { canContinueHelperAuthorization, clearHelperResume, helperAdmissionAvailable, helperEnabled, helperErrorCopy, helperOperationIsTerminal, helperRequestDefinitelyRefused, readHelperResume, RECOVERY_HELPER_MODE, saveHelperResume, validateHelperChallenge, validateHelperDiscovery, validateHelperOperation } from "./recovery-helper-state.mjs";
+import { canContinueHelperAuthorization, clearHelperResume, helperAdmissionAvailable, helperEnabled, helperErrorCopy, helperRequestDefinitelyRefused, readHelperResume, RECOVERY_HELPER_MODE, saveHelperResume, validateHelperChallenge, validateHelperDiscovery, validateHelperOperation } from "./recovery-helper-state.mjs";
 import { recoveryCampaignsMatch, recoveryHostedAdmissionMessage, recoveryHostedAdmissionState, validatePairEligibilityResponse, validateRecoveryPairDraft, walletsMatch } from "./recovery-ui-state.mjs";
 import { readRecoveryPairLink } from "./recovery-pair-handoff.mjs";
+import { helperOutcomeResolved, helperSettlementConfirmed } from "./helper-settlement-view.mjs";
 
 const EMPTY_PAIR = { failedTransactionHash: "", successfulTransactionHash: "" };
 const POLL_INTERVAL_MS = 8_000;
@@ -39,8 +40,9 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
   connectRef.current = onConnect;
 
   const busy = ["discovering", "checking", "connecting", "signing", "submitting"].includes(phase);
-  const unresolved = Boolean(submitted.current && !helperOperationIsTerminal(operation));
-  const locked = busy || unresolved;
+  const unresolved = Boolean(submitted.current && !helperOutcomeResolved(operation));
+  const settlementConfirmed = helperSettlementConfirmed(operation);
+  const locked = busy || unresolved || statusBusy;
   const available = configState === "ready" && helperAdmissionAvailable(config) && online;
   const pairAdmissionState = eligibility?.eligible ? recoveryHostedAdmissionState({ config, eligibility }) : "available";
   const pairAdmissionBlocked = pairAdmissionState !== "available";
@@ -51,7 +53,7 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
     setOperation(next);
   }
   function beginAction(nextPhase) {
-    if (actionBusy.current || (submitted.current && !helperOperationIsTerminal(operationRef.current))) return null;
+    if (actionBusy.current || (submitted.current && !helperOutcomeResolved(operationRef.current))) return null;
     actionBusy.current = true;
     onLockChange(true);
     setPhase(nextPhase);
@@ -64,7 +66,7 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
     // A changed campaign can invalidate an in-flight read before it publishes a
     // result. Never strand the panel in a busy state on that early-return path.
     setPhase((previous) => ["discovering", "checking", "connecting", "signing"].includes(previous) ? "empty" : previous);
-    onLockChange(Boolean(submitted.current && !helperOperationIsTerminal(operationRef.current)));
+    onLockChange(Boolean(submitted.current && !helperOutcomeResolved(operationRef.current)));
   }
   function current(token, initialConfig) {
     return active.current && token === generation.current && recoveryCampaignsMatch(initialConfig, configRef.current);
@@ -107,8 +109,8 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
   }, [config, onLockChange]);
 
   useEffect(() => {
-    onEvidenceChange({ eligibility, flow: operation?.state === "settled" ? "released" : unresolved ? "release-processing" : eligibility ? "qualifying" : "empty",
-      releaseResult: eligibility?.release ? eligibility : null, helperOperation: operation });
+    onEvidenceChange({ eligibility, flow: settlementConfirmed ? "released" : unresolved ? "release-processing" : eligibility ? "qualifying" : "empty",
+      releaseResult: settlementConfirmed && eligibility?.release ? eligibility : null, helperOperation: operation });
   }, [eligibility, operation, unresolved, onEvidenceChange]);
 
   useEffect(() => {
@@ -283,12 +285,17 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
 
   function acceptOperation(response, expected, initialConfig) {
     const result = validateHelperOperation(response, expected, initialConfig);
-    setOperationState(result);
+    const previous = operationRef.current;
+    const receiptCheck = result.state === "settled"
+      ? previous?.operationId === result.operationId && previous?.transactionHash === result.transactionHash
+        ? previous.receiptCheck ?? "pending" : "pending"
+      : null;
+    setOperationState({ ...result, receiptCheck });
     saveHelperResume({ ...expected, state: result.state }, initialConfig);
     setPhase(result.state);
     setNotice(result.mode !== RECOVERY_HELPER_MODE || !walletsMatch(result.requester, expected.requester)
       ? "Another request already handles this exact source pair. No second recovery was started. The original recipient remains unchanged." : "");
-    if (helperOperationIsTerminal(result)) onLockChange(false);
+    if (!helperOutcomeResolved({ ...result, receiptCheck })) onLockChange(true);
     return result;
   }
 
@@ -303,15 +310,39 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
       if (!active.current || submitted.current?.operationId !== expected.operationId) return;
       const result = acceptOperation(response, expected, initialConfig);
       if (result.state === "settled") {
-        const live = validatePairEligibilityResponse({ response: await checkRecoveryPairEligibility({ apiOrigin, pair: expected.pair }),
-          requestedPair: expected.pair, config: initialConfig });
+        const raw = await checkRecoveryPairEligibility({ apiOrigin, pair: expected.pair });
         if (!active.current || submitted.current?.operationId !== expected.operationId) return;
-        if (live.status !== "claimed" || !walletsMatch(live.wallet, expected.sourceWallet)
-          || live.release?.transactionHash?.toLowerCase() !== result.transactionHash.toLowerCase()) throw new Error("Receipt does not match operation");
+        let live;
+        try {
+          live = validatePairEligibilityResponse({ response: raw, requestedPair: expected.pair, config: initialConfig });
+          if (live.status !== "claimed" || !walletsMatch(live.wallet, expected.sourceWallet)
+            || live.release?.transactionHash?.toLowerCase() !== result.transactionHash.toLowerCase()) throw new Error("Receipt does not match operation");
+        } catch (error) {
+          throw Object.assign(error, { receiptConflict: true });
+        }
         setEligibility(live);
+        setOperationState({ ...result, receiptCheck: "confirmed" });
+        onLockChange(false);
       }
     } catch (error) {
       if (!active.current || submitted.current?.operationId !== expected.operationId) return;
+      if (error?.receiptConflict || error?.code === "RECOVERY_RESPONSE_MISMATCH" || error?.status === 422) {
+        setEligibility(null);
+        setOperationState({ ...(operationRef.current ?? { ...expected, publicIdentityConfirmed: false }), receiptCheck: "conflict" });
+        setPhase("uncertain");
+        onLockChange(true);
+        setNotice("Public operation and receipt evidence conflict. Success is not confirmed. Keep this operation for status checks; do not sign another request.");
+        return;
+      }
+      if (operationRef.current?.state === "settled") {
+        if (!helperSettlementConfirmed(operationRef.current) && operationRef.current.receiptCheck !== "conflict") {
+          setOperationState({ ...operationRef.current, receiptCheck: "unavailable" });
+        }
+        setNotice(helperSettlementConfirmed(operationRef.current)
+          ? "The earlier receipt check confirmed this credit. The latest refresh is unavailable; this does not undo that confirmation."
+          : "The receipt recheck is unavailable. Keep this operation and check status again without signing.");
+        return;
+      }
       setNotice(error?.status === 404
         ? "No durable admission is visible yet. The submitted request may still be reaching the service. This pair stays locked; check status again without signing."
         : helperErrorCopy(error, { submitted: true }));
@@ -323,7 +354,7 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
   statusReadRef.current = readStatus;
 
   function startAnother() {
-    if (!helperOperationIsTerminal(operationRef.current) || actionBusy.current) return;
+    if (!helperOutcomeResolved(operationRef.current) || actionBusy.current || statusFlight.current) return;
     generation.current += 1;
     submitted.current = null;
     submittedConfig.current = null;
@@ -348,14 +379,14 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
   }
 
   const source = operation?.sourceWallet ?? submitted.current?.sourceWallet ?? eligibility?.wallet;
-  const sourceConfirmed = Boolean(operation || eligibility);
+  const sourceConfirmed = Boolean((operation && operation.publicIdentityConfirmed !== false) || eligibility);
   const connectedSource = !submitted.current && walletsMatch(account, source);
   const receipt = operation?.transactionHash;
   const creditConfig = submittedConfig.current ?? config;
-  return <section className={`eligibility-desk helper-desk state-${operation?.state === "settled" ? "released" : locked ? "release-processing" : eligibility?.eligible ? "qualifying" : "empty"}`} aria-labelledby="eligibility-heading" aria-busy={busy}>
+  return <section className={`eligibility-desk helper-desk state-${settlementConfirmed ? "released" : locked ? "release-processing" : eligibility?.eligible ? "qualifying" : "empty"}`} aria-labelledby="eligibility-heading" aria-busy={busy || statusBusy}>
     <p className="helper-role-label">Community helper · source wallet receives the credit</p>
     <div className="desk-heading">
-      <span className="state-mark" aria-hidden="true">{operation?.state === "settled" ? <Check /> : busy ? <LoaderCircle className="spin" /> : <ArrowRight />}</span>
+      <span className="state-mark" aria-hidden="true">{settlementConfirmed ? <Check /> : busy ? <LoaderCircle className="spin" /> : <ArrowRight />}</span>
       <div><h1 id="eligibility-heading" tabIndex="-1">{display.title}</h1><p role="status" aria-live="polite" aria-atomic="true">{display.body}</p></div>
     </div>
 
@@ -371,7 +402,7 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
 
     {source && <div className="helper-recipient" role="note">
       <span className="helper-recipient-label">{sourceConfirmed ? "Only credit recipient" : "Recorded source · awaiting public confirmation"}</span><code>{source}</code>
-      <p>{operation?.state === "settled" ? `${formatEther(creditConfig.campaign.creditAmount)} tCTC released to this source wallet.` : !sourceConfirmed ? "This locally restored identity has not yet been confirmed by the public operation status." : `${formatEther(creditConfig.campaign.creditAmount)} tCTC, if the native proof and final campaign checks pass.`}</p>
+      <p>{settlementConfirmed ? `${formatEther(creditConfig.campaign.creditAmount)} tCTC released to this source wallet.` : !sourceConfirmed ? "This locally restored identity has not yet been confirmed by the public operation status." : `${formatEther(creditConfig.campaign.creditAmount)} tCTC, if the native proof and final campaign checks pass.`}</p>
       <div className="helper-role-boundary"><strong>{connectedSource ? "This source wallet is connected." : "You receive no credit."}</strong><p>{connectedSource
         ? "Use the owner flow to request your own credit. The same pair can be carried over for a fresh check; no helper authorization is needed."
         : operation?.mode === "owner"
@@ -406,10 +437,10 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
       <dl><div><dt>Request role</dt><dd>{operation?.mode === "owner" ? "Source owner request" : "Community helper request"}</dd></div>
         <div><dt>Requester</dt><dd><code>{operation?.requester ?? submitted.current.requester}</code></dd></div>
         <div><dt>Public operation</dt><dd><code>{submitted.current.operationId}</code></dd></div></dl>
-      {receipt && <a className="secondary-action" href={`https://creditcoin-testnet.blockscout.com/tx/${receipt}`} target="_blank" rel="noreferrer">{operation.state === "settled" ? "Open credit release receipt" : operation.state === "reverted" ? "Open reverted transaction" : "Inspect pending transaction"}<ExternalLink aria-hidden="true" /></a>}
+      {receipt && <a className="secondary-action" href={`https://creditcoin-testnet.blockscout.com/tx/${receipt}`} target="_blank" rel="noreferrer">{settlementConfirmed ? "Open credit release receipt" : operation.state === "reverted" ? "Open reverted transaction" : "Inspect recorded transaction"}<ExternalLink aria-hidden="true" /></a>}
       <button className="example-action" type="button" onClick={readStatus} disabled={!online || statusBusy} aria-busy={statusBusy}>{statusBusy ? "Checking public status" : "Check public status"}{statusBusy ? <LoaderCircle className="spin" aria-hidden="true" /> : <Search aria-hidden="true" />}</button>
       <p>Status checks cannot authorize or repeat a release. Account changes do not change this operation&apos;s recipient.</p>
-      {helperOperationIsTerminal(operation) && <button className="secondary-action" type="button" onClick={startAnother}>Start another recovery <ArrowRight aria-hidden="true" /></button>}
+      {helperOutcomeResolved(operation) && <button className="secondary-action" type="button" onClick={startAnother} disabled={statusBusy}>Start another recovery <ArrowRight aria-hidden="true" /></button>}
     </section>}
 
     {!available && <p className="helper-availability-note" role="status">{!online ? "You are offline. The current pair is preserved; reconnect to check status." : !helperEnabled(config) ? "Helper admission is unavailable in this release. Saved operation identities remain available for status checks." : config?.helper?.admissionState === "budget-exhausted" ? "The bounded sponsor budget is fully allocated. Reserved capacity may not have been spent. New requests are disabled; existing operations can still be checked." : config?.helper?.admissionState === "busy" ? "The sponsor is processing another recovery. New requests are temporarily disabled." : "New helper requests are currently paused or the campaign is not open. Public status checks remain available."}</p>}
@@ -418,6 +449,8 @@ export function HelperRecoveryDesk({ config, configState, account, online, apiOr
 
 function exactPair(pair) { return { failedTransactionHash: pair.failedTransactionHash, successfulTransactionHash: pair.successfulTransactionHash }; }
 function helperDeskCopy({ phase, operation, eligibility, online }) {
+  if (operation?.receiptCheck === "conflict") return { title: "Recovery evidence does not match", body: "The public records conflict. This screen cannot confirm the credit; only status checks are available for this request." };
+  if (operation?.state === "settled" && !helperSettlementConfirmed(operation)) return { title: "Settlement reported — checking the receipt", body: operation.receiptCheck === "unavailable" ? "The service reports settlement, but the receipt recheck is unavailable. This is not a confirmed failure or a reason to submit again." : "The service reports settlement. Checking the exact source recipient and release receipt before confirming the result." };
   if (operation?.state === "settled") return { title: "Credit reached the source wallet", body: "The durable operation confirms a successful Creditcoin release. The source wallet received the credit; the helper received nothing." };
   if (operation?.state === "reverted") return { title: "The release did not complete", body: "The transaction reverted. This operation will not be broadcast again, and no credit was released by it." };
   if (operation?.state === "stopped") return { title: "Stopped before broadcast", body: operation.reason === "fee-cap" ? "The estimated fee exceeded the pilot cap. No credit release was broadcast." : "The guarded recovery stopped before broadcast. This operation will not restart automatically." };
